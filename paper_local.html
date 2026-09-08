@@ -964,6 +964,7 @@ function bookSwitch(id){
   S.bookId = id;
   bookApply(b.data);
   WHATIF = null; sel = null;
+  CHAIN_SEQ++;chainBusy=false;
   PARAMS = {}; CH = {}; OPTMETA = {};
   save(); render();
   setStatus('switched to '+b.name);
@@ -1260,6 +1261,7 @@ function onTick(conid, patch){
   q.at = patch.at || Date.now();
   Q[conid] = q;
   TICKS++;
+  if(chainAwaitSpot && S.builder.expId===chainAwaitSpot && conid===S.builder.underConid && (q.last>0||q.mid>0)){chainAwaitSpot='';loadStrikes();}
   /* a tick can make a resting order marketable - check straight away */
   var filled = false;
   var candidates = ordersFor(conid);
@@ -1967,7 +1969,7 @@ function submit(side){
     side:side, qty:q, type:type, limit:isFinite(lim)?lim:null, stop:isFinite(stp)?stp:null,
     tif: $('oTif').value, status:'working', filledQty:0, avgFill:0, commission:0, triggered:false};
   S.orders.unshift(o);
-  TICKET.limit=''; TICKET.stop='';
+  // Keep ticket values for repeated quick trades; do not erase a user's price.
   say('Order '+side+' '+qty(q)+' '+sel.symbol+' '+type+(o.limit?(' @'+px(o.limit)):'')+(o.stop?(' stop '+px(o.stop)):''));
   tryFill(o);
   orderNotice((o.status==='filled'?'FILLED':'WORKING')+' · '+side+' '+qty(q)+' '+sel.symbol+(o.avgFill?' @ '+px(o.avgFill):'')+' · paper order');
@@ -2146,8 +2148,10 @@ function dte(d){
   var t=new Date(d.slice(0,4)+'-'+d.slice(4,6)+'-'+d.slice(6,8)+'T16:00:00');
   return Math.max(0, Math.round((t-Date.now())/86400000))+'d';
 }
+var CHAIN_SEQ=0,CHAIN_DATA={},chainAwaitSpot='';
 function loadChainFor(inst){
   if(!dataUp() || !inst){ return; }
+  var chainSeq=++CHAIN_SEQ,chainBook=S.bookId;
   S.builder.underConid = inst.conid; S.builder.underSym = inst.symbol;
   if(typeof freeRemember==='function') freeRemember(inst.symbol);
   chainBusy = true; setStatus('loading chain...'); render();
@@ -2155,6 +2159,7 @@ function loadChainFor(inst){
     : callIB('get_option_parameters', {underlying_contract_id:Number(inst.conid),
                                        symbol:inst.symbol}).then(function(p){ PARAMS[inst.conid]=p; return p; });
   return pp.then(function(p){
+    if(chainSeq!==CHAIN_SEQ||S.bookId!==chainBook||S.builder.underConid!==inst.conid)return;
     var exps = (p.expirations||[]).filter(function(e){ return !e.trading_class || e.trading_class.indexOf('2')!==0; });
     if(!exps.length){ throw {code:'no_expirations'}; }
     var keep = S.builder.expId && exps.filter(function(e){return e.id===S.builder.expId;}).length;
@@ -2164,6 +2169,7 @@ function loadChainFor(inst){
     }
     return loadStrikes();
   }).catch(function(e){
+    if(chainSeq!==CHAIN_SEQ||S.bookId!==chainBook||S.builder.underConid!==inst.conid)return;
     chainBusy=false;
     var extra='';
     if(LOCAL && !usingFree() && typeof GW_PAPER!=='undefined' && GW_PAPER)
@@ -2176,23 +2182,30 @@ function loadChainFor(inst){
   });
 }
 function loadStrikes(){
-  var b2=S.builder, spot=null, uq=Q[b2.underConid];
+  var b2=S.builder, spot=null, uq=Q[b2.underConid],expId=b2.expId,chainBook=S.bookId,chainSeq=++CHAIN_SEQ;
   if(uq) spot = uq.last!=null?uq.last:uq.mid;
   var span = Math.max(2, Math.min(15, n(b2.span)||6));
   var input = {expiration_id:b2.expId, symbol:b2.underSym};
   if(spot){ var w = Math.max(2, spot*0.012)*span; input.min_strike=Math.max(0, Math.round((spot-w)*100)/100); input.max_strike=Math.round((spot+w)*100)/100; }
   chainBusy=true; setStatus('loading strikes...'); render();
-  return callIB('get_option_data', input).then(function(d){
-    CH[b2.expId] = d;
+  var cached=CHAIN_DATA[JSON.stringify(input)];
+  return (cached&&Date.now()-cached.at<300000?Promise.resolve(cached.data):callIB('get_option_data', input)).then(function(d){
+    CHAIN_DATA[JSON.stringify(input)]={at:Date.now(),data:d};
+    if(Object.keys(CHAIN_DATA).length>100)delete CHAIN_DATA[Object.keys(CHAIN_DATA)[0]];
+    if(chainSeq!==CHAIN_SEQ||S.bookId!==chainBook||S.builder.expId!==expId)return;
+    CH[expId] = d;
     var rows = (d.contracts||[]);
     if(spot){
       rows = rows.slice().sort(function(a,c){ return Math.abs(parseFloat(a.strike)-spot)-Math.abs(parseFloat(c.strike)-spot); }).slice(0, span*2+1);
       rows.sort(function(a,c){ return parseFloat(a.strike)-parseFloat(c.strike); });
       CH[b2.expId] = {currency:d.currency, exchange:d.exchange, contracts:rows};
     }
+    if(!spot){CH[expId]={currency:d.currency,exchange:d.exchange,contracts:rows.slice(0,span*2+1)};chainAwaitSpot=expId;}
+    else chainAwaitSpot='';
     chainBusy=false; setStatus('chain loaded'); render();
     return chainQuotes();
   }).catch(function(e){
+    if(chainSeq!==CHAIN_SEQ||S.bookId!==chainBook||S.builder.expId!==expId)return;
     chainBusy=false; setStatus('chain failed');
     warn('Could not load strikes ('+((e&&e.code)||'error')+').'); render();
   });
