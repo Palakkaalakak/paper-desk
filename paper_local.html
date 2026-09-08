@@ -1712,6 +1712,8 @@ function tryFillCombo(o){
   if(o.type==='COMBO' && o.limit!=null && touch.net > o.limit + 1e-9) return false;
   var use = o.limit!=null ? comboNet(o.legs,false,rem) : comboNet(o.legs,true,rem);
   if(!use) return false;
+  var proposed=o.legs.map(function(l,i){return Object.assign({},l,{qty:(l.side==='BUY'?1:-1)*rem*l.ratio,price:use.prices[i],commission:commission(l,rem*l.ratio,use.prices[i],l.side)});});
+  if(!fillRiskAllowed(proposed,o))return true;
   for(var i=0;i<o.legs.length;i++){
     var leg=o.legs[i];
     applyFill(o, rem*leg.ratio, use.prices[i], leg);
@@ -1821,12 +1823,22 @@ function tickOf(price){
   if(!(price>0)) return 0.01;
   return price < 1 ? 0.0001 : 0.01;
 }
+function fillRiskAllowed(fills,order){
+  var projected=project(fills),after=acct(projected.positions,projected.cash),before=acct();
+  var invalid=!Number.isFinite(after.netLiq)||!Number.isFinite(projected.cash);
+  var expandsRisk=after.init>before.init+1e-6;
+  if(invalid||(after.avail < -1e-6 && expandsRisk)||(S.account.type==='cash'&&projected.cash < -1e-6)){
+    order.status='rejected';order.note='Insufficient buying power at execution price';say(order.symbol+': '+order.note);orderNotice('REJECTED · '+order.symbol+' · '+order.note);return false;
+  }
+  return true;
+}
 function applyFill(o, fq, price, leg){
   var inst = leg || {conid:o.conid, symbol:o.symbol, secType:o.secType, mult:o.mult, exch:o.exch};
   var side = leg ? leg.side : o.side;
   var mult = inst.mult||1;
   var comm = commission(inst, fq, price, side);
   var signed = side==='BUY' ? fq : -fq;
+  if(!leg&&!fillRiskAllowed([Object.assign({},inst,{qty:signed,price:price,commission:comm})],o))return false;
   var p = posOf(inst.conid);
   if(!p){ p = {conid:inst.conid, symbol:inst.symbol, secType:inst.secType, mult:mult, exch:inst.exch,
     right:inst.right, strike:inst.strike, expiry:inst.expiry, underConid:inst.underConid, root:inst.root,
@@ -1972,7 +1984,7 @@ function submit(side){
   // Keep ticket values for repeated quick trades; do not erase a user's price.
   say('Order '+side+' '+qty(q)+' '+sel.symbol+' '+type+(o.limit?(' @'+px(o.limit)):'')+(o.stop?(' stop '+px(o.stop)):''));
   tryFill(o);
-  orderNotice((o.status==='filled'?'FILLED':'WORKING')+' · '+side+' '+qty(q)+' '+sel.symbol+(o.avgFill?' @ '+px(o.avgFill):'')+' · paper order');
+  orderNotice(o.status.toUpperCase()+' · '+side+' '+qty(q)+' '+sel.symbol+(o.avgFill?' @ '+px(o.avgFill):'')+' · paper order');
   save();
 }
 function strategyName(legs){
@@ -3056,7 +3068,7 @@ document.addEventListener('click', function(e){
     return; }
   if(t.hasAttribute&&t.hasAttribute('data-close')){ closePos(Number(t.getAttribute('data-close'))); return; }
   if(t.hasAttribute&&t.hasAttribute('data-trade')){ var cc=Number(t.getAttribute('data-trade')); var p=posOf(cc);
-    if(p){ sel={conid:p.conid,symbol:p.symbol,secType:p.secType,mult:p.mult,exch:p.exch}; tab='trade'; render(); } return; }
+    if(p){ sel=Object.assign({},p);S.lastSelected=sel;tab='trade'; render(); } return; }
   if(t.hasAttribute&&t.hasAttribute('data-cancel')){ cancelOrder(t.getAttribute('data-cancel')); return; }
   if(t.hasAttribute&&t.hasAttribute('data-c')){
     if(t.hasAttribute('data-fut')){ pickFutures(Number(t.getAttribute('data-c')), t.getAttribute('data-s')); return; }
