@@ -367,5 +367,84 @@ class MarketEngine:
                      conid=r.contract.conId,exchange=r.contract.primaryExchange,type=r.contract.secType)
                 for r in rows or [] if r.contract.secType in ('STK','IND')][:30]
 
+    async def _stock(self,symbol):
+        import ib_async as m
+        key = ('stock',symbol)
+        if key not in self._contracts:
+            c = m.Stock(symbol,'SMART','USD')
+            if not await self._ib.qualifyContractsAsync(c) or not c.conId:
+                raise ValueError('Could not resolve '+symbol)
+            self._contracts[key] = c
+        return self._contracts[key]
+
+    async def _quote_symbol(self,symbol):
+        c = await self._stock(symbol)
+        # Diagnostic-only transient read; the UI uses persistent subscriptions.
+        existing = next((v['ticker'] for v in self._active.values() if v['contract'].conId == c.conId),None)
+        t = existing or self._ib.reqMktData(c,'',False,False)
+        try:
+            for _ in range(40):
+                if number(t.bid,True) is not None and number(t.ask,True) is not None:
+                    break
+                await asyncio.sleep(0.05)
+            return self._quote(t)
+        finally:
+            if existing is None:
+                self._ib.cancelMktData(c)
+
+    async def _chain(self,symbol,expiry=None):
+        import ib_async as m
+        import tws
+        und = await self._stock(symbol)
+        key = ('params',symbol)
+        hit = self._cache.get(key)
+        if hit and time.monotonic()<hit[0]:
+            params = hit[1]
+        else:
+            params = await self._ib.reqSecDefOptParamsAsync(symbol,'','STK',und.conId)
+            self._cache[key] = (time.monotonic()+300,params)
+        params = [p for p in params or [] if p.exchange=='SMART'] or params
+        if not params:
+            raise ValueError('No option definitions for '+symbol)
+        p = next((x for x in params if x.tradingClass==symbol),params[0])
+        today = dt.datetime.now(dt.timezone.utc).strftime('%Y%m%d')
+        exps = sorted(x for x in p.expirations if x>=today)
+        out = dict(expirations=exps,underConid=und.conId,calls=[],puts=[],served_by='tws')
+        if not expiry:
+            return out
+        if expiry not in exps:
+            raise ValueError('Expiry is not listed for '+symbol)
+        stored = tws._disk().get(symbol+'|'+expiry)
+        if isinstance(stored,dict) and time.time()-float(stored.get('ts',0)) < tws.DEF_TTL:
+            contracts = [m.Option(symbol,expiry,r['strike'],r['right'],'SMART',conId=r['conId'],
+                         tradingClass=r.get('tradingClass') or '',currency='USD') for r in stored['rows']]
+        else:
+            template = m.Option(symbol,expiry,0,'','SMART',tradingClass=p.tradingClass,currency='USD')
+            details = await asyncio.wait_for(self._ib.reqContractDetailsAsync(template),90)
+            contracts = [d.contract for d in details if d.contract.conId]
+            tws._disk_save((symbol,expiry),[dict(conId=c.conId,strike=c.strike,right=c.right,
+                                                tradingClass=c.tradingClass) for c in contracts])
+        out['expiry'] = expiry
+        for c in sorted(contracts,key=lambda x:(x.strike,x.right)):
+            if c.right not in ('C','P'):
+                continue
+            out['calls' if c.right=='C' else 'puts'].append(dict(conid=c.conId,
+                symbol='%s %s %s %s' % (symbol,expiry,c.strike,c.right),strike=c.strike,right=c.right,
+                expiry=expiry,mult=number(c.multiplier) or 100,bid=None,ask=None,last=None))
+        return out
+
+    async def _depth(self,symbol):
+        c = await self._stock(symbol)
+        t = self._ib.reqMktDepth(c,numRows=5,isSmartDepth=True)
+        try:
+            for _ in range(20):
+                if t.domBids or t.domAsks:
+                    break
+                await asyncio.sleep(0.05)
+            return dict(bids=[dict(price=x.price,size=number(x.size)) for x in t.domBids],
+                        asks=[dict(price=x.price,size=number(x.size)) for x in t.domAsks])
+        finally:
+            self._ib.cancelMktDepth(c,isSmartDepth=True)
+
 
 ENGINE = MarketEngine()
