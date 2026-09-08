@@ -344,8 +344,8 @@ def _friendly(e, who):
 def quote(provider, symbol, key=None):
     s = urllib.parse.quote(symbol)
     if provider == 'tws':
-        import tws as _tws
-        return _tws.quote(symbol)
+        from market import ENGINE
+        return ENGINE.call('quote_symbol', symbol.upper())
     if provider == 'alpaca':
         d = _get_h('%s/v2/stocks/snapshots?symbols=%s&feed=iex' % (ALPACA_DATA, s), _alpaca_h(key))
         snap = (d.get(symbol.upper()) or d.get(symbol) or
@@ -452,8 +452,8 @@ def quote(provider, symbol, key=None):
 def search(provider, q, key=None):
     qq = urllib.parse.quote(q)
     if provider == 'tws':
-        import tws as _tws
-        return _tws.search(q)
+        from market import ENGINE
+        return ENGINE.call('search', q)
     if provider == 'alpaca':
         term = (q or '').upper()
         rows = _alpaca_assets(key)
@@ -505,8 +505,8 @@ def search(provider, q, key=None):
 # ---------------------------------------------------------------- option chain
 def chain(provider, symbol, expiry=None, key=None):
     if provider == 'tws':
-        import tws as _tws
-        return _tws.chain(symbol, expiry)
+        from market import ENGINE
+        return ENGINE.call('chain', symbol.upper(), expiry, timeout=100)
     if provider == 'alpaca':
         sym = symbol.upper()
         # expirations come from the contracts listing, which costs no market data
@@ -662,10 +662,10 @@ def selftest(provider, key=None, symbol='AAPL'):
             if c.get('error'):
                 out['chain'] = {'ok': False, 'why': c['error']}
             else:
-                out['chain'] = {'ok': bool(c.get('calls')), 'expiries': len(c.get('expirations') or []),
+                out['chain'] = {'ok': bool(c.get('calls') or (provider == 'tws' and c.get('expirations'))), 'expiries': len(c.get('expirations') or []),
                                 'strikes': len(c.get('calls') or []),
                                 'greeks': bool((c.get('calls') or [{}])[0].get('delta') is not None),
-                                'why': '' if c.get('calls') else 'chain came back empty'}
+                                'why': ('Definitions available; option prices stream after selecting an expiry' if provider == 'tws' and c.get('expirations') else ('' if c.get('calls') else 'chain came back empty'))}
         except Exception as e:
             out['chain'] = {'ok': False, 'why': _friendly(e, out['name'])}
     else:
