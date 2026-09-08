@@ -936,7 +936,7 @@ function bookSwitch(id){
   bookSync();
   S.bookId = id;
   bookApply(b.data);
-  WHATIF = null; sel = null; Q = {};
+  WHATIF = null; sel = null;
   PARAMS = {}; CH = {}; OPTMETA = {};
   save(); render();
   setStatus('switched to '+b.name);
@@ -1692,25 +1692,26 @@ function tryFillCombo(o){
   return true;
 }
 function settleExpired(){
-  var td=ymd(), changed=false;
-  for(var i=0;i<S.positions.length;i++){
-    var p=S.positions[i];
-    if(!p.qty || !isOpt(p) || !p.expiry || p.expiry>=td) continue;
-    var uq=Q[p.underConid], u = uq ? (uq.last!=null?uq.last:uq.mid) : null;
-    var intr = u==null ? 0 : Math.max(0, p.right==='C' ? u-p.strike : p.strike-u);
-    intr = Math.round(intr*100)/100;
-    var mult=p.mult||100;
-    S.cash += p.qty*intr*mult;
-    var realized = (intr-p.avgCost)*p.qty*mult;
-    S.realized = n(S.realized)+realized;
-    S.trades.unshift({id:uid(), ts:Date.now(), orderId:null, symbol:p.symbol, conid:p.conid, secType:p.secType,
-      side:p.qty>0?'SELL':'BUY', qty:Math.abs(p.qty), price:intr, commission:0,
-      realized:Math.round(realized*100)/100, cashAfter:S.cash, combo:'expiration'});
-    say(p.symbol+' expired '+(intr>0?('in the money, cash settled at '+px(intr)):'worthless')+(u==null?' (no underlying quote - assumed worthless)':''));
-    p.qty=0; changed=true;
+  // Never invent settlement from a current or missing underlying quote.
+  return false;
+}
+function settlePosition(conid,value){
+  var p=posOf(conid);if(!p||!p.qty||!isOpt(p)||!p.expiry||p.expiry>=ymd())return false;
+  if(value===undefined){
+    var entered=prompt('Official expiry settlement value PER OPTION UNIT for '+p.symbol+' (not the underlying price). This is a manual paper cash settlement.');
+    if(entered===null||!entered.trim())return false;
+    value=Number(entered);
+    if(!Number.isFinite(value)||value<0){warn('Enter a finite settlement value of zero or greater.');return false;}
+    if(!confirm('Cash-settle '+qty(Math.abs(p.qty))+' '+p.symbol+' at '+money(value)+' per unit? This cannot be undone.'))return false;
   }
-  if(changed){ S.positions = S.positions.filter(function(p){ return p.qty!==0; }); snapshotEquity(true); }
-  return changed;
+  if(!Number.isFinite(value)||value<0)return false;
+  var mult=p.mult||100,realized=(value-p.avgCost)*p.qty*mult;
+  S.cash+=p.qty*value*mult;S.realized=n(S.realized)+realized;
+  S.trades.unshift({id:uid(),ts:Date.now(),orderId:null,symbol:p.symbol,conid:p.conid,secType:p.secType,mult:mult,
+    side:p.qty>0?'SELL':'BUY',qty:Math.abs(p.qty),price:value,commission:0,realized:realized,cashAfter:S.cash,combo:'manual expiry settlement'});
+  p.qty=0;S.positions=S.positions.filter(function(x){return x.qty!==0;});
+  S.orders.forEach(function(o){if(o.status==='working'&&(o.conid===conid||(o.legs||[]).some(function(l){return l.conid===conid;}))){o.status='cancelled';o.note='contract expired';}});
+  say('Manual paper expiry settlement: '+p.symbol+' at '+money(value));snapshotEquity(true);save();return true;
 }
 function tryFill(o){
   if(o.status!=='working')return false;
@@ -1825,7 +1826,7 @@ function applyFill(o, fq, price, leg){
   o.commission = n(o.commission)+comm;
   S.trades.unshift({id:uid(), ts:Date.now(), orderId:o.id, symbol:inst.symbol, conid:inst.conid, secType:inst.secType,
     side:side, qty:fq, price:price, commission:Math.round(comm*100)/100, realized:Math.round(realized*100)/100,
-    cashAfter:S.cash, combo: leg? (o.strategy||'spread') : null});
+    cashAfter:S.cash, mult:mult, combo: leg? (o.strategy||'spread') : null});
   say(side+' '+qty(fq)+' '+inst.symbol+' @ '+px(price)+' (comm '+money(comm)+')'+(!leg&&o.status!=='filled'?' [partial]':''));
   if(!leg) snapshotEquity(true);
 }
@@ -2664,20 +2665,30 @@ function viewTrade(){
   }
   return h;
 }
+function positionValues(p){
+  var q=Q[p.conid],has=!!q&&(q.mid!=null||q.last!=null||q.mark!=null),m=markOf(p),mv=p.qty*m*(p.mult||1),u=(m-p.avgCost)*p.qty*(p.mult||1),basis=Math.abs(p.avgCost*p.qty*(p.mult||1));
+  return {values:[qty(p.qty),px(p.avgCost),has?px(m):'—',has?money(mv):'—',has?money(u):'—',has&&basis?pct(u/basis*100):'—',quoteReady(p.conid)?'FRESH':(q?'STALE':'WAITING')],pl:cls(u)};
+}
+function renderPositionPrices(){
+  var positions=new Map(S.positions.map(function(p){return [p.conid,p];}));
+  document.querySelectorAll('[data-posid]').forEach(function(row){
+    var p=positions.get(Number(row.dataset.posid));if(!p)return;
+    var result=positionValues(p),cells=row.querySelectorAll('[data-position-value]');
+    result.values.forEach(function(value,i){if(cells[i]&&cells[i].textContent!==value)cells[i].textContent=value;});
+    [4,5].forEach(function(i){if(cells[i])cells[i].className=result.pl;});
+  });
+}
 function viewPos(){
-  var ps = S.positions.filter(function(p){return p.qty!==0;});
-  if(!ps.length) return '<div class="panel dim">No open positions.</div>';
-  var rows = ps.map(function(p){
-    var m=markOf(p), mv=p.qty*m*(p.mult||1), u=(m-p.avgCost)*p.qty*(p.mult||1);
-    var costBasis = Math.abs(p.avgCost*p.qty*(p.mult||1));
-    var tag = isOpt(p) ? '<span class="pill">'+esc(p.right==='C'?'CALL':'PUT')+' '+px(p.strike)+' '+fmtExp(p.expiry)+' &middot; '+dte(p.expiry)+'</span>'
-             : '<span class="dim">'+esc(p.secType)+'</span>';
-    return '<tr><td class="l"><b>'+esc(isOpt(p)?(p.root||p.symbol):p.symbol)+'</b> '+tag+'</td>'
-     +'<td>'+qty(p.qty)+'</td><td>'+px(p.avgCost)+'</td><td>'+px(m)+'</td><td>'+money(mv)+'</td>'
-     +'<td class="'+cls(u)+'">'+money(u)+'</td><td class="'+cls(u)+'">'+(costBasis?pct(u/costBasis*100):'--')+'</td>'
-     +'<td class="l"><button class="mini" data-trade="'+p.conid+'">Trade</button> <button class="mini" data-close="'+p.conid+'">Close</button></td></tr>';
+  var ps=S.positions.filter(function(p){return p.qty!==0;});
+  if(!ps.length)return '<div class="panel empty-market"><strong>No open positions</strong><p>Search a symbol in Trade to place your first paper order.</p></div>';
+  var rows=ps.map(function(p){
+    var result=positionValues(p),expired=isOpt(p)&&p.expiry&&p.expiry<ymd();
+    var tag=isOpt(p)?'<span class="pill">'+esc(p.right)+' '+px(p.strike)+' '+fmtExp(p.expiry)+'</span>':'<span class="dim">'+esc(p.secType)+'</span>';
+    return '<tr data-posid="'+p.conid+'"><td class="l"><b>'+esc(isOpt(p)?(p.root||p.symbol):p.symbol)+'</b> '+tag+'</td>'
+      +result.values.map(function(v,i){return '<td data-position-value class="'+(i===4||i===5?result.pl:'')+'">'+v+'</td>';}).join('')
+      +'<td class="l">'+(expired?'<button class="mini" data-settle="'+p.conid+'">Settle expiry</button>':'<button class="mini" data-trade="'+p.conid+'">Trade</button> <button class="mini" data-close="'+p.conid+'">Close</button>')+'</td></tr>';
   }).join('');
-  return '<div class="panel"><h2>Positions</h2><div class="tblwrap"><table><thead><tr><th>Symbol</th><th>Qty</th><th>Avg cost</th><th>Mark</th><th>Value</th><th>Open P&amp;L</th><th>%</th><th class="l"></th></tr></thead><tbody>'+rows+'</tbody></table></div></div>';
+  return '<div class="panel"><div class="bar"><h2>Positions · '+ps.length+'</h2><span class="note">Streaming marks · stale quotes cannot fill orders</span></div><div class="tblwrap position-scroll"><table id="positionsTable"><thead><tr><th>Instrument</th><th>Quantity</th><th>Avg cost</th><th>Mark</th><th>Market value</th><th>Open P&amp;L</th><th>Return</th><th>Feed</th><th></th></tr></thead><tbody>'+rows+'</tbody></table></div></div>';
 }
 function viewOrd(){
   if(!S.orders.length) return '<div class="panel dim">No orders yet.</div>';
@@ -2712,7 +2723,7 @@ function viewHist(){
   var tr = S.trades.slice(0,400).map(function(t){
     return '<tr><td class="l">'+ts(t.ts)+'</td><td class="l"><b>'+esc(t.symbol)+'</b>'+(t.combo?' <span class="pill">'+esc(t.combo)+'</span>':'')+'</td>'
      +'<td class="l '+(t.side==='BUY'?'up':'dn')+'">'+t.side+'</td><td>'+qty(t.qty)+'</td><td>'+px(t.price)+'</td>'
-     +'<td>'+money(t.qty*t.price)+'</td><td>'+money(t.commission)+'</td>'
+     +'<td>'+money(t.qty*t.price*(t.mult||(t.secType==='OPT'?100:1)))+'</td><td>'+money(t.commission)+'</td>'
      +'<td class="'+cls(t.realized)+'">'+(t.realized?money(t.realized):'-')+'</td><td>'+money(t.cashAfter)+'</td></tr>';
   }).join('');
   var cf = S.cashflows.slice().reverse().slice(0,80).map(function(c){
