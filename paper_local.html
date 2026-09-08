@@ -1251,7 +1251,8 @@ function netGreeks(legs){
 /* ---------- streaming ---------- */
 var tickDirty = false, tickTimer = null, TICKS = 0;
 function onTick(conid, patch){
-  var q = Q[conid] || {};
+  if(Q[conid] && patch.at && Q[conid].at>patch.at) return;
+  var q = usingTws()?{}:(Q[conid] || {});
   for(var k in patch) q[k] = patch[k];
   if(q.bid!=null && q.ask!=null && q.ask>=q.bid) q.mid=(q.bid+q.ask)/2;
   if(q.last==null && q.mid!=null) q.last=q.mid;
@@ -2282,6 +2283,7 @@ function doSearch(term, autopick){
       return '<div data-c="'+r.underlying_contract_id+'" data-s="'+esc(r.symbol)+'" data-t="'+st+'" data-e="'+esc(r.exchange||'')+'">'
         +'<b>'+esc(r.symbol)+'</b> <span class="dim">'+esc(r.description||'')+' &middot; '+esc(r.exchange||'')+' '+esc(r.country_code||'')+'</span></div>';
     }).join('');
+    if(!$('res'))return;
     $('res').innerHTML = html || '<div class="dim">No tradable match.</div>';
     if(autopick){
       var first = $('res').querySelector('[data-c]');
@@ -2289,7 +2291,7 @@ function doSearch(term, autopick){
     }
   }).catch(function(e){
     if(mySeq!==SEARCH_SEQ) return;
-    setStatus('search failed'); $('res').innerHTML='<div class="dim">Search failed. '+esc(errText(e))+'</div>';
+    setStatus('search failed'); if($('res'))$('res').innerHTML='<div class="dim">Search failed. '+esc(errText(e))+'</div>';
     if(autopick) warn('Search failed. '+errText(e));
   });
 }
@@ -2312,7 +2314,8 @@ function pickFutures(conid, root){
   }).catch(function(e){ $('res').innerHTML='<div class="dim">Could not load expiries. '+esc(errText(e))+'</div>'; });
 }
 function pick(inst){
-  sel = inst;
+  sel = inst;S.lastSelected=inst;
+  if(usingTws()&&inst.secType==='STK')inst.exch='SMART';
   if(S.builder.underConid!==inst.conid){ S.builder.legs=[]; S.builder.underConid=inst.conid; S.builder.underSym=inst.symbol; S.builder.expId=''; }
   var found=false;
   for(var i=0;i<S.watchlist.length;i++) if(S.watchlist[i].conid===inst.conid) found=true;
@@ -2972,6 +2975,7 @@ function applySide(){
   document.body.classList.toggle('side-puts',  S.chainSide==='puts');
 }
 function render(){
+  document.body.dataset.tab=tab;
   if(LOCAL) syncSubs();
   applySide();
   renderTabs(); renderStats(); renderDiag();
