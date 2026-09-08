@@ -2337,8 +2337,15 @@ function renderDiag(){
 
 /* A tick must not rebuild the ticket - retyping a quantity because the market
    moved is intolerable. Only the price-bearing nodes are refreshed. */
+function putHTML(el,html){ if(el && el.innerHTML!==html)el.innerHTML=html; }
 function renderLive(){
-  renderStats(); renderDiag();
+  if(document.hidden)return;
+  renderStats(); renderDiag(); updateTradeButtons();
+  document.querySelectorAll('[data-wl]').forEach(function(el){
+    var cid=Number(el.getAttribute('data-wl')),w=S.watchlist.find(function(x){return x.conid===cid;}),q=Q[cid];
+    if(w)putHTML(el,esc(w.symbol)+(q&&q.last!=null?' <span class="mono">'+px(q.last)+'</span>':''));
+  });
+  if(tab==='pos'){renderPositionPrices();return;}
   if(tab==='trade'){
     var qb=$('qbox'); if(qb) qb.innerHTML = quoteBox();
     var ct=$('chaintbl'); if(ct && CH[S.builder.expId]) ct.innerHTML = chainRows();
@@ -2354,12 +2361,12 @@ function renderLive(){
 /* ---------- render ---------- */
 var TABS=[['trade','Trade'],['pos','Positions'],['ord','Orders'],['hist','History'],['acct','Account']];
 function renderTabs(){
-  $('tabs').innerHTML = TABS.map(function(t){
+  putHTML($('tabs'), TABS.map(function(t){
     var extra='';
     if(t[0]==='ord'){ var w=S.orders.filter(function(o){return o.status==='working';}).length; if(w) extra=' ('+w+')'; }
     if(t[0]==='pos'){ var c=S.positions.filter(function(p){return p.qty!==0;}).length; if(c) extra=' ('+c+')'; }
     return '<button data-tab="'+t[0]+'" class="'+(tab===t[0]?'on':'')+'">'+t[1]+extra+'</button>';
-  }).join('');
+  }).join(''));
 }
 function renderStats(){
   var a=acct(), dep=deposits();
@@ -2377,9 +2384,9 @@ function renderStats(){
     ['Excess liquidity', money(a.excessLiq), a.excessLiq<0?'dn':''],
     ['Gross exp.', money(a.gross), '']
   ];
-  $('stats').innerHTML = items.map(function(i){
+  putHTML($('stats'), items.map(function(i){
     return '<div class="stat"><div class="k">'+i[0]+'</div><div class="v '+i[2]+'">'+i[1]+'</div></div>';
-  }).join('');
+  }).join(''));
   if(a.call) warn('Margin deficiency: excess liquidity is '+money(a.excessLiq)+'. IBKR would start liquidating; this simulator only warns you, so close something yourself.');
   var fut = S.positions.filter(function(p){ return p.qty && isFut(p) && !futSpec(p); });
   if(fut.length && !$('banner').textContent) warn(fut[0].symbol+' is not in the futures margin table, so it is held at 15% of notional. Add its IBKR margin on the Account tab for an accurate number.');
@@ -2397,14 +2404,19 @@ function renderStats(){
   }
   $('acctSub').textContent = S.account.type.toUpperCase()+' paper account'+(S.settings.allowShort?' · shorting on':'')+' · slippage '+S.settings.slippageBps+'bps';
 }
+function updateTradeButtons(){
+  var ready=!!sel&&quoteReady(sel.conid)&&!(sel.expiry&&sel.expiry<ymd());
+  ['buyBtn','sellBtn'].forEach(function(id){var el=$(id);if(el){el.disabled=!ready;el.title=ready?'Submit a simulated order':'Waiting for fresh two-sided market data';}});
+}
 function quoteBox(){
-  if(!sel) return '<div class="dim">No instrument selected.</div>';
+  if(!sel) return '<div class="empty-market"><strong>Your trading workspace is ready</strong><p>Search a symbol to open its live ticket. Positions and watchlists subscribe automatically.</p></div>';
   var q=Q[sel.conid];
-  if(!q) return '<div class="q"><b>'+esc(sel.symbol)+'</b> <span class="dim">- no quote yet, hit Refresh quotes</span></div>';
+  if(!q) return '<div class="q"><b>'+esc(sel.symbol)+'</b> <span class="loading-label">Subscribing to market data…</span></div>';
   var sp = (q.bid&&q.ask)?(q.ask-q.bid):null;
   return '<div class="q"><b>'+esc(sel.symbol)+'</b> '+px(q.last)+' <span class="'+cls(q.change)+'">'+(q.change!=null?(q.change>0?'+':'')+px(q.change):'')+' '+(q.changePct!=null?pct(q.changePct):'')+'</span>'
    +'<div class="note">bid '+px(q.bid)+' x'+(q.bidSize||'-')+'  |  ask '+px(q.ask)+' x'+(q.askSize||'-')+'  |  spread '+(sp!=null?px(sp):'--')
    +'  |  vol '+(q.volume?Math.round(q.volume).toLocaleString():'--')+'  |  '+(q.status||'')+(q.halted?' HALTED':'')
+   +'  |  <span class="pill '+(quoteReady(sel.conid)?'f':'w')+'">'+(quoteReady(sel.conid)?'FRESH':'STALE / WAITING')+'</span>'
    +'  |  <span class="pill">'+esc(classOf(sel).name)+'</span></div></div>';
 }
 function chainTable(){
@@ -2619,7 +2631,7 @@ function viewTrade(){
     return '<button class="mini '+(sel&&sel.conid===w.conid?'pri':'')+'" data-wl="'+w.conid+'">'+esc(w.symbol)+(q2&&q2.last!=null?' <span class="mono">'+px(q2.last)+'</span>':'')+'</button>';
   }).join(' ');
   var h = '<div class="panel">'
-  +'<h2>1 &middot; Pick something to trade</h2>'
+  +'<h2>Market workspace <span class="pill">SIMULATED</span></h2>'
   +'<div class="row"><div class="grow srch"><label>Search IBKR contracts</label><input id="srch" placeholder="AAPL, Tesla, SPY..." autocomplete="off"><div class="res" id="res"></div></div>'
   +'<button class="mini" id="advBtn">Add by contract id</button></div>'
   +'<div style="margin-top:8px;display:flex;gap:5px;flex-wrap:wrap">'+(wl||'<span class="dim note">Watchlist empty - search for a symbol above.</span>')+'</div>'
@@ -2627,7 +2639,7 @@ function viewTrade(){
   +'</div>';
   if(!sel) return h;
   var isUnder = sel.secType!=='OPT' && sel.secType!=='FOP';
-  h += '<div class="panel"><h2>2 &middot; Trade '+esc(sel.symbol)+' outright</h2>'
+  h += '<div class="panel order-ticket"><h2>Order entry · '+esc(sel.symbol)+'</h2>'
   +'<div class="row">'
   +'<div class="grow"><label>Quantity</label><input id="oQty" class="num" value="'+esc(TICKET.qty||(isUnder?'100':'1'))+'"></div>'
   +'<div class="grow"><label>Type</label><select id="oType">'+opts(['MKT','LMT','STP','STPLMT'],TICKET.type)+'</select></div>'
@@ -2635,8 +2647,11 @@ function viewTrade(){
   +'<div class="grow"><label>Stop</label><input id="oStop" class="num" placeholder="-" value="'+esc(TICKET.stop)+'"></div>'
   +'<div class="grow"><label>TIF</label><select id="oTif">'+opts(['DAY','GTC'],TICKET.tif)+'</select></div>'
   +'</div>'
+  +'<div class="quick-controls"><span class="dim">QUANTITY</span>'+ (isUnder?[10,100,500,1000]:[1,5,10,25]).map(function(n){return '<button class="mini" data-quickqty="'+n+'">'+n+'</button>';}).join('')
+  +'<span class="dim">LIMIT AT</span><button class="mini" data-quoteprice="bid">Bid</button><button class="mini" data-quoteprice="mid">Mid</button><button class="mini" data-quoteprice="ask">Ask</button></div>'
   +'<div class="row" style="margin-top:10px"><button class="buy grow" id="buyBtn">Buy '+esc(sel.symbol)+'</button><button class="sell grow" id="sellBtn">Sell '+esc(sel.symbol)+'</button></div>'
-  +(LOCAL?'<div class="row" style="margin-top:6px"><button class="mini" id="pvBuy">Price a buy with IBKR</button><button class="mini" id="pvSell">Price a sell with IBKR</button></div>':'')
+  +'<label class="hotkey-label"><input id="hotkeys" type="checkbox" '+(S.settings.hotkeys?'checked':'')+'> Enable Alt+B / Alt+S quick paper orders</label>'
+  +(LOCAL&&!usingTws()?'<div class="row" style="margin-top:6px"><button class="mini" id="pvBuy">Price a buy with IBKR</button><button class="mini" id="pvSell">Price a sell with IBKR</button></div>':'')
   +whatifPanel()
   +'<div class="note" id="fillnote">'+fillNote()+'</div>'
   +'</div>';
@@ -2923,14 +2938,23 @@ function render(){
   applySide();
   renderTabs(); renderStats(); renderDiag();
   var v=$('view');
-  v.innerHTML = viewFor(tab);
+  var focused=document.activeElement, focusId=focused&&focused.id;
+  var field=focused&&/^(INPUT|TEXTAREA)$/.test(focused.tagName)?{value:focused.value,start:focused.selectionStart,end:focused.selectionEnd}:null;
+  var scrolls=Array.from(v.querySelectorAll('.tblwrap')).map(function(el){return [el.scrollTop,el.scrollLeft];});
+  putHTML(v,viewFor(tab));
+  if(field && focusId && $(focusId)){
+    var input=$(focusId);input.value=field.value;input.focus({preventScroll:true});
+    if(field.start!=null)try{input.setSelectionRange(field.start,field.end);}catch(e){}
+  }
+  Array.from(v.querySelectorAll('.tblwrap')).forEach(function(el,i){if(scrolls[i]){el.scrollTop=scrolls[i][0];el.scrollLeft=scrolls[i][1];}});
   if(tab==='trade' && sel){
     var t=$('oType');
     if(t){ t.onchange=function(){ var lm=t.value==='LMT'||t.value==='STPLMT', st=t.value==='STP'||t.value==='STPLMT';
       $('oLimit').disabled=!lm; $('oStop').disabled=!st; };
       t.onchange(); }
   }
-  $('autoChk').checked = !!S.settings.auto;
+  $('autoChk').checked = true;
+  updateTradeButtons();
 }
 
 /* ---------- events ---------- */
@@ -2938,6 +2962,13 @@ document.addEventListener('click', function(e){
   var t=e.target.closest?e.target.closest('[data-tab],[data-wl],[data-close],[data-trade],[data-cancel],button,.res div'):null;
   if(!t) return;
   var id=t.id;
+  if(e.detail>1 && (id==='buyBtn'||id==='sellBtn'||id==='sendCombo'||t.hasAttribute('data-close')))return;
+  if(t.hasAttribute('data-quickqty')){TICKET.qty=t.getAttribute('data-quickqty');if($('oQty'))$('oQty').value=TICKET.qty;return;}
+  if(t.hasAttribute('data-quoteprice')){
+    if(!sel||!quoteReady(sel.conid)){warn('Waiting for a fresh quote.');return;}
+    TICKET.type='LMT';TICKET.limit=String(Q[sel.conid][t.getAttribute('data-quoteprice')]);render();return;
+  }
+  if(t.hasAttribute('data-settle')){settlePosition(Number(t.getAttribute('data-settle')));return;}
   if(t.hasAttribute&&t.hasAttribute('data-bkgo')){ bookSwitch(t.getAttribute('data-bkgo')); return; }
   if(t.hasAttribute&&t.hasAttribute('data-bkren')){
     var rid=t.getAttribute('data-bkren'), bk=bookOf(rid);
@@ -3032,11 +3063,12 @@ document.addEventListener('click', function(e){
     pick({conid:conid, symbol:sym, secType:$('xType').value, mult:Math.max(1,parseFloat($('xMult').value)||1), exch:$('xExch').value.trim()});
     tab='trade'; save(); return; }
   if(id==='dExp'){
-    claude.use('downloads').then(function(d){
-      if(d) return d.save({filename:'paper-account-'+today()+'.json', data:JSON.stringify(S,null,2)});
-      var w=window.open('','_blank'); if(w){ w.document.write('<pre>'+esc(JSON.stringify(S,null,2))+'</pre>'); }
-    }).catch(function(){});
-    return; }
+    bookSync();var exported=JSON.parse(JSON.stringify(S));
+    exported.settings.providerKey='';exported.settings.optKey='';
+    var blob=new Blob([JSON.stringify(exported,null,2)],{type:'application/json'});
+    var url=URL.createObjectURL(blob),a=document.createElement('a');
+    a.href=url;a.download='paper-account-'+ymd()+'.json';a.click();setTimeout(function(){URL.revokeObjectURL(url);},1000);
+    orderNotice('Account exported · API keys excluded');return; }
   if(id==='dFlat'){ S.positions.slice().forEach(function(p){ if(p.qty) closePos(p.conid); }); return; }
   if(id==='dClearWl'){ S.watchlist=[]; sel=null; save(); return; }
   if(id==='dReset'){
@@ -3056,6 +3088,13 @@ document.addEventListener('input', function(e){
   }
 });
 document.addEventListener('keydown', function(e){
+  if(e.repeat)return;
+  if(e.altKey && !e.ctrlKey && !e.metaKey && S.settings.hotkeys && tab==='trade' && (e.code==='KeyB'||e.code==='KeyS')){
+    e.preventDefault();submit(e.code==='KeyB'?'BUY':'SELL');return;
+  }
+  if(e.key==='/' && !/^(INPUT|TEXTAREA|SELECT)$/.test((e.target||{}).tagName||'')){
+    e.preventDefault();tab='trade';render();if($('srch'))$('srch').focus();return;
+  }
   if(e.target && e.target.id==='srch' && e.key==='Enter'){
     e.preventDefault();
     var v=e.target.value.trim();
@@ -3075,7 +3114,8 @@ document.addEventListener('input', function(e){
 document.addEventListener('change', function(e){
   if(e.target && TICKET_MAP[e.target.id]) TICKET[TICKET_MAP[e.target.id]] = e.target.value;
   if(!e.target) return;
-  if(e.target.id==='autoChk'){ S.settings.auto=e.target.checked; startAuto(); save(); return; }
+  if(e.target.id==='hotkeys'){ S.settings.hotkeys=e.target.checked;save();return; }
+  if(e.target.id==='autoChk'){ S.settings.auto=true; startAuto(); save(); return; }
   if(e.target.id==='expSel'){
     var v=e.target.value, p=PARAMS[S.builder.underConid];
     S.builder.expId=v;
