@@ -570,7 +570,10 @@ function feedStop(){
   FEED.connected=false; FEED.signature='';
 }
 function feedApply(payload){
-  FEED.lastEvent=Date.now(); FEED.connected=!!payload.connected;
+  if(!usingTws()) return;
+  if(FEED.generation!=null && payload.generation!=null && FEED.generation!==payload.generation) Q={};
+  FEED.generation=payload.generation;
+  FEED.lastEvent=Date.now(); FEED.connected=!!payload.connected && payload.feedHealthy!==false;
   FEED.requested=payload.requested||0; FEED.loaded=payload.loaded||0; FEED.capacity=payload.capacity||0;
   FEED.problem=payload.problem||''; FEED.overCapacity=payload.overCapacity||0;
   TWSINFO=payload;
@@ -602,12 +605,15 @@ function feedSync(force){
     .then(function(r){if(!r.ok)throw new Error('Subscription request failed ('+r.status+')');return r.json();})
     .then(function(data){ FEED.signature=signature; feedApply(data); feedOpen(); })
     .catch(function(e){FEED.connected=false; FEED.problem=e.message||'Gateway subscription failed'; renderDiag();})
-    .finally(function(){clearTimeout(timer);FEED.pending=null;});
+    .finally(function(){
+      clearTimeout(timer);FEED.pending=null;
+      if(usingTws() && signature!==JSON.stringify(universe())) syncSubs();
+    });
   return FEED.pending;
 }
 function quoteReady(conid){
   var q=Q[conid];
-  if(!q||q.error||q.halted||!(q.bid>=0)||!(q.ask>0)||q.ask<q.bid) return false;
+  if(!q||q.error||q.halted||q.bid==null||q.ask==null||!(q.bid>=0)||!(q.ask>0)||q.ask<q.bid) return false;
   if(usingTws()) return FEED.connected && Date.now()-FEED.lastEvent<15000 && q.status==='LIVE' && Date.now()-q.at<15000;
   return Date.now()-q.at<60000;
 }
@@ -1707,7 +1713,13 @@ function settleExpired(){
   return changed;
 }
 function tryFill(o){
-  if(o.type==='COMBO') return tryFillCombo(o);
+  if(o.status!=='working')return false;
+  if(o.expiry && o.expiry<ymd())return false;
+  if(o.type==='COMBO'){
+    if((o.legs||[]).some(function(l){return !quoteReady(l.conid)||(l.expiry&&l.expiry<ymd());}))return false;
+    return tryFillCombo(o);
+  }
+  if(!quoteReady(o.conid))return false;
   var q = Q[o.conid];
   if(!q) return false;
   var rem = o.qty - o.filledQty;
@@ -1904,7 +1916,9 @@ function submit(side){
   var q = parseFloat($('oQty').value);
   var lim = parseFloat($('oLimit').value);
   var stp = parseFloat($('oStop').value);
-  if(!(q>0)){ warn('Quantity must be greater than zero.'); return; }
+  if(!(q>0)||!isFinite(q)||((sel.secType==='OPT'||sel.secType==='FUT'||sel.secType==='FOP')&&!Number.isInteger(q))){ warn('Enter a finite, positive quantity (whole contracts for derivatives).'); return; }
+  if(!quoteReady(sel.conid)){warn('Waiting for a fresh, two-sided quote. Orders are disabled while quotes are stale or disconnected.');syncSubs();return;}
+  if(sel.expiry&&sel.expiry<ymd()){warn('This contract has expired. Use settlement from Positions.');return;}
   if((type==='LMT'||type==='STPLMT') && !(lim>0)){ warn('Limit orders need a limit price.'); return; }
   if((type==='STP'||type==='STPLMT') && !(stp>0)){ warn('Stop orders need a stop price.'); return; }
   var mult = sel.mult||1;
@@ -1927,6 +1941,7 @@ function submit(side){
   TICKET.limit=''; TICKET.stop='';
   say('Order '+side+' '+qty(q)+' '+sel.symbol+' '+type+(o.limit?(' @'+px(o.limit)):'')+(o.stop?(' stop '+px(o.stop)):''));
   tryFill(o);
+  orderNotice((o.status==='filled'?'FILLED':'WORKING')+' · '+side+' '+qty(q)+' '+sel.symbol+(o.avgFill?' @ '+px(o.avgFill):'')+' · paper order');
   save();
 }
 function strategyName(legs){
@@ -1958,11 +1973,11 @@ function submitCombo(){
   if(!legs.length){ warn('Add at least one option leg from the chain.'); return; }
   if(legs.length>4){ warn('Four legs is the maximum.'); return; }
   var q = parseFloat($('cQty').value);
-  if(!(q>0)){ warn('How many spreads? Enter a quantity of at least one.'); return; }
+  if(!(q>0)||!Number.isInteger(q)){ warn('Enter a positive whole number of spreads.'); return; }
   var useLmt = $('cType').value==='LMT';
   var lim = parseFloat($('cLimit').value);
   if(useLmt && !isFinite(lim)){ warn('Enter a net price. Positive is a debit you pay, negative is a credit you receive.'); return; }
-  var missing = legs.filter(function(l){ return !Q[l.conid]; });
+  var missing = legs.filter(function(l){ return !quoteReady(l.conid)||(l.expiry&&l.expiry<ymd()); });
   if(missing.length){ warn('No quote yet for '+missing[0].symbol+' - hit Refresh quotes first.'); return; }
   var priced = comboNet(legs, false, q);
   if(!priced){ warn('One of the legs has no two-sided market right now, so the spread cannot be priced.'); return; }
@@ -1996,12 +2011,16 @@ function cancelOrder(id){
 }
 function closePos(conid){
   var p = posOf(conid); if(!p||!p.qty) return;
+  if(!quoteReady(conid)){warn('Cannot close '+p.symbol+' without a fresh quote. Data reconnects automatically.');return;}
+  if(p.expiry&&p.expiry<ymd()){warn('This contract has expired; settle it using its official expiry settlement value.');return;}
+  if(S.orders.some(function(o){return o.status==='working'&&o.closingConid===conid;})){warn('A closing order is already working for '+p.symbol);return;}
   sel = {conid:p.conid, symbol:p.symbol, secType:p.secType, mult:p.mult, exch:p.exch, right:p.right, strike:p.strike, expiry:p.expiry, underConid:p.underConid, root:p.root};
   var o = {id:uid(), ts:Date.now(), day:today(), symbol:p.symbol, conid:p.conid, secType:p.secType, mult:p.mult, exch:p.exch,
     right:p.right, strike:p.strike, expiry:p.expiry, underConid:p.underConid, root:p.root,
     side: p.qty>0?'SELL':'BUY', qty: Math.abs(p.qty), type:'MKT', limit:null, stop:null, tif:'DAY',
     status:'working', filledQty:0, avgFill:0, commission:0, triggered:false};
-  S.orders.unshift(o); tryFill(o); save();
+  o.closingConid=conid;
+  S.orders.unshift(o); tryFill(o); orderNotice((o.status==='filled'?'CLOSED':'CLOSING')+' · '+p.symbol+' · paper order'); save();
 }
 
 /* IBKR's own margin and commission for a proposed order. This calls the
@@ -2278,6 +2297,16 @@ function pick(inst){
 
 function renderDiag(){
   var e=$('diag'); if(!e) return;
+  if(usingTws()){
+    var healthy=FEED.connected && Date.now()-FEED.lastEvent<15000;
+    var status=$('feedStatus');
+    if(status){status.textContent=healthy?'CONNECTED':'RECONNECTING';status.className='feed-status '+(healthy?'up':'dn');}
+    e.textContent='IB GATEWAY · READ-ONLY · '+FEED.loaded+'/'+FEED.requested+' quotes · '+TICKS.toLocaleString()+' updates'
+      +(FEED.overCapacity?' · '+FEED.overCapacity+' waiting for data lines (limit '+FEED.capacity+')':'')
+      +(FEED.problem?' · '+FEED.problem:'');
+    updateTradeButtons();return;
+  }
+  var badge=$('feedStatus');if(badge){badge.textContent=usingFree()?'PROVIDER DATA':'CLIENT PORTAL';badge.className='feed-status';}
   var parts=['data: '+DIAG.cap, 'storage: '+DIAG.storage];
   if(DIAG.server && !(LOCAL && usingFree())) parts.push('connector: '+DIAG.server+' ('+DIAG.tools+' tools)');
   else if(DIAG.cap==='ready') parts.push('connector: none matched'+(DIAG.servers.length?(' of ['+DIAG.servers.join(', ')+'])'):' (no connectors visible)'));
@@ -3092,9 +3121,25 @@ document.addEventListener('change', function(e){
     if(S.builder.legs[i2]){ S.builder.legs[i2].ratio=r; render(); }
     return; }
 });
+var healthTimer=null, lastAutoSync=0;
 function startAuto(){
   if(autoTimer) clearInterval(autoTimer);
-  if(S.settings.auto) autoTimer=setInterval(function(){ if(!document.hidden && !busy) refresh(); }, Math.max(15,n(S.settings.autoSec)||30)*1000);
+  if(healthTimer) clearInterval(healthTimer);
+  S.settings.auto=true;
+  autoTimer=setInterval(function(){
+    if(usingTws()) feedSync(true);
+    else if(!busy) refresh();
+  },usingTws()?20000:Math.max(15,n(S.settings.autoSec)||30)*1000);
+  healthTimer=setInterval(function(){
+    if(usingTws()){
+      if(FEED.lastEvent && Date.now()-FEED.lastEvent>15000){
+        FEED.connected=false;FEED.problem='Quote stream interrupted; reconnecting';
+        if(FEED.source){FEED.source.close();FEED.source=null;} feedOpen();
+      }
+      renderDiag(); updateTradeButtons();
+      if(sweepOrders())save();
+    }
+  },1000);
 }
 
 /* ---------- debug surface ---------- */
@@ -3105,7 +3150,15 @@ if(LOCAL){
   try { var saved = localStorage.getItem('paperAccount'); if(saved){ var pS=JSON.parse(saved); for(var _k in pS) S[_k]=pS[_k]; } }
   catch(e){}
 }
+// One-time migration to the requested IB Gateway workstation mode; never alter balances.
+if(!S.settings.gatewayStreamVersion){
+  S.settings.previousDataSource={mode:S.settings.dataSource,provider:S.settings.provider,optProvider:S.settings.optProvider};
+  S.settings.dataSource='free';S.settings.provider='tws';S.settings.optProvider='';
+  S.settings.gatewayStreamVersion=1;
+}
+S.settings.auto=true;
 bookInit();          /* after the saved state is merged in, before anything reads it */
+sel=S.lastSelected || S.watchlist[0] || S.positions.find(function(p){return p.qty;}) || null;
 if(S.lastDay !== today()){
   S.lastDay = today();
   for(var _i=0;_i<S.positions.length;_i++) S.positions[_i].openedToday=false;
@@ -3115,10 +3168,14 @@ function connect(){
   if(LOCAL){
     DIAG.storage = 'browser storage';
     DIAG.server = 'IBKR Client Portal Gateway';
-    FREE.provider = S.settings.provider || 'yahoo';
+    feedStop();
+    FREE.provider = S.settings.provider || 'tws';
     FREE.key = S.settings.providerKey || '';
-    freeProviders().then(function(){ renderDiag(); render(); }, function(){});
-    if(FREE.provider==='tws') twsStatus().then(function(){ renderDiag(); }, function(){});
+    freeProviders().then(function(){ renderDiag(); if(tab==='acct')render(); }, function(){});
+    if(usingTws()){
+      DIAG.cap='IB Gateway';DIAG.server='';startAuto();
+      return feedSync(true).then(function(){renderLive();});
+    }
     var mode = S.settings.dataSource || 'auto';
     if(mode==='free'){
       DIAG.gwUp = false; DIAG.cap='free provider'; DIAG.server='';
