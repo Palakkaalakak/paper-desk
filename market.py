@@ -300,6 +300,8 @@ class MarketEngine:
             c = m.Contract(conId=cid,exchange=row.get('exch') or 'SMART',currency='USD')
         elif kind == 'STK':
             c = m.Stock(sym,'SMART','USD')
+        elif kind == 'OPT' and row.get('expiry') and row.get('right') in ('C','P') and row.get('strike') is not None:
+            c = m.Option(sym.split()[0],row['expiry'],row['strike'],row['right'],'SMART',currency='USD')
         elif kind == 'OPT':
             match = re.fullmatch(r'([A-Z.]+)\s+(\d{8})\s+([\d.]+)\s+([CP])',sym)
             if not match:
@@ -359,6 +361,9 @@ class MarketEngine:
                 finally:
                     self._inflight.pop(key,None)
             self._inflight[key] = asyncio.create_task(work())
+            # A client can disconnect/time out while shared work continues.
+            # Retrieve failures even if no HTTP waiter remains.
+            self._inflight[key].add_done_callback(lambda t: None if t.cancelled() else t.exception())
         return await asyncio.shield(self._inflight[key])
 
     async def _search(self,pattern):
