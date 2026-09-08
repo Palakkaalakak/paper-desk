@@ -1,4 +1,4 @@
-<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><link rel="manifest" href="/manifest.json"><link rel="apple-touch-icon" href="/icon.png"><title>Paper Desk</title><title>Paper Desk</title>
+<!doctype html><html lang="en" data-theme="dark"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><link rel="manifest" href="/manifest.json"><link rel="apple-touch-icon" href="/icon.png"><title>Paper Desk | Trading workstation</title>
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -6,7 +6,7 @@
 <meta name="format-detection" content="telephone=no">
 <meta name="theme-color" content="#12151a" media="(prefers-color-scheme: dark)">
 <meta name="theme-color" content="#f4f5f8" media="(prefers-color-scheme: light)">
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<!-- System fonts render immediately, without a third-party font request. -->
 <style>
 :root{
   --bg:#f4f5f8; --panel:#ffffff; --line:#d6dae3; --line2:#eaecf2;
@@ -141,13 +141,14 @@ button,a,input,select,label{touch-action:manipulation}
     <div class="sp">
       <select id="bookSel" class="mini" title="Active portfolio"></select>
       <span class="note" id="status">idle</span>
-      <label class="sp" style="margin:0"><input type="checkbox" id="autoChk"> <span class="note">auto</span></label>
-      <button class="mini" id="refreshBtn">Refresh quotes</button>
+      <span id="feedStatus" class="feed-status" role="status">CONNECTING</span><input type="checkbox" id="autoChk" hidden checked>
+      <button class="mini" id="refreshBtn" title="Resync subscriptions; quotes update automatically">Resync</button>
       <button class="mini" id="reconnBtn">Reconnect</button>
     </div>
   </div>
 
-  <div id="banner" class="banner hide"></div>
+  <div id="banner" class="banner hide" role="alert"></div>
+  <div id="orderNotice" class="order-notice hide" role="status" aria-live="polite"></div>
 
   <div class="panel">
     <div class="stats" id="stats"></div>
@@ -157,13 +158,13 @@ button,a,input,select,label{touch-action:manipulation}
   <div id="view"></div>
 
   <div class="note" style="text-align:center;padding:8px 0 24px">
-    Simulated account. Quotes from your local IBKR Client Portal Gateway. Nothing leaves your machine. No real orders are ever placed.<br>
-    Options are cash settled at intrinsic value on the expiration date &mdash; no early assignment or exercise.
+    PAPER TRADING ONLY &middot; Orders execute in this browser, never at the broker. Keep this tab open for working orders.<br>
+    IB Gateway market data &middot; Live quotes required for Gateway fills. Expired options require explicit settlement; no automatic assignment.
   </div>
 </div>
 
 
-<script id="st" type="application/json">{"v":1,"account":{"name":"Paper Desk","type":"margin","currency":"USD"},"settings":{"slippageBps":1.5,"commissionPerShare":0.005,"commissionMin":1,"commissionMaxPct":1,"optCommission":0.65,"optCommissionMin":1,"marginMult":2,"allowShort":true,"auto":false,"autoSec":30,"futIntraday":false},"cash":100000,"realized":0,"lastDay":"","positions":[],"orders":[],"trades":[],"cashflows":[{"ts":1787979808700,"amount":100000,"note":"opening balance"}],"equity":[{"ts":1787979808700,"equity":100000,"cash":100000}],"watchlist":[],"futMargin":{},"log":[{"ts":1787979808700,"text":"Account opened with $100,000.00"}]}</script>
+<script id="st" type="application/json">{"v":1,"account":{"name":"Paper Desk","type":"margin","currency":"USD"},"settings":{"slippageBps":1.5,"commissionPerShare":0.005,"commissionMin":1,"commissionMaxPct":1,"optCommission":0.65,"optCommissionMin":1,"marginMult":2,"allowShort":true,"auto":true,"autoSec":15,"dataSource":"free","provider":"tws","futIntraday":false},"cash":100000,"realized":0,"lastDay":"","positions":[],"orders":[],"trades":[],"cashflows":[{"ts":1787979808700,"amount":100000,"note":"opening balance"}],"equity":[{"ts":1787979808700,"equity":100000,"cash":100000}],"watchlist":[],"futMargin":{},"log":[{"ts":1787979808700,"text":"Account opened with $100,000.00"}]}</script>
 <script>
 var PAPER_LOCAL = true;
 (function(){
@@ -561,7 +562,61 @@ function resubscribe(){
    so nothing pretends this is live depth.
    ------------------------------------------------------------------ */
 var TWSINFO = null;
-var FREE = {provider:'alpaca', key:'', info:null, symOf:{}, chain:{}};
+var FEED = {client:'desk_'+(globalThis.crypto&&crypto.randomUUID?crypto.randomUUID():Math.random().toString(36).slice(2)+Date.now()),
+  source:null, signature:'', pending:null, timer:null, lastEvent:0, connected:false, requested:0, loaded:0, capacity:0, problem:'Connecting to IB Gateway'};
+function usingTws(){ return LOCAL && usingFree() && FREE.provider==='tws'; }
+function feedStop(){
+  if(FEED.source){ FEED.source.close(); FEED.source=null; }
+  FEED.connected=false; FEED.signature='';
+}
+function feedApply(payload){
+  FEED.lastEvent=Date.now(); FEED.connected=!!payload.connected;
+  FEED.requested=payload.requested||0; FEED.loaded=payload.loaded||0; FEED.capacity=payload.capacity||0;
+  FEED.problem=payload.problem||''; FEED.overCapacity=payload.overCapacity||0;
+  TWSINFO=payload;
+  Object.keys(payload.quotes||{}).forEach(function(cid){
+    var q=payload.quotes[cid];
+    if(q.greeks) OPTMETA[cid]=Object.assign(OPTMETA[cid]||{},q.greeks);
+    onTick(Number(cid),q);
+  });
+  renderDiag();
+}
+function feedOpen(){
+  if(FEED.source || !usingTws()) return;
+  var source=new EventSource('/data/stream?client='+encodeURIComponent(FEED.client));
+  FEED.source=source;
+  source.addEventListener('quotes',function(event){
+    if(source!==FEED.source) return;
+    try { feedApply(JSON.parse(event.data)); } catch(e){ FEED.problem='Invalid market-data response'; }
+  });
+  source.onerror=function(){ if(source===FEED.source){ FEED.connected=false; FEED.problem='Reconnecting quote stream'; renderDiag(); } };
+}
+function feedSync(force){
+  if(!usingTws()) return Promise.resolve();
+  if(FEED.pending) return FEED.pending;
+  var list=universe(), signature=JSON.stringify(list);
+  if(!force && signature===FEED.signature){ feedOpen(); return Promise.resolve(); }
+  var controller=new AbortController(), timer=setTimeout(function(){controller.abort();},8000);
+  FEED.pending=fetch('/data/subscriptions',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({client:FEED.client,instruments:list}),signal:controller.signal})
+    .then(function(r){if(!r.ok)throw new Error('Subscription request failed ('+r.status+')');return r.json();})
+    .then(function(data){ FEED.signature=signature; feedApply(data); feedOpen(); })
+    .catch(function(e){FEED.connected=false; FEED.problem=e.message||'Gateway subscription failed'; renderDiag();})
+    .finally(function(){clearTimeout(timer);FEED.pending=null;});
+  return FEED.pending;
+}
+function quoteReady(conid){
+  var q=Q[conid];
+  if(!q||q.error||q.halted||!(q.bid>=0)||!(q.ask>0)||q.ask<q.bid) return false;
+  if(usingTws()) return FEED.connected && Date.now()-FEED.lastEvent<15000 && q.status==='LIVE' && Date.now()-q.at<15000;
+  return Date.now()-q.at<60000;
+}
+function orderNotice(message){
+  var el=$('orderNotice'); if(!el)return;
+  el.textContent=message;el.classList.remove('hide');
+}
+
+var FREE = {provider:'tws', key:'', info:null, symOf:{}, chain:{}};
 /* providers hand back expirations in their own shape: epoch seconds (Yahoo) or
    an ISO date (Alpaca, Tradier). Normalise to YYYYMMDD for display. */
 function freeYmd(tok){
@@ -799,9 +854,16 @@ if(S.settings.futIntraday==null) S.settings.futIntraday = false;
 function $(id){return document.getElementById(id);}
 function esc(s){return String(s==null?'':s).replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c];});}
 function n(x){return typeof x==='number'&&isFinite(x)?x:0;}
-function money(x,d){d=d==null?2:d;if(!isFinite(x))return '--';var s=(x<0?'-':'')+'$'+Math.abs(x).toLocaleString('en-US',{minimumFractionDigits:d,maximumFractionDigits:d});return s;}
-function px(x){return isFinite(x)?x.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:4}):'--';}
-function qty(x){return isFinite(x)?x.toLocaleString('en-US',{maximumFractionDigits:4}):'--';}
+var FORMATTERS = {};
+function formatNumber(x,min,max){
+  if(typeof x!=='number' || !isFinite(x)) return '--';
+  var key=min+':'+max;
+  if(!FORMATTERS[key]) FORMATTERS[key]=new Intl.NumberFormat('en-US',{minimumFractionDigits:min,maximumFractionDigits:max});
+  return FORMATTERS[key].format(x);
+}
+function money(x,d){d=d==null?2:d;if(typeof x!=='number'||!isFinite(x))return '--';return (x<0?'-':'')+'$'+formatNumber(Math.abs(x),d,d);}
+function px(x){return formatNumber(x,2,4);}
+function qty(x){return formatNumber(x,0,4);}
 function pct(x){return isFinite(x)?(x>=0?'+':'')+x.toFixed(2)+'%':'--';}
 function cls(x){return x>0?'up':x<0?'dn':'dim';}
 function ts(t){var d=new Date(t);return d.toLocaleString(undefined,{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'});}
@@ -895,11 +957,17 @@ function bookDelete(id){
   return true;
 }
 
+var renderPending = false;
+function scheduleRender(){
+  if(renderPending) return;
+  renderPending=true;
+  requestAnimationFrame(function(){ renderPending=false; render(); });
+}
 function save(){
   dirty = true;
-  if(pubTimer) clearTimeout(pubTimer);
-  pubTimer = setTimeout(commit, 700);
-  render();
+  // A sustained tick stream must not postpone persistence forever.
+  if(!pubTimer) pubTimer = setTimeout(commit, 150);
+  scheduleRender();
 }
 function commit(){
   pubTimer = null;
@@ -922,6 +990,11 @@ function commit(){
   });
 }
 window.addEventListener('beforeunload', function(){ if(pubTimer){ clearTimeout(pubTimer); commit(); } });
+window.addEventListener('pagehide', function(){ if(dirty){ clearTimeout(pubTimer); commit(); } });
+document.addEventListener('visibilitychange', function(){
+  if(document.hidden && dirty){ clearTimeout(pubTimer); commit(); }
+  if(!document.hidden && LOCAL){ syncSubs(); renderLive(); }
+});
 
 /* ------------------------------------------------------------------
    Liquidity classes.
