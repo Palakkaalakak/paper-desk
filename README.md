@@ -1,242 +1,329 @@
-# Paper Desk — standalone (IBKR Client Portal Gateway)
+# Paper Desk — standalone paper-trading simulator
 
-Runs entirely on your machine. No Claude connector, no cloud: the page talks to
-IBKR's own REST gateway on localhost, and the account lives in your browser's
-storage.
+A single-file browser application with a Python standard-library server. It uses
+IBKR Client Portal, local TWS/IB Gateway, or fallback market-data providers. The
+simulated account lives in browser storage, not at a brokerage or in a server database.
 
-## One-time setup
+- **Repository:** https://github.com/Palakkaalakak/paper-desk
+- **Local URL:** http://localhost:8765
+- **Production URL:** not recorded or verified in this repository.
+- **Deployment:** existing Render/Docker configuration; no new deployment was initiated
+  during the 2026-09-08 review. A GitHub push may trigger an independently configured host.
+- **Stack:** Python + HTML/CSS/vanilla JavaScript. There is no Node build step.
+  This is not a Hono/Cloudflare application; Workers cannot run its Python process,
+  local TWS socket, or filesystem-backed contract cache as-is.
 
-1. Download the **Client Portal API Gateway** from
-   <https://www.interactivebrokers.com/en/trading/ib-api.php> and unzip it.
-2. Start it:
-   - macOS / Linux: `bin/run.sh root/conf.yaml`
-   - Windows: `bin\run.bat root\conf.yaml`
-3. Open <https://localhost:5000> and log in with your IBKR credentials.
-   (Your browser will warn about the self-signed certificate — that's expected;
-   it's your own machine.)
+## Quick start
 
-## Every time
-
-```
+```sh
 python3 serve.py
 ```
 
-Opens <http://localhost:8765>. Python 3 only — no packages to install.
+Open http://localhost:8765 and leave the terminal running. macOS/Linux also have
+`start.command` / `start.sh`; Windows has `start.bat`. See [START_HERE.md](START_HERE.md)
+for platform-specific steps. Do not double-click `paper_local.html`: use the server
+so the page can access its same-origin data endpoints.
 
-## What it does
+The base application needs only Python's standard library. TWS support is optional:
 
-- `serve.py` serves the page and proxies `/api/*` to `https://localhost:5000/v1/api`,
-  so everything is same-origin and CORS never comes up. The gateway's self-signed
-  certificate is accepted because the connection never leaves your machine.
-- The page uses the gateway for contract search, snapshots, option chains and the
-  futures ladder. Quote fields come from CPAPI field ids (31 last, 84/86 bid/ask,
-  7635 mark, 7296 prior close, and so on).
-- Your account — cash, positions, orders, fills, equity history — is saved to
-  browser localStorage under `paperAccount`. Clearing site data wipes it, so use
-  Export on the History tab if you want a backup.
+```sh
+python3 -m pip install ib_async
+```
 
-## Files
+For free data, use **Account → Market data source → Free data only**, then choose a
+provider. Quotes and option chains can use different providers. For Client Portal:
 
-| File | What it is |
+1. Download the gateway from https://www.interactivebrokers.com/en/trading/ib-api.php.
+2. Start `bin/run.sh root/conf.yaml` (Windows: `bin\run.bat root\conf.yaml`).
+3. Open https://localhost:5000 and log in. Its local self-signed certificate produces
+   an expected browser warning.
+4. Start Paper Desk and leave its source on gateway/automatic fallback.
+
+Use the Account tab to configure portfolios, sources, fees, and simulation settings;
+Trade for tickets and option strategies; Positions and Orders for the book; History
+for activity and exports. The diagnostics line below the title reports source failures.
+
+## Architecture and files
+
+| File | Responsibility |
 |---|---|
-| `paper_local.html` | the whole app, one self-contained file |
-| `serve.py` | local server: static page, REST proxy, WebSocket bridge |
-| `ws.py` | RFC 6455 codec used by the bridge (both directions) |
-| `providers.py` | free market-data providers, used when the gateway is off |
-| `start.command` / `start.bat` | double-click launchers for macOS/Linux and Windows |
+| `paper_local.html` | Entire frontend: gateway/free adapters, streaming, pricing/greeks, simulated fills, margin, portfolio state, UI and persistence |
+| `serve.py` | Threaded HTTP server; page/PWA assets; restricted Client Portal REST proxy; WebSocket bridge; provider endpoints and access-token handling |
+| `providers.py` | Alpaca, Tradier, Finnhub, Twelve Data, Yahoo, Nasdaq, CNBC, Stooq; normalization, fallback and response caching |
+| `tws.py` | Optional `ib_async` connection, subscriptions, contract resolution/cache, chain loading, delayed feeds, depth and diagnostics |
+| `ws.py` | Minimal RFC 6455 socket codec for the bridge |
+| `check.py` | **Live**, read-only TWS diagnostic; not an offline test suite |
+| `test_security.py` | Standard-library offline HTTP/security and adapter regressions |
+| `test_frontend.cjs` | Node built-in tests for inline script syntax and gateway expiry handling |
+| `start.command`, `start.sh`, `start.bat` | Local launchers; Unix scripts are executable in Git |
+| `Dockerfile`, `Procfile`, `render.yaml` | Existing Python-host deployment configuration |
+| `START_HERE.md`, `DEPLOY.md` | Usage and hosting reference |
 
-All three must sit in the same folder.
+Keep the HTML and Python modules together. Runtime flow:
 
-## Accuracy
+```text
+Browser UI / paper engine
+  ├─ /api/* → serve.py → Client Portal REST gateway
+  ├─ /ws → serve.py + ws.py → Client Portal WebSocket
+  └─ /data/* → serve.py → providers.py → provider HTTPS APIs
+                                      └─ tws.py → local TWS/IB Gateway socket
+```
 
-- **Liquidity-class fills.** Every instrument is classified by its 90-day average
-  dollar volume, and the class sets how much of the spread a marketable order
-  really gives up and how long a resting limit waits at the touch. A limit that
-  merely joins the bid does not fill on arrival — it draws a wait from a
-  lognormal fitted to measured fill times (median ~4-8s, mean ~70-85s for large
-  caps) and fills in pieces as the size at the touch turns over. Price trading
-  *through* your limit clears the queue and fills you immediately. Within the
-  displayed size you never do worse than the quote you can see; beyond it you pay
-  for walking the book. All parameters and their sources are on the Account tab.
-- **Streaming quotes.** `serve.py` bridges the browser to the gateway's WebSocket,
-  so prices arrive as ticks rather than being polled. Subscriptions follow whatever
-  the page is showing, the session is kept alive with the gateway's `tic` heartbeat,
-  and a dropped socket reconnects with exponential backoff and re-subscribes. The
-  diagnostics line shows the stream state and a live tick count. REST polling stays
-  as the fallback and backfill.
-- **Tick-driven fills.** A resting order is checked on the tick that moves the
-  price, not on the next poll, so a limit that becomes marketable fills at once.
+### Data models and persistence
 
-- **Weeklies and dailies.** The gateway exposes option *months*; the adapter
-  probes each of the four nearest months for its real maturity dates, so weekly
-  and daily expirations appear alongside the monthly (which is flagged as such).
-- **Bar-reconstructed fills.** Ticks can still be missed while the page is closed
-  or the socket is down, so on every refresh the adapter also pulls 1-minute bars
-  and checks whether the price traded through your order in the gap. Limits fill at the limit, never better — the bar proves the price
-  traded, not that you were at the front of the queue.
-- **Real commissions and fees.** IBKR's commission plus the pass-throughs it is
-  billed: SEC Section 31 at $20.60 per million (sales only, the rate effective
-  4 April 2026), FINRA TAF at $0.000166/share capped at $8.30, options ORF, OCC
-  clearing, exchange fees and option TAF. All editable on the Account tab.
-- **IBKR's own margin, on demand.** "Price a buy with IBKR" on the ticket calls
-  the gateway's what-if endpoint, which returns the real initial and maintenance
-  margin impact and commission for that exact order, computed by IBKR — including
-  portfolio margin and SPAN, which the built-in Reg-T model cannot reproduce.
-  What-if prices an order; it never places one. The paper account still fills
-  against its own book.
+- `S` in the frontend is the account/settings state. `Q` is transient quote state.
+- `S` includes `account`, `settings`, `cash`, `realized`, `positions`, `orders`,
+  `trades`, `cashflows`, `equity`, `watchlist`, `log`, strategy-builder state and fees.
+- `S.books` stores separate portfolios; `S.bookId` identifies the active one.
+  `bookSync()` snapshots the active book before `commit()` writes the complete state.
+  Machine-level settings and provider keys remain shared across portfolios.
+- `localStorage['paperAccount']` holds the saved state **per browser and origin**.
+  Clearing site data deletes it; changing ports/domains or devices does not migrate it.
+  GitHub preserves source code, not users' browser accounts. Keep separate exports.
+- Provider keys entered in the UI are currently saved in that browser state. For a
+  hosted installation prefer the server's `PAPER_PROVIDER_KEY` environment variable.
+  Never commit credentials or account exports containing credentials.
+- `providers._CACHE` is transient server memory. Quote/search/chain request cache keys
+  now distinguish credentials using a SHA-256 fingerprint, not just key presence.
+  Network quotes cache for 15 seconds, searches 300 seconds and chains 90 seconds;
+  TWS quotes/chains use shorter 0.5/2-second TTLs.
+- TWS uses in-memory subscriptions/definitions and the local `.contracts.json` cache.
+  That regenerable runtime file is ignored by Git. No D1, KV, R2 or other database is used.
 
-## When the gateway is not running
+## Current features
 
-The Account tab has a **Market data source** panel with two decisions: whether to use
-the gateway at all, and if not, whether the free data should come from an official
-API you hold a key for or from unofficial scraping that needs no signup.
+### Paper fills, fees and margin
 
-**Official, free, needs a key**
+- Liquidity-class execution based on average dollar volume. Class parameters control
+  spread capture, book walking and resting-limit queue waits. Lognormal waits and
+  partial fills model joining the touch rather than immediately filling every limit.
+  Large-cap queue defaults target roughly 4–8-second medians and 70–85-second means;
+  these are model assumptions, not an execution guarantee.
+- Within displayed size, marketable fills respect the visible quote; beyond it,
+  estimated book walking affects price. Halts, stop triggers, limits and combos have
+  their own fill paths. All orders and fills belong to the browser's simulated book.
+- Streaming gateway ticks update prices and check resting orders immediately. REST
+  polling remains the fallback/backfill; 1-minute historical bars reconstruct some
+  missed limit/stop activity. Bar-based fills cannot reproduce queue priority.
+- Editable commissions and pass-through fees: per-share and options minimums, SEC
+  Section 31, FINRA TAF, ORF, OCC, option exchange/TAF and futures fees. Current defaults
+  include SEC $20.60/million on sales and share TAF $0.000166 capped at $8.30.
+  Verify fee schedules before using them as current broker estimates.
+- Built-in Reg-T-style requirements, option offsets and configurable futures margin
+  tables. These are not a reproduction of portfolio margin or SPAN.
+- **Price a buy with IBKR** calls the broker's what-if endpoint for initial/maintenance
+  margin impact and commission. It previews an order; it does not submit one.
 
-| Provider | Delay | Limits | Chains | Bid/ask |
-|---|---|---|---|---|
-| Alpaca (Basic) | real time (IEX) | 200/min | yes, with greeks | yes |
-| Tradier (sandbox) | 15 min | 120/min | yes, with greeks | yes |
-| Finnhub | ~20 min | 60/min | no | no |
-| Twelve Data | up to 4h | 800/day | no | no |
+### Streaming and option chains
 
-**Which to pick.** Alpaca for quotes: it is the only free source that is both live and
-legitimate, and it publishes a real bid and ask. Paste its credentials as
-`KEYID:SECRET`. But its free options feed is *indicative* rather than full OPRA, so if
-you trade options, point the chain at **Tradier** instead — its sandbox serves real
-chains with greeks across every listed expiry, 15 minutes delayed. The Account tab lets
-you set the two independently: quotes from one provider, chains from another.
+- Gateway WebSocket subscription tracking, heartbeat, exponential reconnection and
+  re-subscription; diagnostics show stream state and tick count.
+- The gateway adapter probes the nearest **eight** option months for actual maturity
+  dates, retaining weekly/daily dates. Further months use a monthly fallback.
+  Probed months are no longer added twice to the expiration list.
+- Calls/puts with greeks and IV. Provider values are used when available; missing
+  greeks are computed with Black–Scholes, or IV is solved from mid price, and computed
+  values are identified in the UI. This approximation is not an American-option model.
+- Expected move from the at-the-money straddle; strategy presets for verticals,
+  straddles, strangles, iron condors, butterflies and covered calls. Covered calls
+  require held shares. Strike width, net delta/theta/vega and expiry break-evens are shown.
+- Gateway futures lookup; separate editable futures margin settings.
 
-One caveat worth knowing about Alpaca's free tier: quotes come from **IEX only**, which
-is a few percent of US volume. They are real-time and genuinely tradeable prices, but
-they are not the national best bid and offer, so the spread you see can be wider than
-the one you would really trade against.
+## Data sources and limitations
 
-**Unofficial, no key**
+The following describes the adapters' intended feeds, not a live verification of
+current provider plans. Entitlements, limits, delays and endpoint availability can change.
 
-| Provider | Delay | Limits | Chains | Bid/ask |
-|---|---|---|---|---|
-| Nasdaq.com | ~15 min | undocumented | **yes** | yes |
-| Yahoo Finance | ~15 min | undocumented | yes | sometimes |
-| CNBC | ~15 min | undocumented | no | yes |
-| Stooq | end of day | be gentle | no | no |
+### Official providers
 
-Nasdaq is the useful addition: it publishes a full option chain, every expiry, with
-bid/ask and open interest, and no key. It does not publish greeks — those get computed
-here with Black-Scholes from the mid price, and are marked as computed.
+| Provider | Intended feed / free-tier constraint | Chains | Bid/ask |
+|---|---|---|---|
+| Alpaca Basic | Real-time IEX; nominal 200 requests/minute | Yes, indicative options feed | Yes |
+| Tradier sandbox | Approximately 15-minute delayed; nominal 120/minute | Yes | Yes |
+| Finnhub | Delayed quote fallback; nominal 60/minute | No | No |
+| Twelve Data | Free-tier daily budget; delay depends on plan | No | No |
 
-These are undocumented endpoints that can change, rate-limit or block without notice,
-and that the provider never agreed to serve. They are here because they work today,
-not because they are dependable. The app labels them unofficial wherever they appear.
+Alpaca expects `KEYID:SECRET`. IEX covers only part of US volume and is not consolidated
+NBBO. Tradier expects one sandbox access token; using Alpaca for quotes and Tradier for
+chains is supported. Do not assume a provider's current plan or chain availability is
+guaranteed by these adapters.
 
-Yahoo is handled as carefully as it can be: the app fetches a session cookie and crumb
-the way a browser does, retries on a stale crumb, fails over between the `query1` and
-`query2` hosts, and backs off on a rate limit. That makes quotes fairly reliable. The
-**option chain is the fragile part** — Yahoo returns 401 for it intermittently, and no
-amount of client-side care fixes that.
+### Unofficial/no-key providers
 
-**What is deliberately not here.** Cboe publishes delayed option chains as public JSON,
-with greeks, for every expiry — technically the best free source there is. Their terms
-forbid it in plain words: *"it is strictly prohibited to download delayed quote table
-data from this web site by using auto-extraction programs/queries and/or software."* So
-it is not in the app. MarketData.app's free tier does allow chains but bills one credit
-per option symbol against a 100/day budget, which one chain load exhausts.
+| Provider | Intended data | Chains | Bid/ask |
+|---|---|---|---|
+| Nasdaq.com | Delayed site endpoints | Yes | Yes |
+| Yahoo Finance | Delayed site endpoints | Yes, fragile | Sometimes |
+| CNBC | Delayed site endpoint | No | Yes |
+| Stooq | End-of-day fallback | No | No |
 
-The honest summary: **no single free no-key chain is dependable**, but there are now two
-of them and the app tries both. If Yahoo 401s, Nasdaq usually carries it. A free Tradier
-sandbox token still removes the uncertainty entirely.
+Nasdaq chains expose bid/ask and open interest but not greeks; the frontend computes
+missing values. Yahoo uses cookie/crumb setup, host failover, retries and rate-limit
+backoff, but option requests can still fail with 401. Undocumented endpoints can change,
+block or disappear without notice. Use an official provider where reliability matters.
 
-## Which IBKR APIs this uses
+Cboe delayed chain scraping is deliberately absent because its published terms prohibit
+automatic extraction. MarketData.app is not integrated; the original design noted that
+per-option credit billing could exhaust a small free allowance in a single chain load.
 
-IBKR publishes four: the **Web API** (Client Portal), the **TWS API**, the **Excel API**
-and **FIX**. This app can use two of them, and you pick per session.
+Failover tries the selected source, usable keyless sources, and only the official source
+whose key was supplied. It does not dial TWS unless TWS was selected. Responses identify
+`served_by`, fallback source and the original failure. Missing bid/ask can be synthesized
+from liquidity-class spreads and is labeled estimated. Delayed quotes mean stale-price
+paper fills. Free-provider futures, streaming and broker what-if requests are refused
+rather than invented.
 
-**TWS API** — the better data, and the default choice if you run TWS. Real-time ticks,
-IBKR's own greeks and implied volatility per contract, complete chains, Level 2 depth,
-and a delayed-feed fallback that works with no subscription at all. It reaches TWS or IB
-Gateway over the local socket via `ib_async`, so both must be running. `serve.py` talks
-to it in-process and hands results to the page.
+## TWS / IB Gateway
 
-**Client Portal Web API** — REST plus a WebSocket on `https://localhost:5000/v1/api`,
-proxied by `serve.py`. Needs the separate Client Portal Gateway and a browser login, and
-gives fewer greeks. Still the one used for what-if margin previews.
+Install `ib_async`, enable socket clients in TWS API settings, and **leave Read-Only API
+ticked**. Keep TWS or IB Gateway running. Select the TWS data source on the Account tab.
+Ports are scanned in order: TWS live 7496, TWS paper 7497, Gateway live 4001, paper 4002.
 
-Excel is DDE/RTD on Windows and FIX is institutional; neither suits a browser page.
+The adapter connects with `readonly=True`, constructs no order objects, and replaces
+order-submitting/cancel/exercise methods on its IB instance with a function that raises.
+Keep broker-side Read-Only API enabled as the authoritative extra safeguard; do not rely
+on a Python library flag alone. Diagnostics report whether the wrapper methods are sealed.
+The offline suite checks the wrapper seal, not the behavior of a live broker session.
 
-### The TWS session is read-only
+The adapter minimizes account/position startup data and cancels account subscriptions
+that the library may open. Streaming subscriptions are reused, definitions are cached,
+and failed connection attempts have a cooldown. Request handling monitors silence/progress;
+contract-definition requests have a longer quiet allowance because IBKR can pace repeats.
+Delayed/frozen data handling and farm/entitlement diagnostics help explain empty chains.
 
-Three independent guarantees, each tested:
+Run `python3 check.py AAPL` to diagnose a real local TWS connection. It defaults to client
+ID 78 so the app's client ID 77 can remain connected. This command is live and can display
+account identifiers; sanitize its output before sharing.
 
-1. it connects with `readonly=True`, so `ib_async` refuses to transmit orders;
-2. nothing in `tws.py` imports or constructs an order object — there is no code path;
-3. `placeOrder`, `cancelOrder`, `reqGlobalCancel` and `exerciseOptions` are replaced on
-   the live session with a function that raises, so a bug cannot reach the wire either.
+### Client Portal session troubleshooting
 
-The diagnostics line reads `TWS: read-only, sealed` when all three hold.
+- HTTP 410 means the brokerage session ended. The frontend attempts reauthentication,
+  waits, checks auth status and retries once. A competing TWS/mobile login may displace it.
+- Paper logins (`DU`/`DF`) may lack shared live-data entitlements. Configure data sharing
+  in Client Portal for the paper username and check the required options subscription.
+  The UI marks paper logins and persistent empty snapshots with a diagnostic.
+- TWS and Client Portal are separate APIs. Client Portal needs its own gateway/login;
+  it is also the current source of broker what-if previews. Excel DDE/RTD and FIX are not
+  integrated.
 
-### If the gateway returns 410
+## HTTP entry points and security
 
-410 means the brokerage session ended underneath you — after idling, or because the same
-username signed in somewhere else (TWS or the mobile app will kick the gateway). The app
-now catches it, calls `/iserver/reauthenticate`, waits for `/iserver/auth/status` to come
-back authenticated, and retries the request once. The diagnostics line counts how many
-times that happened.
+| Entry point | Purpose / parameters |
+|---|---|
+| `GET /`, `/index.html` | UI; `?t=TOKEN` signs in when access protection is enabled |
+| `GET /manifest.json`, `/icon.png`, `/favicon.ico` | Public install/icon metadata; contain no account data |
+| `GET /data/providers` | Supported-provider metadata |
+| `GET /data/quote` | `provider`, `symbol`, optional `key` |
+| `GET /data/search` | `provider`, `q`, optional `key` |
+| `GET /data/chain` | `provider`, `symbol`, optional `expiry`, `key` |
+| `GET /data/selftest` | Live provider diagnostic: `provider`, `symbol`, optional `key` |
+| `GET /data/twsstatus`, `/data/depth?symbol=AAPL` | Local TWS diagnostics/depth |
+| `GET /api/*` | Allowlisted account initialization, snapshots/history, secdef and futures reads |
+| `POST /api/iserver/auth/status` | Gateway auth status |
+| `POST /api/iserver/reauthenticate` | Gateway session recovery (optional `force=true`) |
+| `POST /api/iserver/secdef/search` | Contract lookup JSON body |
+| `POST /api/iserver/account/{accountId}/orders/whatif` | Preview JSON `orders`; never actual submission |
+| `GET /ws` (upgrade) | Gateway streaming bridge |
 
-### If you logged the gateway into a paper account
+`PAPER_ACCESS_TOKEN`, when set, is checked for GET, POST, DELETE and the WebSocket
+upgrade. Cookie names and values must match exactly using constant-time token comparison.
+Login sets an HttpOnly, SameSite=Lax cookie and redirects to remove the token from the
+page URL. HTTPS reverse proxies must set `X-Forwarded-Proto: https` for a Secure cookie
+and preserve the public Host header for same-origin validation.
 
-Paper logins do **not** inherit market data subscriptions from the funded account, so
-snapshots come back empty and option chains fail. Fix it in Client Portal: Settings →
-Account Configuration → Paper Trading Account → *Share real-time market data* → yes, for
-your paper username. Options also need OPRA on the funded account for the sharing to
-produce chains. The app detects a paper login (accounts beginning `DU`/`DF`), shows
-`paper login` in the diagnostics, adds `NO MARKET DATA` when snapshots keep coming back
-empty, and spells out this fix in the chain error.
+Foreign browser origins are rejected, including in local no-token mode. The REST proxy
+is an explicit allowlist: real order submission, modification, confirmation and deletion
+are blocked even for authenticated callers. Request bodies are limited to 1 MiB and
+unsupported/malformed framing is rejected. API/data responses use `Cache-Control: no-store`;
+responses include no-referrer and nosniff policies. Application logs redact query strings
+and no longer print the access token at startup.
 
-## Failover
-
-Sources are tried in order rather than failing outright. If the one you picked is down,
-rate-limited or refusing, the app tries the next usable source — always the keyless ones,
-plus whichever provider your key belongs to — and the diagnostics line names who actually
-served the data. Quotes are cached for 15 seconds, searches for 5 minutes and chains for
-90 seconds, so a free tier's rate limit is much harder to hit.
-
-Where a source publishes no bid/ask, the spread is synthesised from the instrument's
-liquidity class (~2 bps for the most liquid, ~130 for the thinnest) and the quote is
-labelled *estimated* rather than passed off as real depth. Anything delayed means fills
-are struck against stale prices. Futures, streaming and the what-if margin preview need
-the gateway and are refused on a free provider rather than faked.
-
-## Option chain
-
-- Greeks and implied volatility on every strike. Where the source publishes them
-  (Alpaca, Tradier, Yahoo) they are quoted; where it publishes only implied volatility
-  (IBKR) the greeks are computed with Black-Scholes and marked with an asterisk. Where
-  even IV is missing it is solved from the mid price.
-- **Expected move** for the expiry, taken from the at-the-money straddle.
-- **Strategy presets** build the legs for you: call and put verticals, straddle,
-  strangle, iron condor, butterfly and covered call, centred on the money, with a
-  strike-width control. The covered call refuses unless you actually hold the shares.
-- The builder shows **net delta, theta and vega** for the whole position and the
-  **break-even points**, scanned across the payoff at expiry.
+These are incremental safeguards, **not a full security audit or a multi-user auth system**.
+The gateway session is shared by the Python process. WebSocket messages still pass through
+a minimal bridge; message filtering/protocol hardening is a follow-up. Browser-entered
+provider keys still travel in query parameters: reverse-proxy/access logs must be configured
+to redact them, or use a server environment key instead. The initial login URL also
+contains the token before redirect, so host-side logs require care. Gateway TLS verification
+is disabled for its local self-signed certificate; do not point it at an untrusted remote
+endpoint. Public hosting requires HTTPS, an access token and a trusted reverse proxy.
 
 ## Configuration
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `PAPER_PORT` | `8765` | port the page is served on |
-| `PAPER_GATEWAY` | `https://localhost:5000/v1/api` | gateway base URL |
-| `PAPER_GATEWAY_WS` | derived from `PAPER_GATEWAY` | gateway WebSocket URL |
-| `PAPER_NO_BROWSER` | unset | set to `1` to stop it opening a browser tab |
-| `PAPER_PROVIDER` | `alpaca` | default fallback provider |
-| `PAPER_PROVIDER_KEY` | unset | API key for providers that need one |
+| `PAPER_PORT` | `8765` | HTTP port |
+| `PORT` | unset | Host-provided port, takes precedence over PAPER_PORT |
+| `PAPER_BIND` | `127.0.0.1` | Set `0.0.0.0` only when external access is intended |
+| `PAPER_ACCESS_TOKEN` | unset | Shared private-app login token; required for public hosting |
+| `PAPER_GATEWAY` | `https://localhost:5000/v1/api` | Trusted local gateway base URL |
+| `PAPER_GATEWAY_WS` | derived from gateway | Gateway WebSocket URL |
+| `PAPER_NO_BROWSER` | unset | `1` disables automatic browser opening |
+| `PAPER_PROVIDER` | `alpaca` | Server fallback provider when the request does not specify one |
+| `PAPER_PROVIDER_KEY` | unset | Server-side provider credentials |
+| `PAPER_TWS_HOST` | `127.0.0.1` | TWS socket host |
+| `PAPER_TWS_PORTS` | `7496,7497,4001,4002` | Ports to probe |
+| `PAPER_TWS_CLIENT_ID` | `77` | App TWS client ID (`check.py` defaults to 78) |
+| `PAPER_TWS_DATA` | `auto` | `auto`, `live` or `delayed` |
 
-## Caveat
+Additional tuning variables are documented beside their definitions in `tws.py`, including
+silence allowances, chain paint intervals, line limits, definition TTL and reconnect cooldown.
+The frontend explicitly sends its saved provider, so changing only the server default does
+not override an existing browser's provider selection.
 
-The adapter was built against IBKR's published Client Portal API shapes and
-tested against a stub that mimics them, including a stub WebSocket server — 41
-tests across the local build covering search, quote parsing, chains, weeklies,
-what-if, tick fills, bar fills, socket drop and reconnect, provider fallback and
-persistence. The free providers are likewise coded against their documented shapes
-and tested against a stub, not against the live services. It
-has **not** been run against a live gateway — if an endpoint answers differently in practice, the diagnostics line
-under the account name shows the failing call and its status code.
+## Verification
+
+Run from the repository root:
+
+```sh
+python3 -m unittest -v
+node --test test_frontend.cjs
+python3 -m compileall -q serve.py providers.py tws.py ws.py check.py
+```
+
+Node is needed only for frontend tests, not to run the application. Python tests create a
+short-lived localhost HTTP server and mock all brokerage/provider calls. No credentials,
+package installation or internet access are needed.
+
+**2026-09-08:** 16 Python tests and 3 Node tests passed on Python 3.13 / Node 22. Coverage
+includes authentication for each method, exact cookie matching, login redirect/cookie flags,
+origin checks, public assets, allowed previews/data routes, blocked real order routes,
+body limits/framing, credential-specific response caching, log redaction, finite numeric
+normalization, the TWS wrapper seal and duplicate/weekly expiration handling.
+
+The previous README mentioned 41 stub tests, but those test files were not present in the
+initial GitHub checkout. Do not treat that historical count as reproducible coverage.
+No live IBKR/TWS/provider integration or full interactive browser test was run during this
+review. Offline tests do not establish fill realism or broker compatibility.
+
+## Continuation notes / recommended next work
+
+1. **Financial correctness first:** `settleExpired()` currently assumes a missing
+   underlying quote means worthless and uses a current quote rather than historical
+   expiry settlement. It also cash-settles options instead of modeling physical exercise
+   and assignment. Review this before relying on expiry P&L. Add settlement, margin,
+   stop/limit/bar-fill and multi-portfolio persistence tests before changing that engine.
+2. **WebSocket robustness:** `ws.connect()` does not verify Sec-WebSocket-Accept and can
+   discard the first frame if it arrives with upgrade headers. `recv_frame()` needs
+   tests for interleaved control frames, fragmentation, size bounds, timeouts and clean
+   shutdown. Consider a maintained transport dependency or carefully test fixes.
+3. **Data integrity:** improve localStorage schema validation/recovery, key handling,
+   cache size bounds and concurrent duplicate-request suppression. Browser/account data
+   is not backed up by pushing this repository.
+4. **Live integration validation:** test TWS connection/subscriptions and gateway/proxy
+   behavior against actual entitled accounts, read-only. Recheck provider terms, rates,
+   delays, fee schedules and response shapes. No live credentials are in this repository.
+5. **Refactoring:** only split the large inline frontend after adding trading-engine/UI
+   tests. Preserve the current vanilla JS + Python architecture unless a migration is
+   explicitly requested. Cloudflare hosting would require a separate design decision.
+
+### Preservation workflow (user requirement)
+
+Commit and push all non-sensitive source, regression tests and continuation/reference
+notes to the existing repository's **main** branch at useful checkpoints. A local commit
+alone is insufficient if the sandbox disappears; verify the push succeeded. Do not create
+a replacement repository or force-push over remote work. Files already tracked in Git,
+including read-only reference documentation, remain preserved without artificial edits.
+
+Keep secrets, environments, dependencies, generated caches and private account exports out
+of Git. No external reference files were needed for this review; its findings are recorded
+here. Read this README, START_HERE.md and DEPLOY.md when resuming in a fresh checkout.

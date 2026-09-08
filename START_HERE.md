@@ -2,7 +2,10 @@
 
 ## The short version
 
-**On your phone:** nothing to install. Open the artifact link, and that's the whole app.
+**On your phone:** open the URL of your running, hosted Paper Desk instance. This
+repository does not include a hosted artifact URL; see `DEPLOY.md` for Python-host
+options. The server must remain running. A phone's browser has its own separate
+paper account; GitHub does not back up browser storage.
 
 **On a Mac:** unzip the folder, then **right-click `start.command` → Open** (right-click
 the first time, not a double-click — macOS blocks anything downloaded from the internet
@@ -38,11 +41,11 @@ Python's standard library.
 Double-clicking `paper_local.html` will show you the page, but it will have no data
 and nothing will work. Here's why, because it matters:
 
-A browser will not let a page opened from your hard drive fetch data from another
-website — that's a security rule called CORS, and it has no override. `serve.py`
-exists purely to sit between the page and the data: it serves the page from
-`localhost` and forwards the data requests on its behalf, so the browser is happy.
-It's about 200 lines and uses nothing but Python's standard library.
+The page calls same-origin `/api` and `/data` endpoints that do not exist when it
+is opened from disk. Browser cross-origin restrictions also prevent many direct
+provider requests. `serve.py` supplies those endpoints, serves the page from
+`localhost`, and forwards allowed data requests. The base server uses only
+Python's standard library; the optional TWS adapter needs `ib_async`.
 
 So: **always start `serve.py`, never open the HTML directly.**
 
@@ -50,7 +53,7 @@ So: **always start `serve.py`, never open the HTML directly.**
 
 ## Which data do you want?
 
-You have three choices, and you can switch between them any time on the Account tab.
+You have four choices, and you can switch between them any time on the Account tab.
 
 ### 1. Free, no signup, no key — unofficial
 
@@ -63,7 +66,7 @@ backoff, and a cache so it asks less often.
 
 **But the option chain will fail sometimes**, with a 401 from Yahoo, and there is no
 client-side fix for that. If you mostly want option chains, skip to option 2 — a free
-Tradier token takes two minutes and never does this.
+Tradier token avoids Yahoo's cookie/crumb problem, though any provider can still fail.
 
 ### 2. Free, official, with a key — recommended
 
@@ -104,10 +107,11 @@ implied volatility on every strike, every listed expiry, and Level 2 depth.
 Ports are found automatically: TWS live 7496, TWS paper 7497, Gateway live 4001,
 Gateway paper 4002.
 
-**It cannot trade.** The session connects with `readonly=True`, so ib_async itself
-refuses to transmit orders; nothing in the adapter imports or builds an order object;
-and every order-sending method on the live session is replaced with one that raises. The
-diagnostics line says `TWS: read-only, sealed` when all three are in force.
+**It is designed for paper trading only.** The adapter connects with `readonly=True`,
+constructs no order objects, and replaces order-sending methods on its IB instance
+with a function that raises. Keep **Read-Only API** enabled in TWS as the broker-side
+safeguard; a library flag alone is not an order-transmission guarantee. The diagnostics
+line reports `TWS: read-only, sealed` for the wrapper protections.
 
 **No market data subscription?** Doesn't matter here. If the live feed comes back empty
 the adapter switches to IBKR's delayed feed, which needs no entitlement, and labels the

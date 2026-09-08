@@ -1,14 +1,34 @@
 # Putting Paper Desk on the internet
 
-Running it from GitHub gives you a URL that works on your iPhone anywhere, with no
-laptop switched on. Three things to know before you start:
+Deploying this GitHub repository to a Python-capable host can give you a URL that
+works on your iPhone without your laptop running. GitHub alone does not run the server.
+This stack cannot use the platform's Cloudflare preview/one-click deploy as-is.
+No production URL was verified during the 2026-09-08 review.
+
+Three things to know before you start:
 
 1. **The IBKR gateway cannot be reached from a cloud host.** It lives on your machine.
    A deployed copy runs on free provider data only. Keep the local copy for gateway work.
-2. **Put a token on it.** `PAPER_ACCESS_TOKEN` gates the whole app; without it your API
-   key is behind an open URL. Then you open `https://your-app/?t=YOUR_TOKEN` once and a
-   cookie keeps you signed in.
-3. **Your provider key lives in the host's environment**, never in the repo.
+2. **Put a token on it.** `PAPER_ACCESS_TOKEN` protects the page, data, REST proxy and
+   WebSocket upgrade (only install icons/manifest are public). Without it, anyone who
+   can reach the server can consume your data-provider quota. Open
+   `https://your-app/?t=YOUR_TOKEN` once: it sets an HttpOnly cookie and redirects to
+   remove the token from the page URL. Use a strong, URL-safe random token.
+3. **Your provider key lives in the host's environment**, never in the repo. Keep
+   `.env` files, credentials and private browser-account exports out of Git.
+
+Use HTTPS and a trusted reverse proxy that preserves the public `Host` header and
+sets `X-Forwarded-Proto: https` (which enables the Secure cookie flag). Application
+logs redact query strings, but your hosting proxy must also avoid logging query
+credentials: the initial login URL contains a token, and browser-entered provider
+keys currently use query parameters. Prefer a server environment key.
+
+The REST proxy allows only the UI's data/session endpoints and what-if previews,
+not real order writes. This is a single-user app sharing one gateway session, not
+a multi-user brokerage service. See README.md for remaining security/transport risks.
+
+**Backups:** pushing source to GitHub does not preserve the account stored in your
+phone's or desktop's localStorage. Keep separate private account exports.
 
 ## Render (easiest)
 
@@ -25,7 +45,9 @@ Free instances sleep after inactivity; the first hit takes a few seconds to wake
 ## Hugging Face Spaces
 
 New Space → **Docker** → push this folder. The `Dockerfile` is here. Set
-`PAPER_PROVIDER_KEY` and `PAPER_ACCESS_TOKEN` as Space secrets. Spaces stay awake.
+`PAPER_PROVIDER_KEY` and `PAPER_ACCESS_TOKEN` as Space secrets. Configure the port
+expected by the host (Spaces typically use 7860 via `PORT` or `app_port`); sleep and
+availability depend on the hosting plan.
 
 ## Fly.io / Railway / any Docker host
 
