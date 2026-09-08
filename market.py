@@ -204,11 +204,12 @@ class MarketEngine:
         for port in ports:
             try:
                 await ib.connectAsync(host,port,clientId=int(os.environ.get('PAPER_TWS_CLIENT_ID','77')),
-                                      timeout=2,readonly=True,fetchFields=m.StartupFetchNONE)
+                                      timeout=15,readonly=True,fetchFields=m.StartupFetchNONE)
                 if ib.isConnected():
                     self._ib = ib
                     ib.client.cancelPositions()
-                    ib.reqAccountUpdates(False,'')
+                    # Unsubscribe through Client, not IB's blocking subscription helper.
+                    ib.client.reqAccountUpdates(False,'')
                     for name in ('positions','portfolio','accountValues'):
                         store = getattr(ib.wrapper,name,None)
                         if hasattr(store,'clear'):
