@@ -4,7 +4,7 @@ services:
     name: paper-desk
     runtime: python
     plan: free
-    buildCommand: "echo no build step - standard library only"
+    buildCommand: "pip install -r requirements.txt"
     startCommand: "python serve.py"
     envVars:
       - key: PAPER_BIND

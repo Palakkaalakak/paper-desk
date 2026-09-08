@@ -2,6 +2,16 @@
 
 ## The short version
 
+**Current default: IB Gateway streaming.** First run `python3 -m pip install -r
+requirements.txt` (Windows: `python -m pip install -r requirements.txt`), then open
+IB Gateway with its Read-Only API enabled. Start Paper Desk below. The app connects
+and streams quotes automatically; you do not need to press Refresh or enable Auto.
+The server and browser tab must remain running for paper order processing.
+
+The ticket has quantity presets, Bid/Mid/Ask limit shortcuts and opt-in Alt+B/Alt+S
+paper-order hotkeys. Stale, frozen, delayed or disconnected Gateway quotes cannot
+fill orders. The status line explains pending prices or data-line limits.
+
 **On your phone:** open the URL of your running, hosted Paper Desk instance. This
 repository does not include a hosted artifact URL; see `DEPLOY.md` for Python-host
 options. The server must remain running. A phone's browser has its own separate
@@ -31,8 +41,9 @@ xcode-select --install
 ```
 
 That installs Apple's developer tools, which include Python 3. Or download it from
-<https://www.python.org/downloads/>. Nothing else needs installing — the app uses only
-Python's standard library.
+<https://www.python.org/downloads/>. Then install the IB Gateway adapter with
+`python3 -m pip install -r requirements.txt`. The base HTTP server uses the standard
+library; live Gateway streaming needs the pinned `ib_async` dependency.
 
 ---
 

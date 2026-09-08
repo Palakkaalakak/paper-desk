@@ -1,7 +1,8 @@
 // Development recovery only. Never started by the production application.
 // Run with: pm2 start checkpoint.cjs --name paper-recovery
 // Stop with: pm2 delete paper-recovery
-// New files must be deliberately registered with `git add -N file` or git add.
+// Includes tracked files and new source/tests; excludes ignored/private/runtime files.
+// Credentials must never be embedded in source code.
 const {spawn} = require('node:child_process');
 const path = require('node:path');
 const fs = require('node:fs');
@@ -27,7 +28,10 @@ async function checkpoint() {
     const gitDir = await git(['rev-parse', '--absolute-git-dir']);
     index = path.join(gitDir, 'recovery-index-' + process.pid);
     const env = {GIT_INDEX_FILE: index};
-    const files = (await git(['ls-files', '-z'])).split('\0').filter(Boolean).filter(f =>
+    const tracked = (await git(['ls-files', '-z'])).split('\0').filter(Boolean);
+    const fresh = (await git(['ls-files', '--others', '--exclude-standard', '-z'])).split('\0').filter(f =>
+      /\.(?:py|cjs|mjs|js|ts|tsx|html|css|md)$/.test(f) && !/(?:secret|credential|private|export)/i.test(f));
+    const files = [...new Set([...tracked,...fresh])].filter(f =>
       !/(^|\/)(\.env(?:\.|$)|\.dev\.vars|\.contracts\.json|node_modules|__pycache__|\.venv)/.test(f) &&
       !/\.(?:pem|key|log|pyc|zip|tar\.gz)$/.test(f));
     let parent;

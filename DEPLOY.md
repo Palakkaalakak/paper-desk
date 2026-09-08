@@ -5,6 +5,15 @@ works on your iPhone without your laptop running. GitHub alone does not run the 
 This stack cannot use the platform's Cloudflare preview/one-click deploy as-is.
 No production URL was verified during the 2026-09-08 review.
 
+**For the new IB Gateway workstation:** run Paper Desk on the Gateway machine,
+or provide a trusted private connection to it. Never expose the Gateway socket to
+the public internet. Hosted free-provider use is still available through Account
+settings, but it is not equivalent to the default live Gateway mode.
+
+The streaming endpoint `/data/stream` uses Server-Sent Events. Reverse proxies
+must disable buffering and allow connections beyond the 10-second heartbeat.
+The app and browser tab must stay running; this is not unattended server-side trading.
+
 Three things to know before you start:
 
 1. **The IBKR gateway cannot be reached from a cloud host.** It lives on your machine.
@@ -34,7 +43,7 @@ phone's or desktop's localStorage. Keep separate private account exports.
 
 1. Push this folder to a GitHub repo.
 2. <https://render.com> → New → Web Service → connect the repo.
-3. It reads `render.yaml`: free plan, `python serve.py`, no build step.
+3. It reads `render.yaml`: free plan, installs `requirements.txt`, then runs `python serve.py`.
 4. Set `PAPER_PROVIDER_KEY` in the dashboard (Alpaca: `KEYID:SECRET`). Copy the
    generated `PAPER_ACCESS_TOKEN`.
 5. Open `https://your-app.onrender.com/?t=TOKEN` on your iPhone → Share → **Add to
