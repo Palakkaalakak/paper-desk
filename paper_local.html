@@ -688,8 +688,9 @@ function callFREE(tool, input){
   if(tool==='search_contracts'){
     return freeFetch('search', {q:input.query}).then(function(j){
       return {results: (j.results||[]).map(function(r){
-        FREE.symOf[freeId(r.symbol)] = r.symbol;
-        return {underlying_contract_id: freeId(r.symbol), symbol: r.symbol,
+        var cid = (FREE.provider==='tws' && r.conid) ? Number(r.conid) : freeId(r.symbol);
+        FREE.symOf[cid] = r.symbol;
+        return {underlying_contract_id: cid, symbol: r.symbol,
                 description: r.name||'', exchange: r.exchange||'', country_code:'',
                 sections: [{security_type: (r.type==='ETF'||r.type==='EQUITY')?'STK':(r.type||'STK')}]};
       })};
@@ -765,7 +766,7 @@ function callFREE(tool, input){
         if(o.strike==null) return;
         if(input.min_strike!=null && o.strike<input.min_strike) return;
         if(input.max_strike!=null && o.strike>input.max_strike) return;
-        var id = freeId(o.symbol);
+        var id = o.conid ? Number(o.conid) : freeId(o.symbol);
         byStrike[o.strike] = byStrike[o.strike]||{strike:String(o.strike)};
         byStrike[o.strike][right==='C'?'call_contract_id':'put_contract_id'] = id;
         byStrike[o.strike][right==='C'?'call_description':'put_description'] =
@@ -1222,24 +1223,22 @@ function onTick(conid, patch){
   if(q.bid!=null && q.ask!=null && q.ask>=q.bid) q.mid=(q.bid+q.ask)/2;
   if(q.last==null && q.mid!=null) q.last=q.mid;
   if(q.last!=null && q.prevClose==null && q.change!=null) q.prevClose = q.last - q.change;
-  q.at = Date.now();
+  q.at = patch.at || Date.now();
   Q[conid] = q;
   TICKS++;
   /* a tick can make a resting order marketable - check straight away */
   var filled = false;
-  for(var i=0;i<S.orders.length;i++){
-    var o=S.orders[i];
-    if(o.status!=='working') continue;
-    if(o.conid===conid || (o.legs||[]).some(function(l){ return l.conid===conid; })){
-      if(tryFill(o)) filled = true;
-    }
+  var candidates = ordersFor(conid);
+  for(var i=0;i<candidates.length;i++){
+    var o=candidates[i];
+    if(o.status==='working' && tryFill(o)) filled=true;
   }
   if(filled){ save(); return; }
   tickDirty = true;
   if(!tickTimer) tickTimer = setTimeout(function(){
     tickTimer=null;
     if(tickDirty){ tickDirty=false; renderLive(); }
-  }, 250);
+  }, 100);
 }
 function startStream(){
   if(!LOCAL) return;
@@ -1248,6 +1247,11 @@ function startStream(){
 }
 function syncSubs(){
   if(!LOCAL) return;
+  if(usingTws()){
+    if(!FEED.timer) FEED.timer=setTimeout(function(){ FEED.timer=null; feedSync(false); },50);
+    return;
+  }
+  if(usingFree()) return;
   var u = universe();
   streamSubscribe(u.map(function(i){ return i.conid; }));
 }
@@ -1316,6 +1320,7 @@ function parseSnap(p){
   return q;
 }
 function fetchQuote(inst){
+  if(usingTws()) return feedSync(false).then(function(){ return Q[inst.conid]||null; });
   if(LOCAL && usingFree() && (inst.secType==='OPT'||inst.secType==='FOP')){
     var cached = freeOptionQuote(inst.conid);
     if(cached){ var pq=parseSnap(cached); if(pq){ Q[inst.conid]=pq; } return Promise.resolve(pq); }
@@ -1331,20 +1336,48 @@ function fetchQuote(inst){
   });
 }
 function universe(){
-  var m = {}, i;
-  for(i=0;i<S.positions.length;i++){ if(S.positions[i].qty!==0) m[S.positions[i].conid]=S.positions[i]; }
-  for(i=0;i<S.orders.length;i++){ if(S.orders[i].status==='working') m[S.orders[i].conid]=S.orders[i]; }
-  for(i=0;i<S.watchlist.length;i++) m[S.watchlist[i].conid]=S.watchlist[i];
-  for(i=0;i<S.builder.legs.length;i++) m[S.builder.legs[i].conid]=S.builder.legs[i];
-  if(sel) m[sel.conid]=sel;
-  var und={};
-  for(var k0 in m){ var u=m[k0].underConid; if(u && !m[u]) und[u]={conid:u, symbol:m[k0].root||'underlying', secType:'STK', mult:1}; }
-  for(var k1 in und) m[k1]=und[k1];
-  var out=[]; for(var k in m) out.push({conid:Number(k), symbol:m[k].symbol, secType:m[k].secType||'STK', mult:m[k].mult||1, exch:m[k].exch,
-    right:m[k].right, strike:m[k].strike, expiry:m[k].expiry, underConid:m[k].underConid, root:m[k].root});
-  return out;
+  var m=new Map();
+  function add(x){
+    if(!x||!x.conid||!x.symbol||m.has(Number(x.conid)))return;
+    m.set(Number(x.conid),{conid:Number(x.conid),symbol:x.symbol,secType:x.secType||'STK',mult:x.mult||1,
+      exch:(!x.exch||x.exch==='FREE')?'SMART':x.exch,right:x.right,strike:x.strike,expiry:x.expiry,underConid:x.underConid,root:x.root});
+  }
+  function book(b){
+    (b.orders||[]).forEach(function(o){if(o.status==='working'){if(o.legs)o.legs.forEach(add);else add(o);}});
+    (b.positions||[]).forEach(function(p){if(p.qty)add(p);});
+    (b.watchlist||[]).forEach(add);
+  }
+  add(sel); S.builder.legs.forEach(add); book(S);
+  if(S.chainOpen){
+    var d=CH[S.builder.expId];
+    ((d&&d.contracts)||[]).forEach(function(r){
+      ['C','P'].forEach(function(right){
+        var call=right==='C'; add({conid:call?r.call_contract_id:r.put_contract_id,
+          symbol:(call?r.call_description:r.put_description)||S.builder.underSym,
+          secType:'OPT',mult:100,exch:'SMART',right:right,strike:Number(r.strike),expiry:S.builder.expDate,
+          underConid:S.builder.underConid,root:S.builder.underSym});
+      });
+    });
+  }
+  (S.books||[]).forEach(function(b){if(b.id!==S.bookId)book(b.data||{});});
+  Array.from(m.values()).forEach(function(x){if(x.underConid&&x.root)add({conid:x.underConid,symbol:x.root,secType:'STK',mult:1});});
+  return Array.from(m.values());
+}
+var ORDER_INDEX={list:null,length:0,byContract:new Map()};
+function ordersFor(conid){
+  if(ORDER_INDEX.list!==S.orders||ORDER_INDEX.length!==S.orders.length){
+    var index=new Map();
+    S.orders.forEach(function(o){
+      if(o.status!=='working')return;
+      var ids=new Set(o.legs?o.legs.map(function(l){return l.conid;}):[o.conid]);
+      ids.forEach(function(cid){if(!index.has(cid))index.set(cid,[]);index.get(cid).push(o);});
+    });
+    ORDER_INDEX={list:S.orders,length:S.orders.length,byContract:index};
+  }
+  return ORDER_INDEX.byContract.get(conid)||[];
 }
 function refresh(){
+  if(usingTws()) return feedSync(true).then(function(){ renderLive(); });
   if(LOCAL) syncSubs();
   var list = universe();
   if(!list.length){ render(); return Promise.resolve(); }
@@ -2118,6 +2151,7 @@ function loadStrikes(){
 }
 function chainQuotes(){
   var d = CH[S.builder.expId]; if(!d) return Promise.resolve();
+  if(usingTws()) return feedSync(false).then(function(){ setStatus('Chain subscribed; prices update continuously'); renderLive(); });
   var ex = d.exchange||'SMART', ids=[];
   (d.contracts||[]).forEach(function(r){ ids.push({conid:r.call_contract_id, exch:ex, secType:'OPT'}); ids.push({conid:r.put_contract_id, exch:ex, secType:'OPT'}); });
   setStatus('pricing '+ids.length+' contracts...');
