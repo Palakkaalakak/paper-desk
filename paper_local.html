@@ -2368,7 +2368,8 @@ function renderDiag(){
 
 /* A tick must not rebuild the ticket - retyping a quantity because the market
    moved is intolerable. Only the price-bearing nodes are refreshed. */
-function putHTML(el,html){ if(el && el.innerHTML!==html)el.innerHTML=html; }
+var HTML_CACHE=new WeakMap();
+function putHTML(el,html){if(el&&HTML_CACHE.get(el)!==html){el.innerHTML=html;HTML_CACHE.set(el,html);}}
 function renderLive(){
   if(document.hidden)return;
   renderStats(); renderDiag(); updateTradeButtons();
@@ -2386,7 +2387,7 @@ function renderLive(){
     return;
   }
   if(tab==='acct') return;              /* full of editable fields - leave it alone */
-  $('view').innerHTML = viewFor(tab);
+  putHTML($('view'),viewFor(tab));
 }
 
 /* ---------- render ---------- */
@@ -2975,20 +2976,23 @@ function applySide(){
   document.body.classList.toggle('side-puts',  S.chainSide==='puts');
 }
 function render(){
-  document.body.dataset.tab=tab;
+  if(document.body.dataset.tab!==tab)document.body.dataset.tab=tab;
   if(LOCAL) syncSubs();
   applySide();
   renderTabs(); renderStats(); renderDiag();
   var v=$('view');
-  var focused=document.activeElement, focusId=focused&&focused.id;
-  var field=focused&&/^(INPUT|TEXTAREA)$/.test(focused.tagName)?{value:focused.value,start:focused.selectionStart,end:focused.selectionEnd}:null;
-  var scrolls=Array.from(v.querySelectorAll('.tblwrap')).map(function(el){return [el.scrollTop,el.scrollLeft];});
-  putHTML(v,viewFor(tab));
-  if(field && focusId && $(focusId)){
-    var input=$(focusId);input.value=field.value;input.focus({preventScroll:true});
-    if(field.start!=null)try{input.setSelectionRange(field.start,field.end);}catch(e){}
+  var nextHTML=viewFor(tab);
+  if(HTML_CACHE.get(v)!==nextHTML){
+    var focused=document.activeElement, focusId=focused&&focused.id;
+    var field=focused&&/^(INPUT|TEXTAREA)$/.test(focused.tagName)?{value:focused.value,start:focused.selectionStart,end:focused.selectionEnd}:null;
+    var scrolls=Array.from(v.querySelectorAll('.tblwrap')).map(function(el){return [el.scrollTop,el.scrollLeft];});
+    putHTML(v,nextHTML);
+    if(field && focusId && $(focusId)){
+      var input=$(focusId);input.value=field.value;input.focus({preventScroll:true});
+      if(field.start!=null)try{input.setSelectionRange(field.start,field.end);}catch(e){}
+    }
+    Array.from(v.querySelectorAll('.tblwrap')).forEach(function(el,i){if(scrolls[i]){el.scrollTop=scrolls[i][0];el.scrollLeft=scrolls[i][1];}});
   }
-  Array.from(v.querySelectorAll('.tblwrap')).forEach(function(el,i){if(scrolls[i]){el.scrollTop=scrolls[i][0];el.scrollLeft=scrolls[i][1];}});
   if(tab==='trade' && sel){
     var t=$('oType');
     if(t){ t.onchange=function(){ var lm=t.value==='LMT'||t.value==='STPLMT', st=t.value==='STP'||t.value==='STPLMT';
