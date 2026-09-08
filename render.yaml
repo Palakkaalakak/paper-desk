@@ -1,0 +1,19 @@
+# Render.com — free web service, deploys straight from a GitHub repo.
+services:
+  - type: web
+    name: paper-desk
+    runtime: python
+    plan: free
+    buildCommand: "echo no build step - standard library only"
+    startCommand: "python serve.py"
+    envVars:
+      - key: PAPER_BIND
+        value: 0.0.0.0
+      - key: PAPER_NO_BROWSER
+        value: "1"
+      - key: PAPER_PROVIDER
+        value: alpaca
+      - key: PAPER_ACCESS_TOKEN
+        generateValue: true      # so the URL is not open to the world
+      - key: PAPER_PROVIDER_KEY
+        sync: false              # paste KEYID:SECRET in the Render dashboard

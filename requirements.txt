@@ -1,0 +1,4 @@
+# The app itself needs nothing but the Python standard library.
+# Optional: the TWS API data source (Account tab > Market data source > your own TWS).
+#   pip install ib_async
+ib_async>=2.1.0; extra == "tws"

@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+.DS_Store
+paper_full.html
+app.js
+local_app.js
+node_modules/
+.contracts.json
