@@ -10,7 +10,7 @@ shape the gateway adapter produces.
     search: /data/search?provider=finnhub&q=apple&key=...
     chain:  /data/chain?provider=yahoo&symbol=AAPL[&expiry=1766006400]
 """
-import json, urllib.request, urllib.parse, urllib.error, ssl, csv, io
+import json, urllib.request, urllib.parse, urllib.error, ssl, csv, io, math
 
 UA = ('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 '
       '(KHTML, like Gecko) Chrome/126.0 Safari/537.36')
@@ -240,7 +240,7 @@ def _json(url, timeout=15, yahoo=False):
 def _f(v):
     try:
         f = float(v)
-        return f if f == f else None          # drop NaN
+        return f if math.isfinite(f) else None  # JSON cannot represent NaN or infinity
     except (TypeError, ValueError):
         return None
 

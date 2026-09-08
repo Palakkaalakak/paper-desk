@@ -366,7 +366,7 @@ function callGW(tool, input){
               exps.push({id: uc+'|'+r.m+'|'+exch+'|'+d, date:d, regular:(d===monthly), trading_class:''});
             });
           });
-          months.slice(4).forEach(function(m){
+          months.slice(near.length).forEach(function(m){
             exps.push({id: uc+'|'+m+'|'+exch+'|'+gwThirdFriday(m), date:gwThirdFriday(m), regular:true, trading_class:''});
           });
           exps.sort(function(a,c){ return String(a.date).localeCompare(String(c.date)); });

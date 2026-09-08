@@ -6,3 +6,21 @@ app.js
 local_app.js
 node_modules/
 .contracts.json
+
+# Credentials and local runtime state must never be pushed.
+.env
+.env.*
+!.env.example
+.dev.vars
+.dev.vars.*
+.venv/
+venv/
+.pytest_cache/
+.coverage
+htmlcov/
+*.log
+*.pid
+*.pem
+*.key
+*.tar.gz
+*.zip

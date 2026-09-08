@@ -17,7 +17,8 @@ Requires the IBKR Client Portal Gateway running and logged in:
 Standard library only - nothing to install.
 """
 import http.server, socketserver, urllib.request, urllib.error, urllib.parse, ssl, os, sys, json
-import threading, webbrowser, time
+import threading, webbrowser, time, hashlib, hmac, re
+from http.cookies import SimpleCookie, CookieError
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import ws as wsproto
 import providers
@@ -69,6 +70,28 @@ CTX.verify_mode = ssl.CERT_NONE          # the gateway ships a self-signed cert
 
 COOKIES = {}                              # gateway session, shared by REST and WS
 COOKIE_LOCK = threading.Lock()
+MAX_PROXY_BODY = 1024 * 1024
+
+# Only the data/session operations used by the UI may reach the broker.
+# Paper orders stay in the browser; even an authenticated caller cannot submit,
+# modify, confirm or cancel a real order through this proxy.
+GATEWAY_GET_PATHS = frozenset({
+    '/iserver/accounts', '/iserver/marketdata/snapshot',
+    '/iserver/marketdata/history', '/iserver/secdef/strikes',
+    '/iserver/secdef/info', '/trsrv/secdef', '/trsrv/futures',
+})
+GATEWAY_POST_PATHS = frozenset({
+    '/iserver/auth/status', '/iserver/reauthenticate', '/iserver/secdef/search',
+})
+
+
+def gateway_allowed(method, path):
+    if method == 'GET':
+        return path in GATEWAY_GET_PATHS
+    if method == 'POST':
+        return (path in GATEWAY_POST_PATHS or
+                re.fullmatch(r'/iserver/account/[A-Za-z0-9_-]+/orders/whatif', path) is not None)
+    return False
 
 
 def remember_cookies(headers):
@@ -94,14 +117,16 @@ class Handler(http.server.BaseHTTPRequestHandler):
     protocol_version = 'HTTP/1.1'
 
     def log_message(self, fmt, *args):
-        line = fmt % args
+        # Provider credentials and one-time login tokens must never reach logs.
+        line = re.sub(r'\?[^\s"]*', '?[redacted]', fmt % args)
         if '/api/' not in line and '/ws' not in line:
             sys.stderr.write('%s - %s\n' % (self.address_string(), line))
 
     # ---------- static page ----------
     def _page(self):
         try:
-            data = open(PAGE, 'rb').read()
+            with open(PAGE, 'rb') as page:
+                data = page.read()
         except FileNotFoundError:
             self.send_error(500, 'paper_local.html is missing next to serve.py')
             return
@@ -115,7 +140,17 @@ class Handler(http.server.BaseHTTPRequestHandler):
     # ---------- REST proxy ----------
     def _proxy(self, method):
         path = self.path[len('/api'):] or '/'
-        length = int(self.headers.get('Content-Length') or 0)
+        if not gateway_allowed(method, urllib.parse.urlsplit(path).path):
+            return self._reject(403, 'Only market data, session checks and what-if previews are allowed')
+        lengths = self.headers.get_all('Content-Length') or []
+        if self.headers.get('Transfer-Encoding') or len(lengths) > 1:
+            return self._reject(400, 'Unsupported request body framing')
+        raw_length = lengths[0] if lengths else '0'
+        if not re.fullmatch(r'[0-9]+', raw_length) or len(raw_length) > 10:
+            return self._reject(400, 'Invalid Content-Length')
+        length = int(raw_length)
+        if length > MAX_PROXY_BODY:
+            return self._reject(413, 'Request body is too large')
         body = self.rfile.read(length) if length else None
         req = urllib.request.Request(GATEWAY + path, data=body, method=method)
         req.add_header('Content-Type', 'application/json')
@@ -139,6 +174,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             status, ctype = 502, 'application/json'
         self.send_response(status)
         self.send_header('Content-Type', ctype)
+        self.send_header('Cache-Control', 'no-store')
         self.send_header('Content-Length', str(len(payload)))
         self.end_headers()
         self.wfile.write(payload)
@@ -150,7 +186,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.send_error(400, 'not a WebSocket request')
             return
         try:
-            up = wsproto.connect(WS_URL, cookies=dict(COOKIES), origin='http://localhost:%d' % PORT)
+            with COOKIE_LOCK:
+                cookies = dict(COOKIES)
+            up = wsproto.connect(WS_URL, cookies=cookies, origin='http://localhost:%d' % PORT)
         except Exception as e:
             self.send_response(502)
             msg = json.dumps({'error': 'gateway websocket unreachable', 'detail': str(e)}).encode()
@@ -204,6 +242,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
         one = lambda k, d=None: (q.get(k) or [d])[0]
         prov = one('provider', os.environ.get('PAPER_PROVIDER', 'alpaca'))
         key = one('key') or os.environ.get('PAPER_PROVIDER_KEY')
+        # Different credentials can have different data entitlements. Never
+        # reuse another key's response just because both keys are nonempty.
+        credential_id = hashlib.sha256(key.encode('utf-8')).digest() if key else None
         kind = u.path.rsplit('/', 1)[-1]
         # A local streaming source is already live in memory - caching its
         # answers for seconds would throw away the very freshness it provides.
@@ -216,11 +257,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 out = {'providers': providers.PROVIDERS}
             elif kind == 'quote':
                 out = providers._cached(
-                    ('q', prov, one('symbol', ''), bool(key)), ttl_quote,
+                    ('q', prov, one('symbol', ''), credential_id), ttl_quote,
                     lambda: providers.cascade('quote', prov, key, symbol=one('symbol', '')))
             elif kind == 'search':
                 out = providers._cached(
-                    ('s', prov, one('q', ''), bool(key)), 300,
+                    ('s', prov, one('q', ''), credential_id), 300,
                     lambda: providers.cascade('search', prov, key, q=one('q', '')))
             elif kind == 'twsstatus':
                 import tws as _tws
@@ -232,19 +273,14 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 out = providers.selftest(prov, key, one('symbol', 'AAPL'))
             elif kind == 'chain':
                 out = providers._cached(
-                    ('c', prov, one('symbol', ''), one('expiry'), bool(key)), ttl_chain,
+                    ('c', prov, one('symbol', ''), one('expiry'), credential_id), ttl_chain,
                     lambda: providers.cascade('chain', prov, key,
                                               symbol=one('symbol', ''), expiry=one('expiry')))
             else:
                 out = {'error': 'unknown data endpoint'}
         except Exception as e:
             out = {'error': providers._friendly(e, providers.PROVIDERS.get(prov, {}).get('name', prov))}
-        body = json.dumps(out).encode()
-        self.send_response(200)
-        self.send_header('Content-Type', 'application/json')
-        self.send_header('Content-Length', str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
+        self._send(json.dumps(out), 'application/json')
 
     # ---------- installable-app bits ----------
     def _send(self, body, ctype, code=200, cache='no-store'):
@@ -268,15 +304,55 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def _icon(self):
         self._send(ICON_PNG, 'image/png', cache='max-age=86400')
 
+    def end_headers(self):
+        self.send_header('Referrer-Policy', 'no-referrer')
+        self.send_header('X-Content-Type-Options', 'nosniff')
+        super().end_headers()
+
+    def _reject(self, code, message):
+        # Rejected POST bodies remain unread: close rather than interpreting
+        # their bytes as another request on an HTTP/1.1 connection.
+        self.close_connection = True
+        return self._send(json.dumps({'error': message}), 'application/json', code)
+
+    def _token_matches(self, token):
+        return bool(ACCESS) and hmac.compare_digest(token.encode('utf-8'), ACCESS.encode('utf-8'))
+
     def _authed(self):
         if not ACCESS:
             return True
-        u = urllib.parse.urlsplit(self.path)
-        q = urllib.parse.parse_qs(u.query)
-        if (q.get('t') or [''])[0] == ACCESS:
+        q = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
+        if self._token_matches((q.get('t') or [''])[0]):
             return True
-        ck = self.headers.get('Cookie') or ''
-        return ('pd_token=' + ACCESS) in ck
+        try:
+            cookies = SimpleCookie()
+            cookies.load(self.headers.get('Cookie') or '')
+            token = cookies.get('pd_token')
+            return token is not None and self._token_matches(token.value)
+        except CookieError:
+            return False
+
+    def _authorize(self):
+        if not self._authed():
+            self._reject(403, 'Add ?t=YOUR_TOKEN to the app address to sign in')
+            return False
+        # Browsers must not let an unrelated website drive a local brokerage
+        # session, even when this local-only installation uses no access token.
+        origin = self.headers.get('Origin')
+        if origin:
+            try:
+                parsed = urllib.parse.urlsplit(origin)
+                same_origin = (parsed.scheme in ('http', 'https') and
+                               parsed.netloc.lower() == (self.headers.get('Host') or '').lower())
+            except ValueError:
+                same_origin = False
+            if not same_origin:
+                self._reject(403, 'Cross-origin requests are not allowed')
+                return False
+        if self.headers.get('Sec-Fetch-Site') == 'cross-site' and self.headers.get('Sec-Fetch-Mode') != 'navigate':
+            self._reject(403, 'Cross-site requests are not allowed')
+            return False
+        return True
 
     def do_GET(self):
         if self.path.split('?')[0] == '/manifest.json':
@@ -285,10 +361,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             # browsers ask for /favicon.ico unprompted; answering beats a 404 in
             # the log on every single page load
             return self._icon()
-        if not self._authed():
-            return self._send('<h2 style="font-family:system-ui;padding:2rem">'
-                              'Add ?t=YOUR_TOKEN to the address to open this.</h2>',
-                              'text/html; charset=utf-8', 403)
+        if not self._authorize():
+            return
         if self.path.startswith('/data/'):
             return self._data()
         if self.path.startswith('/api/'):
@@ -299,29 +373,38 @@ class Handler(http.server.BaseHTTPRequestHandler):
             if ACCESS:
                 u = urllib.parse.urlsplit(self.path)
                 q = urllib.parse.parse_qs(u.query)
-                if (q.get('t') or [''])[0] == ACCESS:
-                    self.send_response(200)
-                    self.send_header('Set-Cookie', 'pd_token=%s; Path=/; SameSite=Lax; Max-Age=31536000' % ACCESS)
-                    try:
-                        data = open(PAGE, 'rb').read()
-                    except FileNotFoundError:
-                        return self.send_error(500, 'paper_local.html is missing')
-                    self.send_header('Content-Type', 'text/html; charset=utf-8')
-                    self.send_header('Content-Length', str(len(data)))
+                if self._token_matches((q.get('t') or [''])[0]):
+                    cookie = SimpleCookie()
+                    cookie['pd_token'] = ACCESS
+                    cookie['pd_token']['path'] = '/'
+                    cookie['pd_token']['samesite'] = 'Lax'
+                    cookie['pd_token']['httponly'] = True
+                    cookie['pd_token']['max-age'] = 31536000
+                    if self.headers.get('X-Forwarded-Proto', '').lower() == 'https':
+                        cookie['pd_token']['secure'] = True
+                    self.send_response(303)
+                    self.send_header('Set-Cookie', cookie['pd_token'].OutputString())
+                    self.send_header('Location', u.path)
+                    self.send_header('Cache-Control', 'no-store')
+                    self.send_header('Content-Length', '0')
                     self.end_headers()
-                    return self.wfile.write(data)
+                    return
             return self._page()
         self.send_error(404)
 
     def do_POST(self):
+        if not self._authorize():
+            return
         if self.path.startswith('/api/'):
             return self._proxy('POST')
-        self.send_error(404)
+        self._reject(404, 'Unknown endpoint')
 
     def do_DELETE(self):
+        if not self._authorize():
+            return
         if self.path.startswith('/api/'):
             return self._proxy('DELETE')
-        self.send_error(404)
+        self._reject(404, 'Unknown endpoint')
 
 
 class Server(socketserver.ThreadingTCPServer):
@@ -338,12 +421,12 @@ if __name__ == '__main__':
     print('stream bridge -> %s' % WS_URL)
     print('fallback data -> /data/* (%s)' % os.environ.get('PAPER_PROVIDER', 'alpaca'))
     if ACCESS:
-        print('access token set - open %s/?t=%s' % (url, ACCESS))
+        print('access token set - add ?t=YOUR_TOKEN to the app address (token is not logged)')
     if BIND != '127.0.0.1':
         print('listening on %s (reachable from other devices)' % BIND)
     if os.environ.get('PAPER_NO_BROWSER') != '1' and BIND == '127.0.0.1':
         try:
-            webbrowser.open(url)
+            webbrowser.open(url + ('/?t=' + urllib.parse.quote(ACCESS, safe='') if ACCESS else ''))
         except Exception:
             pass
     with Server((BIND, PORT), Handler) as httpd:
