@@ -22,7 +22,11 @@ from http.cookies import SimpleCookie, CookieError
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import ws as wsproto
 import providers
-import base64, zlib, struct
+import base64, zlib, struct, socket, gzip
+import market
+
+PAGE_CACHE = {'mtime': None, 'raw': b'', 'gzip': b''}
+PAGE_LOCK = threading.Lock()
 
 
 def _make_icon():
@@ -122,16 +126,30 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if '/api/' not in line and '/ws' not in line:
             sys.stderr.write('%s - %s\n' % (self.address_string(), line))
 
+    def setup(self):
+        super().setup()
+        self.connection.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+        self.connection.settimeout(30)
+
     # ---------- static page ----------
     def _page(self):
         try:
-            with open(PAGE, 'rb') as page:
-                data = page.read()
+            mtime = os.stat(PAGE).st_mtime_ns
+            with PAGE_LOCK:
+                if PAGE_CACHE['mtime'] != mtime:
+                    with open(PAGE, 'rb') as page:
+                        raw = page.read()
+                    PAGE_CACHE.update(mtime=mtime, raw=raw, gzip=gzip.compress(raw, compresslevel=6))
+                compressed = 'gzip' in self.headers.get('Accept-Encoding', '')
+                data = PAGE_CACHE['gzip' if compressed else 'raw']
         except FileNotFoundError:
             self.send_error(500, 'paper_local.html is missing next to serve.py')
             return
         self.send_response(200)
         self.send_header('Content-Type', 'text/html; charset=utf-8')
+        self.send_header('Vary', 'Accept-Encoding')
+        if compressed:
+            self.send_header('Content-Encoding', 'gzip')
         self.send_header('Content-Length', str(len(data)))
         self.send_header('Cache-Control', 'no-store')
         self.end_headers()
@@ -259,16 +277,18 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 out = providers._cached(
                     ('q', prov, one('symbol', ''), credential_id), ttl_quote,
                     lambda: providers.cascade('quote', prov, key, symbol=one('symbol', '')))
+            elif kind == 'search' and prov == 'tws':
+                out = {'results': market.ENGINE.call('search', one('q', '')), 'served_by': 'tws'}
+            elif kind == 'chain' and prov == 'tws':
+                out = market.ENGINE.call('chain', one('symbol', '').upper(), one('expiry'), timeout=100)
             elif kind == 'search':
                 out = providers._cached(
                     ('s', prov, one('q', ''), credential_id), 300,
                     lambda: providers.cascade('search', prov, key, q=one('q', '')))
             elif kind == 'twsstatus':
-                import tws as _tws
-                out = _tws.status()
+                out = market.ENGINE.snapshot(one('client', ''))
             elif kind == 'depth':
-                import tws as _tws
-                out = _tws.depth(one('symbol', ''))
+                out = market.ENGINE.call('depth', one('symbol', ''))
             elif kind == 'selftest':
                 out = providers.selftest(prov, key, one('symbol', 'AAPL'))
             elif kind == 'chain':
@@ -281,6 +301,48 @@ class Handler(http.server.BaseHTTPRequestHandler):
         except Exception as e:
             out = {'error': providers._friendly(e, providers.PROVIDERS.get(prov, {}).get('name', prov))}
         self._send(json.dumps(out), 'application/json')
+
+    def _subscriptions(self):
+        if self.headers.get('Transfer-Encoding'):
+            return self._reject(400, 'Chunked bodies are not supported')
+        lengths = self.headers.get_all('Content-Length') or []
+        if len(lengths) != 1 or not lengths[0].isdigit() or len(lengths[0]) > 10:
+            return self._reject(400, 'Invalid Content-Length')
+        length = int(lengths[0])
+        if not 0 < length <= MAX_PROXY_BODY:
+            return self._reject(413, 'Subscription payload is too large or empty')
+        try:
+            payload = json.loads(self.rfile.read(length))
+            if not isinstance(payload, dict):
+                raise ValueError('Expected an object')
+            result = market.ENGINE.subscribe(payload.get('client'), payload.get('instruments'))
+        except (ValueError, TypeError) as e:
+            return self._reject(400, str(e))
+        self._send(json.dumps(result, allow_nan=False, separators=(',', ':')), 'application/json')
+
+    def _stream_quotes(self):
+        q = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
+        client = (q.get('client') or [''])[0]
+        if not re.fullmatch(r'[A-Za-z0-9_-]{8,80}', client):
+            return self._reject(400, 'Invalid stream client ID')
+        self.close_connection = True
+        self.send_response(200)
+        self.send_header('Content-Type', 'text/event-stream')
+        self.send_header('Cache-Control', 'no-cache, no-transform')
+        self.send_header('X-Accel-Buffering', 'no')
+        self.send_header('Connection', 'close')
+        self.end_headers()
+        seq = 0  # Every connection receives a complete snapshot, including reconnects.
+        try:
+            while True:
+                payload = market.ENGINE.snapshot(client, seq) if seq == 0 else market.ENGINE.wait(client, seq)
+                seq = payload['seq']
+                data = json.dumps(payload, allow_nan=False, separators=(',', ':'))
+                self.wfile.write(('event: quotes\ndata: ' + data + '\n\n').encode())
+                self.wfile.flush()
+                time.sleep(0.1)  # Coalesce bursts without dropping the newest quote.
+        except (BrokenPipeError, ConnectionResetError, OSError):
+            pass
 
     # ---------- installable-app bits ----------
     def _send(self, body, ctype, code=200, cache='no-store'):
@@ -363,6 +425,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return self._icon()
         if not self._authorize():
             return
+        if self.path.split('?')[0] == '/data/stream':
+            return self._stream_quotes()
         if self.path.startswith('/data/'):
             return self._data()
         if self.path.startswith('/api/'):
@@ -395,6 +459,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def do_POST(self):
         if not self._authorize():
             return
+        if self.path.split('?')[0] == '/data/subscriptions':
+            return self._subscriptions()
         if self.path.startswith('/api/'):
             return self._proxy('POST')
         self._reject(404, 'Unknown endpoint')
