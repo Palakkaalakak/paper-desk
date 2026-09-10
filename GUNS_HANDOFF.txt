@@ -1,0 +1,1662 @@
+# 1. Primary Request and Intent
+
+## Original project and preservation requirements
+The project is **Paper Desk**, a Python/vanilla-JavaScript paper-trading workstation using IB Gateway market data.
+
+The user originally requested:
+> “Read the project, understand it, apply any immediate improvements you see, then be ready to continue it.”
+
+They repeatedly emphasized preservation:
+> “ALWAYS COMMIT EVERYTHING, even read only files with info thta you need, beacuse there's a glitch that wipes the sandbox often, removign all that isnt in the github.”
+
+Meaning:
+- Preserve non-sensitive source, tests, uploaded reference material, and continuation notes.
+- **Local commits alone do not survive resets.**
+- Push to GitHub when authorized; otherwise upload a Git bundle/backup promptly.
+- Never commit credentials, dependencies, runtime account data, or caches.
+
+They demand speed and credit efficiency:
+> “DUDE JUST PHACKING COMMIT IT STOP USING CREDITS USELESSLY FOR CHECKS, JUST COMMIT IT.”
+> “continue, being more efficeint because you used the entire limit for 3 messages”
+
+Avoid repeating investigation, long plans, or rewriting work that can be recovered.
+
+## Paper-only requirement
+The user explicitly clarified:
+> “OBVIOUSLY paper trading still. Assume IBKR has every subscription and thing, and using IB Gateway.”
+
+**Never enable real-money broker orders.**
+
+## Earlier performance and connection work
+Previously completed and pushed:
+- Single-owner asyncio IB Gateway engine.
+- Batched quote subscriptions and SSE.
+- Faster 500-position UI rendering.
+- Broker-style workstation appearance.
+- Security and paper-fill safeguards.
+- Gateway immediate-disconnect bug fixed in `ba883b7`.
+
+An option-chain overhaul was implemented locally later but lost after reset; it is **not in current GitHub main**. Do not confuse it with the current GUNS work.
+
+## GUNS request
+The user uploaded the complete **GUNS_MASTER_DOCUMENT.md** and requested:
+> “Stop. Look at what has been changed in the meantime. Then, upgrade it and add a GUNS tab which is IDEAL, AWESOME even for this strategy. Also add background trackers (eg see wehre price goes a few days and minutes afte rthe trade is finished) and stuff so that in future all data can be reviewed to improve any strat.”
+
+They then explicitly authorized implementation:
+> “Implement immediately. It'd be ideal if it ran in background in cloud as i often swithc my PC off (the data collection). Before that though implement the guns stuff. Also, ensure it automates as much of the strat as possible (eg automatic SL, TP and position sizing, entry stuff based on stock price, preliminary scanner, etc.) and that ordes automatically scale (eg if 1R is set to 1% of account, then it is ALWAYS 1% of account, not roughly eg you have 100k acc and it remains 1000 dollars until you think to change it at like 200k, no, it is exactly always 1%, ie if it goes to 90k, 900, if it goes to 100.1k, then 1001. Remember credit and speed efficiecny.”
+
+### Current priorities
+1. **Implement GUNS first**, immediately.
+2. Automate:
+   - Preliminary live scanner.
+   - Pattern/entry plans for five setups.
+   - Stop loss, profit target, breakeven management.
+   - Dynamic-equity position sizing.
+   - Optional auto-arming once checks pass.
+3. Risk budget must equal **current marked account equity × configured percentage**:
+   - $100,000 at 1% → $1,000.
+   - $90,000 at 1% → $900.
+   - $100,100 at 1% → $1,001.
+   - Recalculate while pending and before filling, not a fixed dollar preset.
+   - Whole-share rounding, buying power and estimated fees can make actual planned risk lower; show this honestly.
+   - Do not pretend stops guarantee maximum loss during gaps/slippage.
+4. Later, cloud-based post-exit collection independent of the user’s powered-off PC.
+5. Strategy-neutral research and export.
+
+The latest actual development instruction was simply:
+> “continue”
+
+The current message asks for this summary.
+
+---
+
+# 2. Key Technical Concepts
+
+## Existing architecture
+- Repository: `/home/user/webapp`
+- GitHub: `https://github.com/Palakkaalakak/paper-desk`
+- Branch: `main`
+- Local application: `http://localhost:8765`
+- Python server and **vanilla HTML/CSS/JavaScript**.
+- No frontend build system.
+- Not a Hono/Cloudflare application; retain existing Python/Gateway architecture.
+- `ib_async==2.1.0`
+- `socketserver.ThreadingTCPServer` + `BaseHTTPRequestHandler`.
+- One `MarketEngine`, one dedicated asyncio owner thread.
+- All IB calls must run on that loop.
+- Read-only defenses:
+  - `readonly=True`
+  - `tws._seal(ib)`
+  - `tws._seal(ib.client)`
+  - Broker REST proxy blocks actual order routes.
+- IB Gateway defaults:
+  - Ports `4001,4002,7496,7497`
+  - Client ID `77`
+  - Diagnostics use `78`.
+
+## Quotes and application state
+- `POST /data/subscriptions`
+- `GET /data/stream?client=...`
+- SSE quote snapshots/deltas, approximately 100 ms update coalescing.
+- Default subscription capacity 500, maximum submitted instruments 2,000.
+- Browser-demand TTL 60 seconds.
+- `S`: persisted account/settings/books/orders/trades.
+- `Q`: transient quote map keyed by conId.
+- `localStorage['paperAccount']`.
+- Paper fills and order processing currently happen in the browser.
+- Other portfolio books do not have an independent background order engine.
+
+## Current GUNS implementation approach
+New isolated files:
+1. `guns_data.py`: read-only scanner/news/history helpers.
+2. `guns.js`: pure strategy/math library, usable both in browser and Node tests.
+3. `guns-execution.js`: pure-ish paper execution controller accepting a bridge to the existing account engine.
+4. `guns-ui.js`: browser UI/controller, incomplete.
+5. `guns.css`: planned, not created.
+6. Potential chart code can remain in UI or a small separate module; not created yet.
+
+Browser modules use UMD-style globals / CommonJS:
+```javascript
+(function(root,f){
+  if(typeof module==='object'&&module.exports)
+    module.exports=f();
+  else root.Guns=f();
+})(globalThis,function(){ ... });
+```
+
+The main inline app is inside an IIFE. New modules cannot directly access its `S`, `Q`, `acct()`, etc. They need a bridge instantiated near the end of the inline script.
+
+## Risk and execution design
+- Budget from current `acct().netLiq`.
+- Require fresh quotes for all held positions before opening/resizing a GUNS entry.
+- Size using worst allowed entry (`plan.limit`) versus stop, plus estimated round-trip commissions.
+- Binary search whole-share count that fits risk and buying power.
+- Recalculate pending quantity and budget before trigger/fill.
+- One position owner per symbol to avoid mixing independent strategies into a bracket.
+- At most two pending/open GUNS trades.
+- Available-size entry fill; cancel unfilled remainder rather than leave unprotected residual demand.
+- Stops/targets protected via one mutually exclusive position-management lifecycle.
+- Partial exit limited by actual held quantity and displayed bid size.
+- Stop trigger remains latched across later ticks.
+- Optional stop to actual entry at +1R.
+- Auto-exit near session end.
+- No fabricated historical fills, quote prices, candles or depth.
+
+## Cloud tracker status
+**Not implemented.**
+- Current intended UI explicitly says browser/Paper Desk must remain running.
+- No cloud collector, D1 database, R2 archive, durable server journal, or post-exit jobs exist.
+- D1/managed storage was proposed, not provisioned.
+- Cloud collection requires a broker/data source reachable without the user’s PC.
+- Do not suggest storing data in D1 alone runs an IB socket collector.
+
+---
+
+# 3. Chronology and State Boundaries
+
+## A. Historical option-chain implementation
+After the inherited handoff, the assistant implemented:
+- Auto chain loading.
+- Visible-contract subscription priority.
+- Partial incremental qualification.
+- No full-expiry 90-second wildcard critical path.
+- Qualified real conId reuse.
+- Focused tests.
+
+Local commits:
+- `1067e0d` — `Autoload option chains and resolve visible contracts incrementally`
+- `d8d3adb` — `Cover automatic chain loading, bounded resolution and subscription priority`
+
+At that point:
+- 31 Python tests passed.
+- 6 Node tests passed.
+- GitHub authorization failed.
+- `ProjectBackup` was interrupted and returned **no backup URL**.
+
+**Those commits disappeared in the following reset. They are not in current main and no known successful artifact contains them.**
+
+Do not restore/reimplement unrelated chain work now unless necessary for GUNS.
+
+## B. GUNS source review and pushed plan
+The user supplied GUNS document.
+The assistant:
+- Read all 394 lines.
+- Read long paragraphs again through Python/textwrap because Read truncates lines over 2,000 characters.
+- Inspected repo.
+- GitHub setup succeeded once.
+- Ran `git fetch origin`.
+- Verified main remained `ba883b7`.
+- No intervening newer GitHub work existed.
+- Copied the complete document into the repository.
+- Appended detailed design/handoff notes to README.
+- Committed and **pushed**:
+  - `1ac7dc2` — `Preserve GUNS course and scoped workstation research design`
+
+This is the last known pushed GitHub main.
+
+## C. First attempted GUNS implementation — lost
+After user said implement immediately:
+- Wrote `guns_data.py`, `guns.js`.
+- Modified `market.py` and `serve.py` to add routes/helpers.
+- Attempted a very large `guns-ui.js` Write.
+- User interrupted.
+- Next sandbox was reset to GitHub main.
+- All these uncommitted files/edits disappeared.
+
+## D. Second implementation attempt — core successfully backed up
+Assistant rewrote:
+- `guns_data.py` — current recoverable 104-line version.
+- `guns.js` — current recoverable 47-line minified-style version.
+
+Committed:
+- `3c1c8e8` — `Checkpoint GUNS strategy math and read-only market data adapters`
+
+Created:
+```sh
+git bundle create guns-checkpoint.bundle main
+```
+
+Uploaded bundle successfully:
+- **This artifact contains `3c1c8e8` and its history only.**
+- It does not contain later execution/UI files.
+
+Then wrote another unfinished `guns-ui.js` and attempted appending UI.
+User interrupted; next sandbox reset again.
+
+## E. Latest continue — restored checkpoint, created execution module and new UI skeleton
+At latest continue:
+1. LS showed base GitHub repo without GUNS source modules.
+2. Downloaded the successful bundle.
+3. Restored:
+```sh
+git fetch ./guns-checkpoint.bundle main
+git merge --ff-only FETCH_HEAD
+```
+Main moved from `1ac7dc2` to `3c1c8e8`.
+4. GitHub setup failed.
+5. Wrote `guns-execution.js`.
+6. Ran:
+```sh
+node --check guns-execution.js
+git add guns-execution.js
+git commit -m "Implement dynamic equity sizing and paper bracket lifecycle"
+git bundle create guns-checkpoint.bundle main
+```
+Result:
+- **`54af6bb`** — local-only execution checkpoint.
+- Local bundle now includes it.
+- **The refreshed bundle was NOT uploaded.**
+7. Wrote a new `guns-ui.js` skeleton, 8,017 characters.
+8. Attempted to Read it before appending live rendering/events.
+9. Read was interrupted by the user’s summary request.
+
+**No integration into market.py, serve.py, or paper_local.html has been applied in the latest restored sandbox.**
+
+---
+
+# 4. GUNS Source Rules and Important Caveats
+
+Reference:
+`/home/user/webapp/GUNS_MASTER_DOCUMENT.md`
+- 153,426 bytes.
+- SHA-256:
+```text
+90cf9f33ed648b936809629dd1f1a92c019100bf5a2c0279c63b3426053e7a34
+```
+
+Core course:
+- GUNS = Gap Up News Scalp.
+- Long stock day-trading strategy.
+- Preliminary filters:
+  - Common company stock, not ETF.
+  - Price ≥ $1.50.
+  - Gap ≥ 5% versus prior close.
+  - Premarket volume ≥ 30,000.
+- Watch 4–6 candidates, usually execute only 1–2.
+- Prefer favorable earnings/FDA/clinical/upgrade catalyst.
+- Avoid fixed-price acquisition gaps.
+- Favor low float, but float is a preference and not reliable automatic data in current code.
+- Chart indicators:
+  - EMA 9, EMA 20.
+  - SMA 50, SMA 200.
+  - ATR on 1-minute bars; **course never specifies ATR period**, so implementation uses configurable default 14.
+- S1: premarket high breakout.
+- S2: lower premarket pivot, ≥1R room to resistance.
+- S3: premarket bull flag.
+- S4: first post-open bull flag.
+- S5: first completed bullish 09:30 one-minute candle only.
+- Entry just above trigger, usually one cent.
+- Stop-limit buffer approximately 3–5 cents.
+- Target 2R or 2.5R.
+- Move stop to entry at +1R.
+- Do not chase if price exceeds limit.
+- Cancel weak untriggered premarket entries after roughly 3–5 minutes.
+- S4 spread often treated strictly at ≤5 cents.
+- Qualitative support/resistance/catalyst judgment must not be portrayed as perfect machine inference.
+
+Source conflicts preserved in README:
+- 30k baseline volume versus 150k/200k later examples.
+- 5-cent versus 10-cent spread thresholds.
+- Brackets sometimes anchored to clicked chart price versus actual entry.
+- Inconsistent arithmetic and time-zone statements.
+- EXEL narration inconsistently claims stop-out and full winner.
+- Do not encode those examples as verified trades or profit guarantees.
+- API depth size units should not blindly be multiplied by 100 because a TWS display showed round lots.
+- Breakeven stops do not guarantee zero net loss after fees/gaps.
+
+---
+
+# 5. Files and Code Sections
+
+## `/home/user/webapp/guns.js`
+**Created, committed in `3c1c8e8`, recoverable from uploaded bundle.**
+
+Current library:
+```javascript
+const VERSION='guns-1.0';
+const defaults={
+  riskPct:1,
+  rewardR:2,
+  maxSpread:.05,
+  minVolume:30000,
+  breakeven:true,
+  atrPeriod:14,
+  stopMode:'ATR',
+  fixedStop:.2
+};
+```
+
+Exports:
+```javascript
+{
+  VERSION, defaults, names,
+  day, round, average, studies, atr,
+  aggregate, flag, analyze, size, exit
+}
+```
+
+### Helpers
+- `day(t)` uses `Intl.DateTimeFormat(...America/New_York...)` and `formatToParts` to produce stable `YYYY-MM-DD`.
+- `round(price, tick, up)` rounds tick-aware with epsilon.
+- `average(rows,n,exp)`:
+  - Null until enough samples.
+  - SMA seed for EMA.
+- `studies(rows)` returns arrays in this order:
+  1. EMA9
+  2. EMA20
+  3. SMA50
+  4. SMA200
+- `atr(rows,n)` uses Wilder smoothing.
+- `aggregate(rows,n)` groups minute bars by n-minute epoch bucket.
+- `flag(rows)` identifies trailing lower highs following an impulse and returns:
+```javascript
+{
+  candle: rows.at(-1),
+  low,
+  retracement,
+  first
+}
+```
+
+### `analyze(data,q,cfg,setup,notes,now)`
+Returns:
+```javascript
+{
+  setup, checks, errors,
+  entry, limit, stop, target, risk,
+  atr, pmHigh, gap, volume,
+  session, expiresAt
+}
+```
+
+Data expected:
+```javascript
+{
+  updatedAt,
+  minTick,
+  stockType,
+  sessions:[{start:epochMs,end:epochMs}],
+  minute:[{t:epochMs,o,h,l,c,v}],
+  daily:[{t:"YYYY-MM-DD",o,h,l,c,v}]
+}
+```
+
+Analysis:
+- Only closed minute bars (`t+60000<=now`) generate signals.
+- Aggregates closed five-minute bars.
+- Session found by NY date against broker liquid sessions.
+- Premarket begins session start minus 19,800,000 ms (5.5 hours; assumes normal US 09:30 open).
+- Uses previous completed daily close for gap.
+- Checks:
+  - Known tick >0 and ≤.01.
+  - `stockType==='COMMON'` or user `notes.common`.
+  - $1.50 minimum.
+  - 5% gap.
+  - Configured premarket volume.
+  - Manual `notes.catalyst`.
+  - Manual `notes.room`.
+  - Chart stream updated less than 90 seconds ago.
+  - Session known.
+  - Tight two-sided spread.
+  - Pattern-specific rules.
+  - Above all four moving averages.
+  - Entry window.
+  - Valid stop/target.
+  - Resistance room.
+  - No chasing above limit.
+- S1–S3 can arm beginning 2 minutes before open.
+- S1–S3 expire open+5min.
+- S4 expires open+1hour.
+- S5 expires open+2min.
+- S5 app guardrail: first candle range ≤2×premarket ATR, explicitly labeled as an app guardrail.
+- S1/S2 stop choices:
+  - ATR.
+  - Price ladder: .15 below $20; .25 below $30; .40 below $50; .50 otherwise.
+  - User fixed distance.
+- S3–S5 stop below trigger candle low.
+- Entry trigger + tick.
+- Limit entry + .03 if entry<$20, otherwise +.05.
+- Target initially based on planned entry; actual bracket later recalculates from fill.
+
+### Dynamic sizing — critical
+```javascript
+function size(equity,pct,entry,stop,bp,fees){
+  const budget=equity*pct/100, d=entry-stop;
+  // validate finite positive inputs
+  // binary search whole shares
+  // n*d + fees(n) <= budget
+  // n*entry + fees(n) <= bp
+  return {
+    equity, budget, qty,
+    risk:qty*d+fee,
+    fees:fee,
+    unused:budget-qty*d-fee
+  };
+}
+```
+- Budget is not rounded to a static preset.
+- Fees callback includes both buy and sell commissions.
+- Tests still need to be written.
+
+### Exit decision
+```javascript
+function exit(b,q,now){
+  if(b.forceExit || b.stopTriggered || q.bid<=b.stop)
+    return {reason:b.forceExit?'MANUAL FLATTEN':'STOP',stop:b.stop};
+
+  if(now>=b.sessionEnd-60000)
+    return {reason:'SESSION CLOSE',stop:b.stop};
+
+  if(q.bid>=b.target)
+    return {reason:'TARGET',stop:b.stop};
+
+  return {
+    reason:null,
+    stop:b.breakeven && q.bid>=b.entry+b.initialR
+      ? Math.max(b.stop,b.entry)
+      : b.stop
+  };
+}
+```
+
+### Potential issues requiring focused review
+- S4 `flag().first` is a heuristic, not perfect chart classification.
+- Premarket volume required for every setup, while course allows newly appearing post-open S4 names. UI should explain conservative filter or support session-volume mode explicitly.
+- 200 five-minute bars may not be available for thin symbols despite 2 days of 1-minute history; properly blocks rather than inventing averages.
+- Missing session/insufficient bars must remain clear.
+- No automatic updating/cancel-replacing of resting flag entry as each newer pullback candle closes yet.
+- No automatic moving premarket high adjustment yet.
+- Do not claim “all strategy automation complete.”
+
+---
+
+## `/home/user/webapp/guns_data.py`
+**Created, committed in `3c1c8e8`, recoverable from bundle. Not wired into MarketEngine yet in current sandbox.**
+
+Functions:
+```python
+def symbol(value)
+def stamp(value)
+async def scan(engine)
+def close_idle(engine)
+async def bars(engine,ticker)
+async def news(engine,ticker)
+```
+
+### `scan(engine)`
+Uses:
+```python
+ScannerSubscription(
+    numberOfRows=30,
+    instrument='STK',
+    locationCode='STK.US.MAJOR',
+    scanCode='TOP_PERC_GAIN',
+    abovePrice=1.5,
+    aboveVolume=30000,
+    stockTypeFilter='CORP'
+)
+```
+Call:
+```python
+await asyncio.wait_for(
+    engine._ib.reqScannerDataAsync(
+        sub,
+        scannerSubscriptionFilterOptions=[
+            TagValue('changePercAbove','5')
+        ]
+    ),
+    15
+)
+```
+Output:
+```python
+dict(
+  at=...,
+  source='IB Gateway',
+  preliminary=True,
+  rows=[
+    dict(
+      conid=...,
+      symbol=...,
+      name=...,
+      stockType=...,
+      secType='STK',
+      exch='SMART',
+      brokerId=True,
+      rank=...
+    )
+  ]
+)
+```
+Scanner metadata alone is not proof all downstream criteria passed.
+
+### `bars(engine,ticker)`
+- Maintains `engine._guns_streams`.
+- Up to four active stock-history streams.
+- Releases least recently used if capacity exceeded.
+- `close_idle()` cancels after 120 seconds without requests.
+- Checks `engine.info['generation']` to rebuild after reconnect.
+- Uses engine `_stock(ticker)`.
+- Gets contract details with 12-second timeout.
+- Parallel historical requests:
+```python
+reqHistoricalDataAsync(
+  c,'','2 D','1 min','TRADES',False,
+  formatDate=2,keepUpToDate=True,timeout=20
+)
+reqHistoricalDataAsync(
+  c,'','1 Y','1 day','TRADES',True,
+  formatDate=2,keepUpToDate=True,timeout=20
+)
+```
+- Cancels successful counterpart if either fails/empty.
+- Minute list `updateEvent` updates `entry['updated']`.
+- Encodes only finite OHLC.
+- `detail.liquidSessions()` provides real exchange schedule.
+- Returns `minTick`, `stockType`, `sessions`, minute/daily bars.
+- No filesystem research storage.
+
+### `news(engine,ticker)`
+- `reqNewsProvidersAsync()` timeout 10 sec.
+- Uses first 5 provider codes joined with `+`.
+- `reqHistoricalNewsAsync(conId,codes,'','',10)` timeout 12 sec.
+- Returns headline/provider/time only.
+- No automatic favorable-news classification.
+
+### Pinned API signatures were verified once
+Installed `ib_async==2.1.0` in an earlier sandbox and inspected:
+```python
+IB.reqScannerDataAsync(
+  self, subscription,
+  scannerSubscriptionOptions=[],
+  scannerSubscriptionFilterOptions=[]
+)
+
+IB.reqHistoricalDataAsync(
+  self,contract,endDateTime,durationStr,barSizeSetting,
+  whatToShow,useRTH,formatDate=1,keepUpToDate=False,
+  chartOptions=[],timeout=60
+)
+
+IB.reqHistoricalNewsAsync(
+  self,conId,providerCodes,startDateTime,endDateTime,
+  totalResults,historicalNewsOptions=[]
+)
+
+ContractDetails.liquidSessions(self)
+```
+Current reset sandbox may no longer have package installed.
+
+---
+
+## `/home/user/webapp/guns-execution.js`
+**Created in latest continue, committed locally `54af6bb`. NOT uploaded/pushed yet.**
+
+UMD:
+```javascript
+(function(root,f){
+  if(typeof module==='object'&&module.exports)
+    module.exports=f(require('./guns.js'));
+  else root.GunsExecution=f(root.Guns);
+})(globalThis,function(C){
+  return function(a){ ... };
+});
+```
+
+### Required bridge `a`
+```javascript
+{
+  state: () => S,
+  quotes: () => Q,
+  account: () => acct(),
+  position: cid => posOf(cid),
+  ready: cid => quoteReady(cid),
+  usingTws: () => usingTws(),
+  now: () => Date.now(),
+  uid: () => uid(),
+  today: () => today(),
+  commission: (inst,n,price,side) => commission(inst,n,price,side),
+  marketPrice: (inst,side,n) => marketablePrice(inst,side,n),
+  fill: (order,n,price) => applyFill(order,n,price),
+  save: () => save(),
+  sync: () => syncSubs()
+}
+```
+
+### State
+```javascript
+S.guns = {
+  config: {...defaults,...savedConfig},
+  books: {
+    [S.bookId]: {
+      notes:{},
+      active:[],
+      journal:[]
+    }
+  }
+}
+```
+This lives within existing browser account state. **Not durable cloud research.**
+
+### Exports
+```javascript
+{
+  state,cfg,g,fresh,sizing,issues,arm,
+  guard,fill,after,manage,pulse,flatten,
+  exposure
+}
+```
+
+### `fresh()`
+All nonzero held positions must satisfy `a.ready(p.conid)`.
+
+### `sizing(plan,inst)`
+Always calls fresh `a.account()`:
+```javascript
+C.size(
+  acc.netLiq,
+  Number(cfg().riskPct),
+  plan.limit,
+  plan.stop,
+  Math.max(0,acc.bp),
+  n => commission(inst,n,plan.limit,'BUY')
+     + commission(inst,n,plan.stop,'SELL')
+)
+```
+
+### `issues(plan,inst)`
+Combines plan errors plus:
+- Live Gateway/quote required.
+- All portfolio marks fresh.
+- Positive sized quantity.
+- Two-trade pending/open cap.
+- No existing same-symbol position or working order.
+
+### `arm(plan,inst,notes)`
+Creates existing-model paper `STPLMT` order:
+```javascript
+{
+  id,ts,day,
+  symbol,conid,secType:'STK',mult:1,
+  exch:'SMART',brokerId:true,
+  side:'BUY',
+  qty:r.qty,filledQty:0,
+  type:'STPLMT',stop:plan.entry,limit:plan.limit,
+  tif:'DAY',status:'working',commission:0,
+  guns:{
+    role:'entry',version:C.VERSION,setup:plan.setup,
+    plan:JSON.parse(JSON.stringify(plan)),
+    notes:{...notes},
+    equityAtArm:r.equity,
+    budgetAtArm:r.budget,
+    bookId:S.bookId
+  }
+}
+```
+Pushes to `S.orders`, saves/syncs.
+
+### `guard(order)`
+For non-GUNS orders:
+- Checks same-symbol active GUNS exposure.
+- Rejects BUY increase or SELL larger than held position.
+- Intended to be called at start of main `tryFill` before combos execute.
+- This is important to avoid partially executing a combo before discovering bracket conflict.
+
+### `fill(order)`
+Returns:
+- `null` if not a GUNS order.
+- Boolean handled/changed otherwise.
+
+Entry logic:
+1. Expire if `now>=plan.expiresAt`.
+2. Require Gateway, quote freshness and current equity marks.
+3. Cancel if same-symbol exposure already exists.
+4. Recalculate qty/equity/budget immediately:
+```javascript
+o.qty = r.qty;
+o.guns.equityAtFill = r.equity;
+o.guns.budgetAtFill = r.budget;
+```
+5. Reject if risk/buying power now permits zero.
+6. Wait for exchange open, acceptable spread and last>=trigger.
+7. Cancel if ask>limit (“No chasing”).
+8. Require positive `askSize`.
+9. Count = min(sized qty, floor askSize).
+10. Use existing `marketablePrice`.
+11. Do not fill if modeled price>limit or <=stop.
+12. Save plannedQty/cancelledQty; fill only available shares, cancel residual.
+13. Set rewardR/breakeven from current config.
+14. Call existing `applyFill` through bridge.
+
+### `after(order,fq,price,oldQty,newQty,realized,fee)`
+Must be called by main `applyFill()` after account/trade updates.
+
+Entry creates active bracket:
+```javascript
+{
+  id:o.id,
+  inst:{conid,symbol,secType:'STK',mult:1,exch:'SMART',brokerId:true},
+  entry:price,
+  qty:fq,originalQty:fq,
+  stop:plan.stop,originalStop:plan.stop,
+  target:round(price+(price-plan.stop)*rewardR,tick,true),
+  initialR:price-plan.stop,
+  breakeven,
+  sessionEnd:plan.session.end,
+  openedAt,
+  setup,version,plan,notes,
+  equityAtFill,budgetAtFill,
+  fees:fee,
+  maxBid:price,minBid:price,
+  events:[{at,type:'ENTRY',price,qty:fq}]
+}
+```
+
+Any later SELL:
+- Reduces bracket quantity to no more than actual remaining position.
+- Records reason/price/qty.
+- Accumulates commissions.
+- On flat:
+  - Computes gross via sell events minus entry price.
+  - Subtracts all fees.
+  - Calculates `actualR`.
+  - Moves bracket to journal.
+  - Cancels all working same-symbol SELL orders to avoid OCO/manual-order accidental shorts.
+
+### `manage(cid)`
+- Runs for matching/all active brackets.
+- Requires live quote.
+- Updates sampled max/min bid.
+- Calls `C.exit`.
+- Applies breakeven stop update/event.
+- Latches stop trigger.
+- Caps exits by held qty and displayed bidSize.
+- `lastExitTick` prevents repeatedly consuming one quote’s displayed liquidity.
+- Uses existing marketable sell-price model.
+- Target cannot execute below target price.
+- Creates immediate paper exit order (`guns.role='exit'`) then calls bridge fill.
+- Saves on changes.
+
+### `pulse()`
+- Manages brackets.
+- Checks every working GUNS entry.
+
+### `flatten(id)`
+Sets `forceExit=true` then manages using current valid quote. Does not invent an exit while disconnected.
+
+### Integration still required
+None of these hooks are wired into existing app yet.
+
+Potential review points:
+- `arm` trusts a supplied `plan.errors`; only UI should supply validated plan.
+- Should revalidate stale chart/setup at trigger or cancel invalidated pending setups, not merely wait until expiry.
+- Entry plans do not currently auto-follow newer flag candles or moving PM highs.
+- Changed breakeven setting applies to new fills, not existing brackets.
+- Book switching must be prevented while GUNS exposure exists unless background multi-book processing is implemented.
+- Combo integration must guard before any legs fill.
+- Generic `applyFill` false/rejected result must not create active bracket erroneously; after hook occurs only on actual fill.
+- Exits should remain risk-reducing; preserve existing fill safety.
+
+---
+
+## `/home/user/webapp/guns-ui.js`
+**Latest work, created but uncommitted. Incomplete. Last Read attempt was interrupted.**
+
+Current size: **8,017 characters** from successful Write.
+It replaced none of the original app yet.
+
+### Existing skeleton
+```javascript
+(function(root){
+'use strict';
+root.GunsUI={create:function(a){
+  const C=root.Guns,E=root.GunsExecution(a);
+  let selected=null,data=null,news=[],depth=null,rows=[],error='';
+  let book='',setup=1,auto=false;
+  let pending={},scanAt=0,barsAt=0,newsAt=0,depthAt=0,chartKey='';
+  ...
+  // LIVE
+  // EVENTS
+  return {view,instruments,execution:E,choose,pulse};
+}};
+})(window);
+```
+
+### Functions already present
+- `esc`, `px`, `money`.
+- `put(id,html)`.
+- `changeBook()`:
+  - resets auto, selected, data/news/depth when book changes.
+- `notes()`:
+  - daily symbol key: `C.day(Date.now())+':'+selected.symbol`.
+- `plan()`:
+```javascript
+const p=C.analyze(data,currentQuote,E.cfg(),setup,notes(),Date.now());
+p.tick=data?.minTick;
+return p;
+```
+- `request(kind,params)`:
+  - Same-origin `/data/<kind>?provider=tws`.
+  - AbortController, 45-second timeout.
+  - Rejects non-OK HTTP and JSON `error`.
+- `job(key,fn)`:
+  - Avoids duplicate requests by key.
+  - Catches into `error`.
+  - Calls `live()` in finally.
+  - **`live()` does not yet exist.**
+- `scan()`:
+  - `guns_scan`.
+  - Stores `rows`, resets error, syncs quotes.
+- `refresh()`:
+  - Selected symbol and book guards.
+  - Bars every 2 seconds.
+  - News every 120 seconds.
+  - Depth every 5 seconds.
+- `choose(inst)`:
+  - Defaults STK/SMART/brokerId.
+  - Resets chart data, auto mode and request timestamps.
+  - render/sync/refresh.
+- `instruments()`:
+  - selected priority3.
+  - active bracket instruments priority3.
+  - scanner rows priority1 while GUNS tab visible.
+- `arm()`:
+  - `E.arm(plan(),selected,notes())`.
+  - Updates error, calls missing `live()`.
+- `pulse()`:
+  - `changeBook(); E.pulse()`.
+  - When tab guns: scan every30sec, refresh, live.
+  - If opt-in `auto` and all `E.issues` clear → arm.
+- `exportData()`:
+  - JSON Blob, `guns-paper-research.json`.
+  - Includes version/export timestamp/books/cloudCollector:false.
+- `number(...)` and `check(...)` HTML helpers.
+- `view()` full initial HTML layout.
+
+### UI HTML already written
+- `#guns-workspace`
+- Header:
+  - “GUNS Execution desk”
+  - paper badge
+  - Scan now / Export research buttons
+- Honest warning:
+  - Browser and Paper Desk must run.
+  - Stops simulated, not broker-held.
+  - No cloud collector.
+- Three-column layout:
+  1. Scanner/search
+  2. Quotes/charts/news/depth
+  3. Risk/planner/checklists/arming
+- Scanner:
+  - `#guns-search` form.
+  - `#guns-search-results`
+  - `#guns-scanner-rows`
+- Market:
+  - `#guns-quote`, `#guns-clock`
+  - Canvas:
+    - `#guns-chart-1`
+    - `#guns-chart-5`
+    - `#guns-chart-d`
+  - Indicator legend.
+  - `#guns-news`, `#guns-depth`
+- Planner controls:
+  - `guns-setup`
+  - `guns-risk`
+  - `guns-reward`
+  - `guns-stopmode`
+  - `guns-atr`
+  - `guns-fixed`
+  - `guns-spread`
+  - `guns-volume`
+  - `guns-be`
+  - `guns-common`
+  - `guns-catalyst`
+  - `guns-room`
+  - `guns-auto`
+- Dynamic placeholders:
+  - `#guns-risk-live`
+  - `#guns-checklist`
+  - `#guns-error`
+- Arm button `[data-guns="arm"]`
+- Review:
+  - `#guns-active`
+  - `#guns-journal`
+
+### Missing before usable
+- `live()` rendering.
+- Canvas chart drawing.
+- Click/submit/change event listeners.
+- Interval/pulse startup.
+- `live` export.
+- CSS.
+- App bridge and integration.
+- Tests.
+
+**Do not load this skeleton in the app yet; `live()` calls would throw.**
+
+---
+
+## `/home/user/webapp/market.py`
+**Current baseline unchanged from `ba883b7` in latest sandbox. Earlier GUNS changes were lost.**
+
+Important existing functions:
+```python
+instruments(rows)
+MarketEngine._maintain()
+MarketEngine._contract(row)
+MarketEngine._request(name,*args)
+MarketEngine._stock(symbol)
+MarketEngine._depth(symbol)
+```
+
+### Required GUNS additions
+Delegate:
+```python
+async def _guns_scan(self):
+    from guns_data import scan
+    return await scan(self)
+
+async def _guns_bars(self,symbol):
+    from guns_data import bars
+    return await bars(self,symbol)
+
+async def _guns_news(self,symbol):
+    from guns_data import news
+    return await news(self,symbol)
+```
+
+Adjust request cache:
+```python
+ttl = (
+    20 if name=='guns_scan'
+    else 120 if name=='guns_news'
+    else 300 if name in ('search','chain')
+    else 1
+)
+```
+
+Validation preserve:
+```python
+brokerId=row.get('brokerId') is True
+priority=max(0,min(3,number(row.get('priority')) or 0))
+```
+
+Allocate demand by priority, not insertion alone:
+```python
+if cid not in desired or row['priority']>desired[cid]['priority']:
+    desired[cid]=row
+
+wanted=dict(
+  sorted(desired.items(),key=lambda x:-x[1]['priority'])[:self.capacity]
+)
+```
+
+Periodic:
+```python
+if self._ib and self._ib.isConnected() and getattr(self,'_guns_streams',None):
+    from guns_data import close_idle
+    close_idle(self)
+```
+
+Legacy numeric identity:
+```python
+legacy = 900000000 <= cid < 990000000 and not row.get('brokerId')
+```
+This is a minimal GUNS high-conId safeguard, not the full lost option-chain identity fix.
+
+### Existing connection fix — preserve
+```python
+await ib.connectAsync(...timeout=15,readonly=True,fetchFields=m.StartupFetchNONE)
+ib.client.cancelPositions()
+ib.client.reqAccountUpdates(False,'')
+```
+Never revert to broken:
+```python
+ib.reqAccountUpdates(False,'')
+```
+
+---
+
+## `/home/user/webapp/serve.py`
+**Current baseline unchanged; needs GUNS routes/assets.**
+
+`_data()` near line280:
+Add:
+```python
+elif kind in ('guns_scan','guns_bars','guns_news'):
+    args=() if kind=='guns_scan' else (one('symbol',''),)
+    out=market.ENGINE.call(kind,*args,timeout=40)
+```
+
+`do_GET()`:
+- Public manifest/icon handlers.
+- Calls `_authorize()`.
+- Then stream/data/api/page handlers.
+
+Add **explicit authenticated static allowlist** after authorize:
+```python
+assets={
+ '/assets/guns.js':('guns.js','text/javascript; charset=utf-8'),
+ '/assets/guns-execution.js':('guns-execution.js','text/javascript; charset=utf-8'),
+ '/assets/guns-ui.js':('guns-ui.js','text/javascript; charset=utf-8'),
+ '/assets/guns.css':('guns.css','text/css; charset=utf-8'),
+}
+```
+Read known file from HERE and `_send()` string.
+Do not expose arbitrary paths or unprotected source document.
+`_send()` accepts string and MIME, sends no-store.
+
+All POST/DELETE/private GET routes remain authenticated.
+
+---
+
+## `/home/user/webapp/paper_local.html`
+**Current baseline unchanged. Main integration pending.**
+
+Inline app enclosed:
+```javascript
+(function(){
+ ...
+ render();
+ connect();
+})();
+```
+
+### Planned asset inclusion
+Before main `<script>`:
+```html
+<link rel="stylesheet" href="/assets/guns.css">
+<script src="/assets/guns.js"></script>
+<script src="/assets/guns-execution.js"></script>
+<script src="/assets/guns-ui.js"></script>
+```
+Existing Node tests extract literal `<script>...</script>`, so external script tags do not replace that inline source.
+
+### Need `var guns=null`
+Declare early enough hooks can safely check before initialization.
+
+### Instantiate bridge before final render/connect
+Example:
+```javascript
+guns=window.GunsUI.create({
+  state:()=>S,
+  quotes:()=>Q,
+  account:()=>acct(),
+  position:cid=>posOf(cid),
+  ready:cid=>quoteReady(cid),
+  usingTws:()=>usingTws(),
+  now:()=>Date.now(),
+  uid:()=>uid(),
+  today:()=>today(),
+  commission:(inst,n,p,side)=>commission(inst,n,p,side),
+  marketPrice:(inst,side,n)=>marketablePrice(inst,side,n),
+  fill:(o,n,p)=>applyFill(o,n,p),
+  save:()=>save(),
+  sync:()=>syncSubs(),
+  render:()=>render(),
+  tab:()=>tab,
+  esc:esc,
+  px:px,
+  money:money,
+  cancel:id=>cancelOrder(id)
+});
+```
+Bridge function names verified in existing app.
+
+### Tab
+Current:
+```javascript
+var TABS=[
+ ['trade','Trade'],
+ ['pos','Positions'],
+ ['ord','Orders'],
+ ['hist','History'],
+ ['acct','Account']
+];
+```
+Add `['guns','GUNS']`.
+
+`viewFor(t)`:
+```javascript
+return t==='guns' && guns ? guns.view() : ...existing...
+```
+
+`renderLive()`:
+- Currently updates stats/diag/buttons.
+- Returns specially for pos/trade/acct.
+- For guns, call `guns.live()` rather than rebuilding inputs.
+
+`render()`:
+- Calls `viewFor`.
+- Uses WeakMap structural HTML caching.
+- Preserves focused input and scroll.
+- After structural render, call `guns.live()` if guns tab.
+
+### Subscription universe
+Current `universe()` uses Map:
+- selected
+- builder legs
+- current book
+- option chain
+- other books
+
+Add `guns.instruments()` before passive demand.
+Preserve `priority` and `brokerId` in copied row.
+Do not let 500 positions starve GUNS stock/active stop subscriptions.
+
+### Tick hook
+Existing:
+```javascript
+function onTick(conid,patch){
+ ...
+ Q[conid]=q;
+ ...
+ var candidates=ordersFor(conid);
+ for(...){
+   if(o.status==='working'&&tryFill(o))filled=true;
+ }
+ ...
+}
+```
+Call `guns.execution.manage(conid)` after quote is in Q, before/after regular order loop as appropriate.
+Avoid double-consumption of one tick; execution has `lastExitTick`.
+
+### `tryFill(o)`
+Existing start:
+```javascript
+if(o.status!=='working')return false;
+if(o.expiry&&o.expiry<ymd())return false;
+if(o.type==='COMBO'){ ... }
+```
+Before normal logic:
+```javascript
+if(guns){
+  if(!guns.execution.guard(o))return true;
+  const handled=guns.execution.fill(o);
+  if(handled!==null)return handled;
+}
+```
+Must check guard before any combo legs execute.
+
+### `applyFill(...)`
+Current signature:
+```javascript
+function applyFill(o,fq,price,leg)
+```
+Existing:
+- Builds inst.
+- Commission.
+- `fillRiskAllowed`.
+- Gets/creates position.
+- Captures `oldQty`.
+- Applies quantity/cost/cash/realized.
+- Updates order filledQty/status.
+- Adds `S.trades` fill record.
+- Logs and snapshots.
+
+Add actual-fill hook at end:
+```javascript
+if(guns && !leg)
+  guns.execution.after(o,fq,price,oldQty,p.qty,realized,comm);
+```
+Be careful about generic single fills missing metadata in `inst`:
+```javascript
+var inst = leg || {
+ conid:o.conid,symbol:o.symbol,
+ secType:o.secType,mult:o.mult,exch:o.exch
+};
+```
+Known baseline metadata omission; if relevant preserve brokerId/root etc.
+
+### Portfolio changes
+`bookSwitch(id)` currently:
+- `bookSync()`
+- switches S.bookId
+- `bookApply`
+- clears selection and chain state
+- saves/renders.
+
+Safest initial implementation:
+- If GUNS active/pending exposure, reject switching with explicit warning to flatten/cancel first.
+- Otherwise stops cease being managed when another book becomes active.
+- Also inspect book deletion/reset/source-changing paths to avoid orphaning live paper protection.
+- Do not silently imply multi-book unattended order execution.
+
+### Existing persistence
+`save()` schedules commit in150ms and render.
+`commit()` writes entire `S` to localStorage.
+`bookSync()` copies only BOOK_FIELDS; GUNS uses its own per-book map at root S.
+Existing export of S should include S.guns automatically.
+Dedicated GUNS JSON export also planned.
+
+---
+
+## `/home/user/webapp/README.md`
+**Modified and pushed in `1ac7dc2`; current source review/design notes intact.**
+
+Contains:
+- Current baseline architecture and historical benchmarks.
+- Complete GUNS design/handoff.
+- Source hash.
+- Explicit status “source review/design only; GUNS tab and trackers NOT implemented yet.”
+- That status must be updated once actual implementation passes tests.
+- Notes on absent option-chain commits.
+- Proposed D1/R2 cloud tracking, not provisioned.
+- Source conflicts.
+- Entry-point suggestions.
+
+Do not leave README claiming implementation complete while only modules are written.
+
+---
+
+# 6. Problem Solving
+
+## Solved and preserved
+- Full uploaded course is committed/pushed.
+- Fresh GitHub fetch established actual baseline.
+- First GUNS core saved to remote downloadable Git bundle.
+- Restored that bundle successfully after reset instead of rewriting core again.
+- `guns-execution.js` separates execution from DOM for focused tests.
+- Dynamic risk math recalculates equity, not a static dollar value.
+- Course irregularities were identified and documented.
+
+## Ongoing operational problem
+Every user interruption has frequently been followed by a sandbox reset to GitHub main.
+
+Consequences:
+- Uncommitted files disappear.
+- **Local commits also disappear** if not pushed/backed up.
+- Installed Python/Playwright dependencies disappear.
+- Huge Write/Edit calls have been repeatedly interrupted.
+- The latest user expects continuation, not another long planning turn.
+
+### Required workflow
+- Verify actual LS/git state first after interruption.
+- Recover bundle if needed.
+- Make smaller changes.
+- Commit promptly.
+- Upload refreshed bundle after new commits if GitHub setup fails.
+- Do not repeatedly retry GitHub authorization or claim user disconnected their account.
+- The latest tool result is “No Valid GitHub Authorization Found.”
+- A previous review turn succeeded and pushed `1ac7dc2`; tool behavior is intermittent.
+
+## Known new-code issues not tested yet
+- UI skeleton calls undefined `live()`.
+- No events or pulse timer yet.
+- No CSS/canvas renderer yet.
+- New modules not served/loaded/wired.
+- No GUNS tests written.
+- No live Gateway acceptance.
+- Pending plan invalidation / newer flag candle replacement not implemented.
+- Cloud/post-exit trackers not implemented.
+- Portfolio-switch protection not implemented.
+- Historical stream cleanup/delegation not wired into engine.
+- New scanner/history traffic needs capacity prioritization.
+- Entry/exit safeguards must be tested against existing generic fills, combos and manual closes.
+
+---
+
+# 7. Pending Tasks
+
+## Immediate, explicitly authorized
+1. Verify current files/git after interruption.
+2. Recover `3c1c8e8` from bundle if reset.
+3. Preserve `54af6bb` execution module and UI skeleton if still present:
+   - commit unfinished UI checkpoint if needed;
+   - upload refreshed bundle.
+4. Finish `guns-ui.js`:
+   - live metrics and rule checklist.
+   - candidate list/search.
+   - news/depth panels.
+   - active orders/brackets/journal.
+   - chart rendering.
+   - event handlers.
+   - interval lifecycle.
+5. Add responsive `guns.css`.
+6. Add authenticated routes/assets in serve.py.
+7. Add MarketEngine delegates/cache/priority/stream cleanup.
+8. Add GUNS tab and bridge/hooks in inline app.
+9. Ensure:
+   - equity-based sizing at arm and trigger.
+   - all current holdings marked fresh.
+   - actual-size protection.
+   - no accidental shorts/double exits.
+   - stale/disconnected gates.
+   - first-hour/session restrictions.
+10. Add focused tests and run existing regressions.
+11. Commit and push when authorized; otherwise upload complete bundle.
+12. Update README with actual state, limitations and next work.
+
+## After GUNS functionality
+- Cloud collector independent of PC.
+- Durable strategy-neutral journal.
+- Post-exit paths and horizons.
+- Historical gap-aware backfill.
+- R/expectancy/alternative-exit review with data quality and ambiguity tracking.
+- Do not start deployment without appropriate configuration and actual architecture support.
+
+---
+
+# 8. Current Work Immediately Before Summary
+
+Latest user:
+> “continue”
+
+Actions in that continue:
+- LS showed reset base repo.
+- Downloaded successful GUNS Git bundle.
+- Restored `3c1c8e8`.
+- GitHub setup failed.
+- Wrote and syntax-checked `guns-execution.js`.
+- Committed **`54af6bb`** locally.
+- Recreated local `guns-checkpoint.bundle` containing that commit.
+- **Did not upload updated bundle.**
+- Wrote new `guns-ui.js` (8,017 characters), containing:
+  - data request/controller methods;
+  - full static workstation layout;
+  - `// LIVE` placeholder;
+  - `// EVENTS` placeholder.
+- The next call was:
+```json
+{
+ "file_path":"/home/user/webapp/guns-ui.js",
+ "limit":4,
+ "offset":32
+}
+```
+- That Read was interrupted and returned no result.
+- No follow-up edits occurred.
+
+**This is exactly where to resume.**
+
+---
+
+# 9. Optional Next Step
+
+Directly continue implementation:
+
+1. **LS / git status / Read first**, because interruption may have reset everything.
+2. If files survive:
+   - checkpoint UI;
+   - upload the updated bundle so execution/UI do not disappear again.
+3. If reset:
+   - restore core from the known bundle;
+   - recover/recreate execution module from this summary if `54af6bb` is absent.
+4. Finish live/events/chart/CSS and wire into existing app.
+
+Do not start another broad GUNS analysis or ask again whether to implement. The user has already authorized immediate implementation and prioritizes GUNS before cloud collection.
+
+---
+
+# 10. File Modification Ledger
+
+Statuses below distinguish current/pushed, recoverable, local-only, and lost historical changes.
+
+## Current GUNS work
+| Exact path | Status | Current details |
+|---|---|---|
+| `/home/user/webapp/guns.js` | created | Pure rules/risk/exit math; committed `3c1c8e8`; remotely recoverable bundle. |
+| `/home/user/webapp/guns_data.py` | created | Read-only scanner, streaming history and news helpers; committed `3c1c8e8`; not integrated. |
+| `/home/user/webapp/guns-execution.js` | created | Dynamic-equity paper entries/brackets/journal; local commit `54af6bb`; updated local bundle only, not uploaded. |
+| `/home/user/webapp/guns-ui.js` | created | Latest 8,017-character controller/layout skeleton; uncommitted; undefined live(), missing events/charts/timer. Last Read interrupted. |
+| `/home/user/webapp/guns-checkpoint.bundle` | created | Local Git recovery artifact; currently rebuilt through `54af6bb` if sandbox survives. Do not commit bundle into Git. Uploaded URL still points to older core-only version. |
+| `/home/user/webapp/GUNS_MASTER_DOCUMENT.md` | created | Exact full user source, committed/pushed `1ac7dc2`. |
+| `/home/user/uploaded_files/GUNS_MASTER_DOCUMENT.md` | read-only | Original upload, entire document read including long-line supplements; source rules listed above. |
+| `/home/user/webapp/README.md` | modified | Pushed source/design handoff `1ac7dc2`; needs implementation status update after completion. |
+
+## Existing application files read or edited during visible work
+| Exact path | Status | Important current structure / changes |
+|---|---|---|
+| `/home/user/webapp/market.py` | modified historically; current baseline | Lost chain and first-attempt GUNS edits are absent. Needs GUNS delegates/cache/priority/brokerId/cleanup. Single IB owner, seals remain. |
+| `/home/user/webapp/serve.py` | modified historically; current baseline | Lost chain/GUNS routes absent. Needs authenticated static asset allowlist and guns data endpoints. |
+| `/home/user/webapp/paper_local.html` | modified historically; current baseline | Lost chain changes absent. Needs assets, bridge, GUNS tab/view, fill/tick hooks, subscriptions and book guards. Inline IIFE. |
+| `/home/user/webapp/test_market.py` | modified historically; current baseline | Lost chain tests absent. Current 9 streaming tests; FakeEngine overrides real connection. New data adapter tests pending. |
+| `/home/user/webapp/test_frontend.cjs` | modified historically; current baseline | Current 3 inline script/expiry tests; lost chain tests absent. Add GUNS module/risk/execution tests or new explicit test file. |
+| `/home/user/webapp/.gitignore` | read-only in current work | Ignores Python caches, .contracts.json, credentials, envs, node_modules, *.tar.gz, *.zip. Does NOT yet ignore *.bundle. |
+| `/home/user/webapp/requirements.txt` | read-only | Pins `ib_async==2.1.0`; no new runtime dependency required for planned GUNS. |
+
+## Files from inherited project review/history
+These were read/modified before this visible continuation, as recorded in the inherited handoff. No new modifications in latest GUNS work unless noted above.
+
+| Exact path | Status | Summary |
+|---|---|---|
+| `/home/user/webapp/.dockerignore` | created historically | Excludes Git/secrets/caches/tests/checkpoint/screenshot from Docker context. Verify new source modules remain included. |
+| `/home/user/webapp/START_HERE.md` | modified historically | Default Gateway setup; update only if new GUNS instructions necessary. |
+| `/home/user/webapp/DEPLOY.md` | modified historically | Python hosting/private Gateway/SSE; no cloud deployment current. |
+| `/home/user/webapp/Dockerfile` | modified historically | Installs requirements then copies app. New JS/Python files included by copy. |
+| `/home/user/webapp/Procfile` | read-only | `web: python serve.py`. |
+| `/home/user/webapp/render.yaml` | modified historically | Python service; build pip install requirements. |
+| `/home/user/webapp/providers.py` | modified historically | Finite parsing; delegates TWS to MarketEngine. Not part of current GUNS implementation yet. |
+| `/home/user/webapp/tws.py` | read-only | `_seal`, `is_sealed`, disk definition cache; legacy standalone diagnostic loop. Do not use it as second production connection. |
+| `/home/user/webapp/ws.py` | read-only | Legacy Client Portal WebSocket code. |
+| `/home/user/webapp/check.py` | read-only | Separate live diagnostic, client ID78. |
+| `/home/user/webapp/start.command` | modified historically | Executable launcher. |
+| `/home/user/webapp/start.sh` | modified historically | Executable launcher delegates to start.command. |
+| `/home/user/webapp/start.bat` | read-only | Windows Python launcher. |
+| `/home/user/webapp/test_security.py` | created historically | 16 persisted security tests; run for new asset/data route auth. |
+| `/home/user/webapp/browser_check.py` | created historically | Playwright fixture tests for 500 positions/trading/export/mobile. Needs external assets available in fixture if testing GUNS. |
+| `/home/user/webapp/checkpoint.cjs` | created historically | Optional 30-second Git recovery script; not known running; remote pushes unavailable. |
+| `/home/user/webapp/workstation-test.png` | created historically, ephemeral | Lost in old reset; not current deliverable. |
+
+No intentional source deletions occurred.
+
+---
+
+# 11. Build/Test State
+
+## Latest GUNS check
+Command:
+```sh
+node --check guns-execution.js
+```
+Result: **success**.
+
+This only checks syntax. It does **not** test sizing, lifecycle or integration.
+
+## Current GUNS tests
+- No GUNS test file written yet.
+- No GUNS browser run yet.
+- No GUNS Python adapter tests yet.
+- No app startup after integration, because integration has not happened.
+
+## Historical baseline tests
+Persisted baseline previously verified:
+```sh
+python3 -m unittest -q
+node --test test_frontend.cjs
+```
+- 25 Python passed.
+- 3 Node passed.
+- Existing Playwright fixture checks passed previously.
+- Those are not proof the new GUNS code works.
+
+## Lost option-chain phase tests
+At local `d8d3adb`:
+- 31 Python + 6 Node tests passed.
+- These extra tests and changes are absent from current checkout.
+- Do not report current baseline as 37 tested GUNS tests.
+
+## Environment
+- `ib_async` installed and API signatures inspected in first GUNS attempt.
+- Subsequent resets likely removed installation.
+- Playwright/Chromium may also be absent.
+- Install only needed dependencies once; avoid repeated full-browser setup before basic unit/integration checks.
+
+Historical exact import failure:
+```text
+ModuleNotFoundError: No module named 'ib_async'
+```
+Occurred during lost chain phase and was resolved then with pip; may recur after reset.
+
+Historical whitespace issue while pushing GUNS plan:
+```text
+README.md:334: new blank line at EOF.
+```
+Fixed before `1ac7dc2` push.
+
+## Latest Git state
+Last confirmed:
+- Branch `main`.
+- Remote `origin/main`: `1ac7dc2`.
+- Local HEAD: **`54af6bb`**.
+- Local history:
+  - `54af6bb` execution module.
+  - `3c1c8e8` rules/data core.
+  - `1ac7dc2` pushed source/design.
+- Uncommitted/untracked:
+  - `guns-ui.js`.
+  - `guns-checkpoint.bundle`.
+- Existing app files remain baseline.
+- **Verify after interruption—sandbox may have reset again.**
+
+---
+
+# 12. Completion Checklist
+
+## Review/preservation
+- [x] Inspect current main and fresh GitHub state.
+- [x] Read complete GUNS course, including truncated long paragraphs.
+- [x] Preserve exact source in repository.
+- [x] Push source and detailed handoff: `1ac7dc2`.
+- [x] Create recoverable GUNS core checkpoint: `3c1c8e8`.
+- [x] Upload core Git bundle.
+- [x] Recover core from bundle after reset.
+- [x] Local execution checkpoint: `54af6bb`.
+- [ ] Upload/push execution checkpoint and latest UI.
+- [ ] Complete implementation and preserve complete deliverable.
+
+## GUNS backend
+- [x] Write preliminary scanner helper.
+- [x] Write historical minute/daily streaming helper.
+- [x] Write entitled news helper.
+- [ ] Wire helpers into MarketEngine.
+- [ ] Cache and idle-stream cleanup.
+- [ ] Priority demand and brokerId validation.
+- [ ] Add authenticated server routes/assets.
+- [ ] Test adapter lifecycle, errors and route security.
+- [ ] Live Gateway validation.
+
+## Strategy/risk core
+- [x] Pure five-setup analysis implementation.
+- [x] NY date/session-aware logic.
+- [x] Moving averages/ATR/aggregation.
+- [x] Dynamic equity × percentage risk function.
+- [x] Fee/buying-power/whole-share caps.
+- [x] Basic stop/target/breakeven decision logic.
+- [ ] Focused regression tests for supplied equity examples.
+- [ ] Pattern/session/DST/insufficient-data tests.
+- [ ] Review conservative filters and disclose heuristics.
+- [ ] Pending entry auto-replanning/invalidation as patterns change.
+
+## Paper execution
+- [x] Local module for dynamic pending/trigger sizing.
+- [x] Actual-filled-size bracket state.
+- [x] Partial exits and latched stops.
+- [x] Breakeven management.
+- [x] Session-close/flatten decisions.
+- [x] Per-trade local journal and actual net R calculations.
+- [ ] Wire main tryFill/applyFill/tick hooks.
+- [ ] Guard combo/manual orders and portfolio/source changes.
+- [ ] Test no accidental shorts/double exits/stale fills.
+- [ ] Verify preservation/reload behavior.
+
+## UI
+- [x] Latest static GUNS layout/controller skeleton written.
+- [ ] Commit/backup it.
+- [ ] Live quote/risk/checklist rendering.
+- [ ] Scanner/search interactions.
+- [ ] News/depth display.
+- [ ] Chart renderer.
+- [ ] Form/click/change handlers.
+- [ ] Pulse/timer startup.
+- [ ] CSS/responsiveness.
+- [ ] GUNS tab/bridge/main integration.
+- [ ] Browser functionality and layout validation.
+
+## Cloud and post-exit research
+- [ ] Always-on collector independent of PC.
+- [ ] Durable journal/jobs.
+- [ ] Minute/session/day horizons.
+- [ ] Gap-aware historical backfill.
+- [ ] Strategy-neutral analysis and counterfactuals.
+- [ ] Deployment/configuration.
+- [x] Do not misrepresent this as running now; skeleton says no cloud collector.
+
+---
+
+# 13. Direct Quotes and Handoff
+
+Current governing implementation instruction:
+> “Implement immediately.”
+
+Priority:
+> “Before that though implement the guns stuff.”
+
+Dynamic sizing:
+> “if 1R is set to 1% of account, then it is ALWAYS 1% of account”
+> “if it goes to 90k, 900, if it goes to 100.1k, then 1001.”
+
+Efficiency:
+> “Remember credit and speed efficiecny.”
+
+Latest continuation:
+> “continue”
+
+Latest assistant progress message:
+> “I recovered the saved strategy core from the backup, so that work doesn’t need repeating. I’m now wiring it into the paper account and GUNS tab, with separate tests for equity-based sizing and linked exits.”
+
+Actual stopping point:
+- `guns-ui.js` static skeleton successfully written.
+- Read before the next edit interrupted.
+- **No live renderer/events/CSS/main integration yet.**
+
+---
+
+# 14. Artifact URL Provenance
+
+Ask labels use named request episodes to avoid pretending exact chronological message numbering.
+
+## Current source
+User-uploaded course:
+https://www.genspark.ai/api/files/s/oOdpE01X [ask#guns-upload/user-upload | none | source-reference]
+
+Original sandbox:
+```text
+/home/user/uploaded_files/GUNS_MASTER_DOCUMENT.md
+```
+
+## Current recoverable implementation checkpoint
+Core-only Git bundle:
+https://www.genspark.ai/api/files/s/BrKexDJu [ask#guns-continue/UploadFileWrapper | none | partial-checkpoint]
+
+**Contains `3c1c8e8`, `guns.js`, `guns_data.py`, and prior history.**
+**Does NOT contain `54af6bb`, guns-execution.js, or guns-ui.js.**
+
+Successful restoration used:
+```sh
+git fetch ./guns-checkpoint.bundle main
+git merge --ff-only FETCH_HEAD
+```
+
+The local `guns-checkpoint.bundle` was later rebuilt through `54af6bb`, but no new upload URL was returned.
+
+## Earlier inherited artifacts — not current GUNS deliverables
+Complete historical overhaul backup:
+https://www.genspark.ai/api/files/s/WNl9haut [ask#performance-overhaul/ProjectBackup | none | superseded-by-main-b754970]
+
+Standalone Gateway-fixed market.py:
+https://www.genspark.ai/api/files/s/H9Nb27Le [ask#gateway-disconnect/UploadFileWrapper | none | superseded-by-main-ba883b7]
+
+Historical test screenshot:
+https://www.genspark.ai/api/files/s/TL1pV12Y [ask#performance-overhaul/Read | none | historical-test-artifact]
+
+Historical overhaul commit:
+https://github.com/Palakkaalakak/paper-desk/commit/b754970 [ask#performance-overhaul/Bash-git-push | none | superseded-by-main-ba883b7]
+
+## No artifact exists for these interrupted operations
+- Option-chain ProjectBackup after `d8d3adb`: interrupted; no URL.
+- First large GUNS UI Write: interrupted/reset.
+- Second GUNS UI append: interrupted/reset.
+- Updated `54af6bb` bundle: local only, not uploaded.
+
+**Do not invent a backup link or present an older artifact as the finished GUNS upgrade.**

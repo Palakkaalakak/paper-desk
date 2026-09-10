@@ -24,3 +24,4 @@ htmlcov/
 *.key
 *.tar.gz
 *.zip
+*.bundle
