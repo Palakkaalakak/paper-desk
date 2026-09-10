@@ -238,9 +238,13 @@ its changed files. Recovery snapshots may be incomplete between edits: always ru
 before committing them to main. Previous long-form adapter/model notes remain available
 in revision `79169d8`; this README describes the current streaming architecture.
 
-## GUNS upgrade: inspected baseline and proposed implementation
+## GUNS upgrade: implemented paper workstation (2026-09-10)
 
-Status: source review/design only; the GUNS tab and trackers are NOT implemented yet.
+Status: GUNS tab, read-only data endpoints, dynamic sizing and browser-local paper
+bracket management are implemented. Cloud/post-exit collection is NOT implemented.
+See the current implementation section below; the original design remains as a roadmap.
+
+### Historical baseline review
 The user requested inspection of intervening changes before further edits. A fresh fetch
 found local main and origin/main at `ba883b7` with a clean working tree. The previous
 session's local option-chain commits `1067e0d` / `d8d3adb` are absent from this reset
@@ -255,7 +259,7 @@ It documents Gap Up News Scalp, five long stock setups, preparation, execution a
 It is reference material, not evidence that projected returns or trade examples are reliable.
 The whole document, including long paragraphs truncated by the file viewer, was read.
 
-### Planned workspace
+### Original workspace roadmap (not a completed-feature list)
 
 - A first-class GUNS tab with Preparation, Execution and Review views. Linked daily,
   five-minute and large one-minute charts; premarket shading; 9/20 EMA and 50/200 SMA;
@@ -322,12 +326,81 @@ The whole document, including long paragraphs truncated by the file viewer, was 
 
 ### Implementation entry points and prerequisites
 
-Current market.py provides no historical bars/scanner/news collector; depth is a short
-transient request. Browser applyFill() records fills but has no bracket/OCO lifecycle.
+At the original design checkpoint, market.py had no historical bars/scanner/news
+collector, and applyFill() had no bracket lifecycle. Both GUNS adapters and the local
+bracket controller have since been added; depth remains a transient read-only request.
 The engine drops browser demand after 60 seconds. No server journal/database exists.
 Add isolated read-only broker data adapters and durable research ingestion/collector;
 keep tws._seal(), readonly=True and the real-order proxy deny rules unchanged.
 Focused tests should cover strategy math, session/DST rules, stale data, partial/OCO fills,
 retry idempotency, post-exit horizons, missing/ambiguous observations, and UI integration.
-Before implementation, confirm durable storage/hosting and collector availability with the
-user. Do not restart IB Gateway, overwrite account state, or continue unrelated chain work.
+Before CLOUD implementation, confirm durable storage/hosting and collector availability
+with the user. Do not restart IB Gateway, overwrite account state, or continue unrelated chain work.
+
+### Current implemented features and user guide
+
+1. Open the existing app at http://localhost:8765, select IB Gateway as the data source,
+   then open the **GUNS** tab. No frontend build or migration is required.
+2. Scan preliminary US gainers or search for a stock. The selected name has 1-minute,
+   5-minute and daily candlestick charts, EMA 9/20, SMA 50/200, news and displayed depth.
+   Charts show received broker data only. Scanner results are candidates, not approvals.
+3. Choose S1–S5 and configure percentage risk, 2R/2.5R, ATR/price/fixed stop settings,
+   spread and volume. Review common-stock classification, favorable catalyst (excluding
+   fixed-price buyouts) and daily resistance. These qualitative judgments remain human.
+4. The displayed budget is always current marked equity times risk percentage:
+   100,000 at 1% = 1,000; 90,000 = 900; 100,100 = 1,001. Pending quantities are recomputed
+   and checked again before fill. Whole shares, estimated round-trip fees and buying power
+   may leave risk budget unused; the UI shows this. All held positions need fresh marks.
+5. Arm a PAPER stop-limit entry, or opt into one-shot auto-arm for the selected setup.
+   Auto-arm is not restored across reloads. At most two pending/open GUNS trades are allowed.
+   Entry windows follow the exchange schedule; missing/stale charts, quotes or sessions
+   block entries. Changed pending trigger/stop prices require review and re-arming.
+6. Protection covers actual filled quantity. The unfilled entry remainder is cancelled.
+   Stops latch, partial exits cannot exceed held/displayed quantity, targets re-anchor to
+   actual entry, optional breakeven activates at +1R, and session-close/manual flatten
+   waits for a valid live quote. Manual reducing sells adjust protection. Same-symbol
+   increases, oversells and conflicting combos are rejected. Portfolio switching, deletion,
+   reset and data-source changes are blocked while GUNS exposure needs management.
+7. Closed trades appear in the journal with fees, net P/L, actual R, sampled bid extrema
+   and lifecycle events. **Export research** downloads JSON for all saved GUNS books.
+
+New authenticated URIs:
+- `GET /data/guns_scan?provider=tws`: preliminary scanner candidates.
+- `GET /data/guns_bars?provider=tws&symbol=SYMBOL`: streamed minute/daily history snapshot.
+- `GET /data/guns_news?provider=tws&symbol=SYMBOL`: entitled news headlines.
+- `GET /assets/guns.js`, `guns-execution.js`, `guns-ui.js`, `guns.css` under `/assets/`:
+  explicit allowlisted assets. Existing quote subscriptions/SSE/search/depth are reused.
+
+Data remains in the existing browser account `paperAccount`: `S.guns.config` and
+`S.guns.books[bookId]` contain review notes, active brackets and closed-trade journal.
+Historical chart subscriptions are transient IB Gateway streams. No Cloudflare database,
+cloud collector, durable server journal or post-exit job has been provisioned.
+**Keep browser, Python service and Gateway running.** Broker access remains sealed and
+read-only. No broker orders are sent. Stops do not guarantee a maximum loss; browser
+suspension, disconnections, gaps and slippage can delay exits or exceed planned risk.
+
+Known limits / recommended next work:
+- Live Gateway acceptance remains to be performed with the user's connected instance.
+- Flag/pivot detection is heuristic. Premarket volume is conservatively required even
+  for S4; ATR period 14 and S5 2x-ATR range checks are explicit app defaults/guardrails.
+- Pending plans revalidate but do not automatically move to newer candle triggers.
+- Chart pan/zoom, multi-candidate pinning, float verification and advanced statistics are
+  roadmap items. Minimum history is required for SMA 200; thin names can remain blocked.
+- Strategy-neutral durable research and minutes/days post-exit tracking are still next.
+  An always-on host/data connection independent of the user's PC is necessary; storing
+  rows in D1 alone cannot run a Gateway socket collector.
+- Use one execution tab per account. Browser-local storage is not a multi-writer ledger.
+
+Validation performed on this implementation:
+- `node --test test_guns.cjs test_frontend.cjs`: 17 tests passed.
+- `python3 -m unittest -q`: 26 tests passed, including asset/data authentication.
+- `python3 browser_check.py`: 500-position, order, freshness, persistence, export and
+  mobile checks passed with no browser errors.
+- An isolated GUNS browser fixture also passed scanner, charts, review checks, pending
+  equity re-sizing, actual partial fill, breakeven, latched partial exit, JSON export,
+  local persistence and mobile layout. This is not a live broker acceptance test.
+
+Preservation: GitHub authorization was unavailable during implementation. Incremental
+full-history Git bundles were uploaded; local-only commits are not considered durable.
+`GUNS_HANDOFF.txt` preserves the uploaded historical handoff and is superseded by this
+section for current implementation status. No production deployment was performed.
