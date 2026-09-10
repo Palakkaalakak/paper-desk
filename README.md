@@ -237,3 +237,97 @@ To resume after a wipe, fetch origin and inspect the recovery branch before rest
 its changed files. Recovery snapshots may be incomplete between edits: always run the tests
 before committing them to main. Previous long-form adapter/model notes remain available
 in revision `79169d8`; this README describes the current streaming architecture.
+
+## GUNS upgrade: inspected baseline and proposed implementation
+
+Status: source review/design only; the GUNS tab and trackers are NOT implemented yet.
+The user requested inspection of intervening changes before further edits. A fresh fetch
+found local main and origin/main at `ba883b7` with a clean working tree. The previous
+session's local option-chain commits `1067e0d` / `d8d3adb` are absent from this reset
+checkout and fetched branches. Do not claim those changes are deployed or recovered.
+GitHub authorization succeeded during this review; preserve incremental commits remotely.
+
+### Authoritative source
+
+`GUNS_MASTER_DOCUMENT.md` is the complete, unchanged user upload (153,426 bytes).
+SHA-256: `90cf9f33ed648b936809629dd1f1a92c019100bf5a2c0279c63b3426053e7a34`.
+It documents Gap Up News Scalp, five long stock setups, preparation, execution and Level 2.
+It is reference material, not evidence that projected returns or trade examples are reliable.
+The whole document, including long paragraphs truncated by the file viewer, was read.
+
+### Planned workspace
+
+- A first-class GUNS tab with Preparation, Execution and Review views. Linked daily,
+  five-minute and large one-minute charts; premarket shading; 9/20 EMA and 50/200 SMA;
+  configurable ATR period (the course does not specify one), premarket high, pivot,
+  trigger candle, entry, stop, target and 1R levels. No fabricated historical candles.
+- Broker scanner candidates: corporate common stocks, price at least $1.50, gap at least
+  5%, current premarket volume at least 30,000; ranked by volume. Instrument classification
+  must be verified rather than assuming every STK is a corporate common stock.
+  Catalyst/news source and float provenance stay visible; unknown data remains unknown.
+  Pin four to six candidates and default to monitoring two execution candidates.
+- Explicit setup selection/checklists: S1 premarket-high breakout; S2 lower-pivot breakout
+  with at least 1R clearance; S3 premarket bull flag; S4 first post-open bull flag; S5 first
+  completed bullish one-minute candle only. Qualitative pattern judgements are confirmed by
+  the trader, not represented as perfect automatic detection. Use America/New_York and
+  actual exchange sessions, not the browser timezone or a fixed UTC offset.
+- Risk-sized PAPER stop-limit brackets, tick-aware rounding, 2R/2.5R choices, planned risk
+  versus worst permitted entry risk, buying-power limits, entry/exit spread and freshness
+  gates. Stops/targets must be linked OCO and sized to actual partial fills; manual exits
+  must reduce/cancel child orders without opening an unintended short. Breakeven at +1R
+  is an explicit management setting, not a claim of guaranteed zero loss after fees/gaps.
+- Live depth is supplemental evidence, never a guaranteed predictor. Use broker/API units,
+  not a hard-coded multiplication by 100 based on the course's TWS display convention.
+  Provide tight-spread and nearby ask-wall warnings and a paper flatten control.
+
+### Strategy-neutral research and post-exit tracking
+
+- Append-only, idempotent execution events, strategy/version/setup tags, immutable entry
+  plan and market context, partial fills, exit reasons, commissions and execution quality.
+  Distinguish position episodes, lots, portfolio IDs and reversals; do not confuse fills
+  in S.trades with complete round trips or relabel old untagged fills as GUNS.
+- Continue recording after exit at proposed configurable horizons of 1/5/15/30/60 minutes,
+  session close and 1/3/5 subsequent exchange sessions. Track sampled paths and coverage,
+  actual timestamps, benchmark type (bid/ask/last/bar), source and data quality.
+- Review actual net R, expectancy, win rate with sample counts, holding time, favorable/
+  adverse excursion during the trade and after exit, and costs. Compare by strategy/setup,
+  catalyst, spread, time-of-day and rule adherence. CSV/JSON export supports later research.
+- Counterfactuals (hold longer, 2R vs 2.5R, breakeven vs original stop) are separate from
+  realized results. OHLC bars cannot establish stop/target ordering when both are touched;
+  flag ambiguous paths. Missing observations and outages must never become zero returns.
+  Historical backfills must be labeled and cannot recreate missing Level 2/tick sequences.
+- Long-horizon jobs must persist independently of browser tabs. Proposed durable storage:
+  Cloudflare D1 accessed server-side by the Python service, with optional R2 for larger
+  datasets. This needs an approved storage/hosting path and securely configured credentials;
+  no credential belongs in browser code or Git. Do not use sandbox/localStorage-only data
+  as a purported durable research archive.
+- The existing Python/Gateway machine (or another authorized collector host) must stay on
+  for continuous collection. D1 storage alone does not run an IB socket collector. On
+  downtime, record gaps and request paced broker historical backfill where available.
+  Research writes must not block quote handling or paper execution. If archival writes
+  fail, visibly report unsynced/failed state rather than silently dropping events.
+
+### Source conflicts to handle explicitly
+
+- Core premarket-volume filter is 30,000; examples later use 150,000/200,000. Offer named,
+  configurable stricter presets, not an unexplained replacement of the core threshold.
+- Spread guidance varies between a strict five cents for S4 and a broader ten cents.
+  Default conservatively and record the actual threshold/version used on each trade.
+- Hot-button examples sometimes anchor brackets to the clicked chart price; later setup
+  rules anchor them to entry. Label the anchor and compute real arithmetic from selected
+  prices; do not claim identical risk under different fills or a maximum guaranteed loss.
+- Some example arithmetic, Singapore/Eastern times and the EXEL stop-out/win narrative are
+  inconsistent. Preserve the reference verbatim but do not seed these as verified trades,
+  current regulations, profit promises or financial ground truth.
+
+### Implementation entry points and prerequisites
+
+Current market.py provides no historical bars/scanner/news collector; depth is a short
+transient request. Browser applyFill() records fills but has no bracket/OCO lifecycle.
+The engine drops browser demand after 60 seconds. No server journal/database exists.
+Add isolated read-only broker data adapters and durable research ingestion/collector;
+keep tws._seal(), readonly=True and the real-order proxy deny rules unchanged.
+Focused tests should cover strategy math, session/DST rules, stale data, partial/OCO fills,
+retry idempotency, post-exit horizons, missing/ambiguous observations, and UI integration.
+Before implementation, confirm durable storage/hosting and collector availability with the
+user. Do not restart IB Gateway, overwrite account state, or continue unrelated chain work.
