@@ -192,6 +192,10 @@ h1{font-size:20px;letter-spacing:-.5px} h2{letter-spacing:.09em;font-size:11px}
 
 
 <script id="st" type="application/json">{"v":1,"account":{"name":"Paper Desk","type":"margin","currency":"USD"},"settings":{"slippageBps":1.5,"commissionPerShare":0.005,"commissionMin":1,"commissionMaxPct":1,"optCommission":0.65,"optCommissionMin":1,"marginMult":2,"allowShort":true,"auto":true,"autoSec":15,"dataSource":"free","provider":"tws","futIntraday":false},"cash":100000,"realized":0,"lastDay":"","positions":[],"orders":[],"trades":[],"cashflows":[{"ts":1787979808700,"amount":100000,"note":"opening balance"}],"equity":[{"ts":1787979808700,"equity":100000,"cash":100000}],"watchlist":[],"futMargin":{},"log":[{"ts":1787979808700,"text":"Account opened with $100,000.00"}]}</script>
+<link rel="stylesheet" href="/assets/guns.css">
+<script src="/assets/guns.js"></script>
+<script src="/assets/guns-execution.js"></script>
+<script src="/assets/guns-ui.js"></script>
 <script>
 var PAPER_LOCAL = true;
 (function(){
@@ -842,6 +846,7 @@ var S = JSON.parse(document.getElementById('st').textContent);
 var Q = {};            // conid -> quote
 var mcp = null, artifact = null, server = IBKR_FALLBACK, readOnly = false;
 var DIAG = {cap:'checking', storage:'checking', servers:[], server:'', tools:0, lastErr:'', lastTool:''};
+var guns = null;
 var tab = 'trade', sel = null, dirty = false, pubTimer = null, busy = 0;
 var LOCAL = (typeof PAPER_LOCAL!=='undefined' && PAPER_LOCAL);
 function errText(e){
@@ -958,6 +963,7 @@ function bookNewId(){
 }
 function bookSwitch(id){
   if(id===S.bookId) return;
+  if(guns && guns.execution.exposure()){ warn('Cancel pending GUNS entries and flatten protected positions before switching portfolios.'); render(); return; }
   var b = bookOf(id);
   if(!b) return;
   bookSync();
@@ -970,6 +976,7 @@ function bookSwitch(id){
   setStatus('switched to '+b.name);
 }
 function bookCreate(name, start){
+  if(guns && guns.execution.exposure()){ warn('Resolve GUNS exposure before creating another portfolio.'); return; }
   start = isFinite(start) ? start : 100000;
   var now = Date.now();
   var id = bookNewId();
@@ -984,6 +991,7 @@ function bookCreate(name, start){
   return id;
 }
 function bookDelete(id){
+  if(guns && guns.execution.exposure()){ warn('Resolve GUNS exposure before deleting portfolios.'); return false; }
   if(S.books.length<2) return false;      /* never leave zero portfolios */
   var was = (id===S.bookId);
   S.books = S.books.filter(function(b){ return b.id!==id; });
@@ -1256,6 +1264,7 @@ function onTick(conid, patch){
   var q = usingTws()?{}:(Q[conid] || {});
   for(var k in patch) q[k] = patch[k];
   if(q.bid!=null && q.ask!=null && q.ask>=q.bid) q.mid=(q.bid+q.ask)/2;
+  q.tradeLast = patch.last;
   if(q.last==null && q.mid!=null) q.last=q.mid;
   if(q.last!=null && q.prevClose==null && q.change!=null) q.prevClose = q.last - q.change;
   q.at = patch.at || Date.now();
@@ -1263,7 +1272,7 @@ function onTick(conid, patch){
   TICKS++;
   if(chainAwaitSpot && S.builder.expId===chainAwaitSpot && conid===S.builder.underConid && (q.last>0||q.mid>0)){chainAwaitSpot='';loadStrikes();}
   /* a tick can make a resting order marketable - check straight away */
-  var filled = false;
+  var filled = guns ? guns.execution.manage(conid) : false;
   var candidates = ordersFor(conid);
   for(var i=0;i<candidates.length;i++){
     var o=candidates[i];
@@ -1374,15 +1383,19 @@ function fetchQuote(inst){
 function universe(){
   var m=new Map();
   function add(x){
-    if(!x||!x.conid||!x.symbol||m.has(Number(x.conid)))return;
+    if(!x||!x.conid||!x.symbol)return;
+    var previous=m.get(Number(x.conid));
+    if(previous && (previous.priority||0)>=(x.priority||0))return;
     m.set(Number(x.conid),{conid:Number(x.conid),symbol:x.symbol,secType:x.secType||'STK',mult:x.mult||1,
-      exch:(!x.exch||x.exch==='FREE')?'SMART':x.exch,right:x.right,strike:x.strike,expiry:x.expiry,underConid:x.underConid,root:x.root});
+      exch:(!x.exch||x.exch==='FREE')?'SMART':x.exch,right:x.right,strike:x.strike,expiry:x.expiry,underConid:x.underConid,root:x.root,
+      brokerId:x.brokerId===true,priority:x.priority||0});
   }
   function book(b){
     (b.orders||[]).forEach(function(o){if(o.status==='working'){if(o.legs)o.legs.forEach(add);else add(o);}});
     (b.positions||[]).forEach(function(p){if(p.qty)add(p);});
     (b.watchlist||[]).forEach(add);
   }
+  if(guns)guns.instruments().forEach(add);
   add(sel); S.builder.legs.forEach(add); book(S);
   if(S.chainOpen){
     var d=CH[S.builder.expId];
@@ -1748,6 +1761,11 @@ function settlePosition(conid,value){
 function tryFill(o){
   if(o.status!=='working')return false;
   if(o.expiry && o.expiry<ymd())return false;
+  if(guns){
+    if(!guns.execution.guard(o))return true;
+    var handled=guns.execution.fill(o);
+    if(handled!==null)return handled;
+  }
   if(o.type==='COMBO'){
     if((o.legs||[]).some(function(l){return !quoteReady(l.conid)||(l.expiry&&l.expiry<ymd());}))return false;
     return tryFillCombo(o);
@@ -1833,7 +1851,8 @@ function fillRiskAllowed(fills,order){
   return true;
 }
 function applyFill(o, fq, price, leg){
-  var inst = leg || {conid:o.conid, symbol:o.symbol, secType:o.secType, mult:o.mult, exch:o.exch};
+  if(guns && !leg && !guns.execution.guard(o))return false;
+  var inst = leg || {conid:o.conid, symbol:o.symbol, secType:o.secType, mult:o.mult, exch:o.exch, brokerId:o.brokerId};
   var side = leg ? leg.side : o.side;
   var mult = inst.mult||1;
   var comm = commission(inst, fq, price, side);
@@ -1841,7 +1860,7 @@ function applyFill(o, fq, price, leg){
   if(!leg&&!fillRiskAllowed([Object.assign({},inst,{qty:signed,price:price,commission:comm})],o))return false;
   var p = posOf(inst.conid);
   if(!p){ p = {conid:inst.conid, symbol:inst.symbol, secType:inst.secType, mult:mult, exch:inst.exch,
-    right:inst.right, strike:inst.strike, expiry:inst.expiry, underConid:inst.underConid, root:inst.root,
+    right:inst.right, strike:inst.strike, expiry:inst.expiry, underConid:inst.underConid, root:inst.root, brokerId:inst.brokerId,
     qty:0, avgCost:0, openedToday:true, opened:Date.now()}; S.positions.push(p); }
   var realized = 0;
   var oldQty = p.qty;
@@ -1871,13 +1890,14 @@ function applyFill(o, fq, price, leg){
     cashAfter:S.cash, mult:mult, combo: leg? (o.strategy||'spread') : null});
   say(side+' '+qty(fq)+' '+inst.symbol+' @ '+px(price)+' (comm '+money(comm)+')'+(!leg&&o.status!=='filled'?' [partial]':''));
   if(!leg) snapshotEquity(true);
+  if(guns && !leg) guns.execution.after(o,fq,price,oldQty,p.qty,realized,comm);
 }
 /* Between polls, price can trade through a resting order and come back. In the
    standalone build we pull 1-minute bars and check whether it actually did. */
 function barSweep(){
   if(!LOCAL) return Promise.resolve(false);
   var working = S.orders.filter(function(o){
-    return o.status==='working' && o.type!=='MKT' && o.type!=='COMBO' && o.conid;
+    return !o.guns && o.status==='working' && o.type!=='MKT' && o.type!=='COMBO' && o.conid;
   });
   if(!working.length) return Promise.resolve(false);
   var ids={}; working.forEach(function(o){ ids[o.conid]=1; });
@@ -2402,6 +2422,7 @@ function renderLive(){
     var cid=Number(el.getAttribute('data-wl')),w=S.watchlist.find(function(x){return x.conid===cid;}),q=Q[cid];
     if(w)putHTML(el,esc(w.symbol)+(q&&q.last!=null?' <span class="mono">'+px(q.last)+'</span>':''));
   });
+  if(tab==='guns' && guns){guns.live();return;}
   if(tab==='pos'){renderPositionPrices();return;}
   if(tab==='trade'){
     var qb=$('qbox'); if(qb) qb.innerHTML = quoteBox();
@@ -2416,7 +2437,7 @@ function renderLive(){
 }
 
 /* ---------- render ---------- */
-var TABS=[['trade','Trade'],['pos','Positions'],['ord','Orders'],['hist','History'],['acct','Account']];
+var TABS=[['trade','Trade'],['guns','GUNS'],['pos','Positions'],['ord','Orders'],['hist','History'],['acct','Account']];
 function renderTabs(){
   putHTML($('tabs'), TABS.map(function(t){
     var extra='';
@@ -2994,7 +3015,7 @@ function viewAcct(){
    + bookPanel() + sourcePanel() + lclassPanel() + feeTable() + futTable() + marginNote();
 }
 function viewFor(t){
-  return t==='trade'?viewTrade():t==='pos'?viewPos():t==='ord'?viewOrd():t==='hist'?viewHist():viewAcct();
+  return t==='guns'&&guns?guns.view():t==='trade'?viewTrade():t==='pos'?viewPos():t==='ord'?viewOrd():t==='hist'?viewHist():viewAcct();
 }
 function applySide(){
   document.body.classList.toggle('side-calls', S.chainSide!=='puts');
@@ -3026,6 +3047,7 @@ function render(){
   }
   $('autoChk').checked = true;
   updateTradeButtons();
+  if(tab==='guns' && guns)guns.live();
 }
 
 /* ---------- events ---------- */
@@ -3143,6 +3165,7 @@ document.addEventListener('click', function(e){
   if(id==='dFlat'){ S.positions.slice().forEach(function(p){ if(p.qty) closePos(p.conid); }); return; }
   if(id==='dClearWl'){ S.watchlist=[]; sel=null; save(); return; }
   if(id==='dReset'){
+    if(guns && guns.execution.exposure()){warn('Cancel pending GUNS entries and flatten positions before reset.');return;}
     var start=parseFloat(($('cAmt')||{}).value);
     if(!isFinite(start)){ warn('Type the starting cash into the Amount box above, then press Reset account again.'); return; }
     if(!resetArm){ resetArm=true; warn('Press Reset account once more to wipe everything and restart with '+money(start)+'.'); setTimeout(function(){resetArm=false;},6000); return; }
@@ -3194,6 +3217,9 @@ document.addEventListener('change', function(e){
     loadStrikes(); return; }
   if(e.target.id==='spanIn'){ S.builder.span=Math.max(2,Math.min(15,parseFloat(e.target.value)||6)); loadStrikes(); return; }
   if(e.target.id==='bookSel'){ bookSwitch(e.target.value); return; }
+  if(['dsMode','dsKind','dsProv','dsOptProv'].indexOf(e.target.id)>=0 && guns && guns.execution.exposure()){
+    warn('Resolve GUNS exposure before changing data source.');render();return;
+  }
   if(e.target.id==='dsMode'){ S.settings.dataSource=e.target.value; DIAG.gwUp=null; DIAG.fellBack=false; save(); connect(); return; }
   if(e.target.id==='dsKind'){
     var want = e.target.value, inf = FREE.info||{};
@@ -3342,6 +3368,12 @@ function connect(){
     render();
   });
 }
+if(window.GunsUI)guns=window.GunsUI.create({
+  state:function(){return S;},quotes:function(){return Q;},account:function(){return acct();},
+  position:posOf,ready:quoteReady,usingTws:usingTws,now:Date.now,uid:uid,today:today,
+  commission:commission,marketPrice:marketablePrice,fill:applyFill,save:save,sync:syncSubs,
+  render:render,tab:function(){return tab;},esc:esc,px:px,money:money,cancel:cancelOrder
+});
 render();
 connect();
 })();
