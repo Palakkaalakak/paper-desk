@@ -287,6 +287,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     lambda: providers.cascade('search', prov, key, q=one('q', '')))
             elif kind == 'twsstatus':
                 out = market.ENGINE.snapshot(one('client', ''))
+            elif kind in ('guns_scan', 'guns_bars', 'guns_news'):
+                args = () if kind == 'guns_scan' else (one('symbol', ''),)
+                out = market.ENGINE.call(kind, *args, timeout=40)
             elif kind == 'depth':
                 out = market.ENGINE.call('depth', one('symbol', ''))
             elif kind == 'selftest':
@@ -425,6 +428,13 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return self._icon()
         if not self._authorize():
             return
+        assets = {'/assets/' + name: name for name in
+                  ('guns.js', 'guns-execution.js', 'guns-ui.js', 'guns.css')}
+        asset = assets.get(self.path.split('?')[0])
+        if asset:
+            mime = 'text/css' if asset.endswith('.css') else 'text/javascript'
+            with open(os.path.join(HERE, asset), encoding='utf-8') as source:
+                return self._send(source.read(), mime + '; charset=utf-8')
         if self.path.split('?')[0] == '/data/stream':
             return self._stream_quotes()
         if self.path.startswith('/data/'):

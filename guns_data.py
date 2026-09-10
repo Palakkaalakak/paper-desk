@@ -101,4 +101,4 @@ async def news(engine,ticker):
         return dict(rows=[])
     result = await asyncio.wait_for(engine._ib.reqHistoricalNewsAsync(c.conId,'+'.join(p.code for p in providers[:5]),'','',10),12)
     return dict(rows=[dict(time=stamp(x.time),provider=x.providerCode,headline=x.headline)
-                      for x in (getattr(result,'items',[]) or [])])
+                      for x in (result or [])])

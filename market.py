@@ -41,7 +41,9 @@ def instruments(rows):
                         exch=str(row.get('exch') or 'SMART')[:40],
                         expiry=str(row.get('expiry') or '')[:16],
                         right=str(row.get('right') or '')[:1],
-                        strike=number(row.get('strike')), mult=number(row.get('mult')))
+                        strike=number(row.get('strike')), mult=number(row.get('mult')),
+                        brokerId=row.get('brokerId') is True,
+                        priority=max(0, min(3, number(row.get('priority')) or 0)))
     return out
 
 
@@ -247,7 +249,8 @@ class MarketEngine:
                 desired = {}
                 for _,rows in self.clients.values():
                     for cid,row in rows.items():
-                        desired.setdefault(cid,row)
+                        if cid not in desired or row['priority'] > desired[cid]['priority']:
+                            desired[cid] = row
                 has_clients = bool(self.clients)
             if self._ib and not self._ib.isConnected() and self.info.get('connected'):
                 self._status(connected=False,problem='IB Gateway disconnected; reconnecting',feedHealthy=False)
@@ -258,7 +261,10 @@ class MarketEngine:
                 except Exception:
                     await asyncio.sleep(0.5)
                     continue
-            wanted = dict(list(desired.items())[:self.capacity])
+            if self._ib and self._ib.isConnected() and getattr(self, '_guns_streams', None):
+                from guns_data import close_idle
+                close_idle(self)
+            wanted = dict(sorted(desired.items(), key=lambda x: -x[1]['priority'])[:self.capacity])
             for cid in list(self._active):
                 if cid not in wanted:
                     self._remove(cid)
@@ -293,10 +299,10 @@ class MarketEngine:
     async def _contract(self,row):
         import ib_async as m
         cid,kind,sym = row['conid'],row['secType'],row['symbol']
-        key = (cid,kind,sym)
+        key = (cid,kind,sym,bool(row.get('brokerId')))
         if key in self._contracts:
             return self._contracts[key]
-        legacy = 900000000 <= cid < 990000000
+        legacy = 900000000 <= cid < 990000000 and not row.get('brokerId')
         if not legacy:
             c = m.Contract(conId=cid,exchange=row.get('exch') or 'SMART',currency='USD')
         elif kind == 'STK':
@@ -355,7 +361,8 @@ class MarketEngine:
             async def work():
                 try:
                     result = await getattr(self,'_'+name)(*args)
-                    self._cache[key] = (time.monotonic()+(300 if name in ('search','chain') else 1),result)
+                    ttl = 20 if name == 'guns_scan' else 120 if name == 'guns_news' else 300 if name in ('search','chain') else 1
+                    self._cache[key] = (time.monotonic()+ttl,result)
                     if len(self._cache)>1000:
                         self._cache.pop(next(iter(self._cache)))
                     return result
@@ -438,6 +445,18 @@ class MarketEngine:
                 symbol='%s %s %s %s' % (symbol,expiry,c.strike,c.right),strike=c.strike,right=c.right,
                 expiry=expiry,mult=number(c.multiplier) or 100,bid=None,ask=None,last=None))
         return out
+
+    async def _guns_scan(self):
+        from guns_data import scan
+        return await scan(self)
+
+    async def _guns_bars(self, symbol):
+        from guns_data import bars
+        return await bars(self, symbol)
+
+    async def _guns_news(self, symbol):
+        from guns_data import news
+        return await news(self, symbol)
 
     async def _depth(self,symbol):
         c = await self._stock(symbol)
