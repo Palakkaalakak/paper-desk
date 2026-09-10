@@ -66,6 +66,23 @@ class ServerSecurityTests(unittest.TestCase):
                 self.assertEqual(self.request(method, path)[0], 403)
         self.urlopen.assert_not_called()
 
+    def test_guns_assets_and_data_are_authenticated_and_allowlisted(self):
+        for name in ('guns.js','guns-execution.js','guns-ui.js','guns.css'):
+            path='/assets/'+name
+            self.assertEqual(self.request('GET',path)[0],403)
+            status,headers,body=self.request('GET',path,self.authed())
+            self.assertEqual(status,200)
+            self.assertTrue(body)
+            self.assertEqual(headers['Cache-Control'],'no-store')
+        self.assertEqual(self.request('GET','/assets/GUNS_MASTER_DOCUMENT.md',self.authed())[0],404)
+        with patch.object(serve.market.ENGINE,'call',return_value={'rows':[]}) as call:
+            for kind in ('guns_scan','guns_bars','guns_news'):
+                path='/data/'+kind+'?symbol=TEST'
+                self.assertEqual(self.request('GET',path)[0],403)
+                self.assertEqual(self.request('GET',path,self.authed())[0],200)
+            self.assertEqual(call.call_count,3)
+            call.assert_called_with('guns_news','TEST',timeout=40)
+
     def test_cookie_must_match_both_name_and_entire_value(self):
         for value in ['pd_token=test-access-token-extra',
                       'other_pd_token=test-access-token',

@@ -18,6 +18,7 @@ return function(a){
     // Revalidate the setup with current bars before any trigger. A changed pattern
     // requires explicit re-arming instead of silently moving an approved entry.
     const current=a.validate?a.validate(o):null;
+    if(q.ask>o.limit && Number.isFinite(q.tradeLast??q.last) && (q.tradeLast??q.last)>=o.stop)return cancel(o,'No chase: ask exceeded stop-limit cap');
     if(!current||current.errors?.length)return false;
     if(['entry','limit','stop'].some(k=>Math.abs(current[k]-p[k])>1e-7))return cancel(o,'Setup changed; review and re-arm');
     if(now<p.session.start||q.ask-q.bid>Number(cfg().maxSpread)+1e-9)return false;
@@ -37,8 +38,8 @@ return function(a){
     x.qty=Math.max(0,Math.min(x.qty-n,newQty));x.fees+=fee;x.events.push({at:now,type:o.guns?.reason||'MANUAL EXIT',price,qty:n});
     if(x.qty===0){x.closedAt=now;x.net=x.events.filter(e=>e.type!=='ENTRY'&&e.qty).reduce((v,e)=>v+(e.price-x.entry)*e.qty,0)-x.fees;x.actualR=x.net/(x.initialR*x.originalQty);b.active=b.active.filter(y=>y!==x);b.journal.unshift(x);state().orders.forEach(other=>{if(other.status==='working'&&other.conid===o.conid&&other.side==='SELL')cancel(other,'Position flat; sibling exit cancelled');});}
   }}
-  function manage(cid){let changed=false;for(const b of [...book().active]){if(cid!=null&&b.inst.conid!==cid)continue;if(!a.usingTws()||!a.ready(b.inst.conid))continue;const q=a.quotes()[b.inst.conid];if(!(q.bid>0))continue;b.maxBid=Math.max(b.maxBid,q.bid);b.minBid=Math.min(b.minBid,q.bid);const decision=C.exit(b,q,a.now());if(decision.stop!==b.stop){b.stop=decision.stop;b.events.push({at:a.now(),type:'BREAKEVEN',price:b.stop});changed=true;}
-    if(!decision.reason)continue;if(decision.reason==='STOP')b.stopTriggered=true;
+  function manage(cid){let changed=false;for(const b of [...book().active]){if(cid!=null&&b.inst.conid!==cid)continue;if(!a.usingTws()||!a.ready(b.inst.conid))continue;const q=a.quotes()[b.inst.conid];if(!(q.bid>0))continue;if(q.bid>b.maxBid||q.bid<b.minBid)changed=true;b.maxBid=Math.max(b.maxBid,q.bid);b.minBid=Math.min(b.minBid,q.bid);const decision=C.exit(b,q,a.now());if(decision.stop!==b.stop){b.stop=decision.stop;b.events.push({at:a.now(),type:'BREAKEVEN',price:b.stop});changed=true;}
+    if(!decision.reason)continue;if(decision.reason==='STOP'&&!b.stopTriggered){b.stopTriggered=true;changed=true;b.events.push({at:a.now(),type:'STOP TRIGGER',price:q.bid});}
     const held=a.position(b.inst.conid)?.qty||0,n=Math.min(b.qty,held,Math.floor(q.bidSize||0)),tick=q.receivedAt||q.at;
     if(n<=0||b.lastExitTick===tick)continue;
     const price=a.marketPrice(b.inst,'SELL',n);if(!Number.isFinite(price)||price<=0||(decision.reason==='TARGET'&&price<b.target))continue;

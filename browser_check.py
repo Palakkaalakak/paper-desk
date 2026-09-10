@@ -42,6 +42,10 @@ def main():
             url=r.request.url
             if url=='http://paper.test/':return r.fulfill(content_type='text/html',body=html)
             requests.append(url)
+            if '/assets/' in url:
+                name=url.rsplit('/',1)[-1]
+                if name in ('guns.js','guns-execution.js','guns-ui.js','guns.css'):
+                    return r.fulfill(content_type='text/css' if name.endswith('.css') else 'text/javascript',body=(ROOT/name).read_text())
             if '/data/stream' in url:return r.fulfill(content_type='text/event-stream',body=': fixture\n\n')
             if '/data/subscriptions' in url:
                 rows=r.request.post_data_json.get('instruments',[]);now=int(time.time()*1000)
@@ -121,6 +125,10 @@ def main():
             page.set_viewport_size({'width':390,'height':844})
             page.locator('[data-tab="pos"]').click()
             assert page.locator('#positionsTable').count()==1
+            assert page.evaluate('document.documentElement.scrollWidth<=window.innerWidth+1')
+            page.locator('[data-tab="guns"]').click()
+            assert page.locator('#guns-workspace').count()==1
+            assert page.locator('[data-guns="arm"]').is_disabled()
             assert page.evaluate('document.documentElement.scrollWidth<=window.innerWidth+1')
             page.reload(wait_until='domcontentloaded');page.wait_for_function('window.__paper && __paper.S.orders.length===2')
             result['functional_checks']='quotes, 500 positions, stable input, market/limit orders, stale/disconnect/delayed protection, persistence, settlement, export, mobile'
