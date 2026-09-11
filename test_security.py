@@ -8,7 +8,11 @@ import io
 import json
 import threading
 import unittest
-from unittest.mock import Mock, patch
+from unittest.mock import Mock, patch, AsyncMock
+from types import SimpleNamespace as NS
+import datetime as dt
+from zoneinfo import ZoneInfo
+import guns_data
 
 import providers
 import serve
@@ -82,6 +86,10 @@ class ServerSecurityTests(unittest.TestCase):
                 self.assertEqual(self.request('GET',path,self.authed())[0],200)
             self.assertEqual(call.call_count,3)
             call.assert_called_with('guns_news','TEST',timeout=40)
+            for path,args,timeout in [('/data/guns_verify?conid=123',('guns_verify','123'),40),('/data/guns_article?newsProvider=TEST&articleId=story%2F1',('guns_article','TEST','story/1'),20)]:
+                self.assertEqual(self.request('GET',path)[0],403)
+                self.assertEqual(self.request('GET',path,self.authed())[0],200)
+                call.assert_called_with(*args,timeout=timeout)
 
     def test_cookie_must_match_both_name_and_entire_value(self):
         for value in ['pd_token=test-access-token-extra',
@@ -227,6 +235,76 @@ class AdapterTests(unittest.TestCase):
                 getattr(ib, name)()
         for fn in originals:
             fn.assert_not_called()
+
+
+class GunsDataTests(unittest.IsolatedAsyncioTestCase):
+    def fixture(self, day='2026-09-10'):
+        opening=dt.datetime.combine(dt.date.fromisoformat(day),dt.time(9,30),ZoneInfo('America/New_York'))
+        detail=NS(contract=NS(conId=123,secType='STK',currency='USD'),stockType='COMMON',liquidSessions=lambda:[NS(start=opening,end=opening+dt.timedelta(hours=6.5))])
+        minute=[NS(date=opening-dt.timedelta(minutes=1),volume=100),NS(date=opening,volume=999)]
+        daily=[NS(date=opening.date()-dt.timedelta(days=1),close=9),NS(date=opening.date(),close=10)]
+        return detail,minute,daily,opening
+
+    def test_completed_premarket_and_prior_close_across_dst(self):
+        for day,hour in [('2026-09-10',13),('2026-11-02',14)]:
+            detail,minute,daily,opening=self.fixture(day)
+            out=guns_data.verification(detail,minute,daily,int(opening.timestamp()*1000))
+            self.assertEqual(out['premarketVolume'],100)
+            self.assertEqual(out['observedBars'],1)
+            self.assertEqual(out['previousClose'],9)
+            self.assertEqual(out['conid'],123)
+            self.assertEqual(dt.datetime.fromtimestamp(out['premarketEnd']/1000,dt.timezone.utc).hour,hour)
+            self.assertIn('not proof',out['coverage'])
+
+    def test_unknown_volume_and_absent_sessions_remain_unknown(self):
+        detail,minute,daily,opening=self.fixture()
+        now=int(opening.timestamp()*1000)
+        for value in [None,float('nan'),-1]:
+            minute[0].volume=value
+            self.assertIsNone(guns_data.verification(detail,minute,daily,now)['premarketVolume'])
+        detail.liquidSessions=lambda:[]
+        out=guns_data.verification(detail,minute,[],now)
+        self.assertFalse(out['sessionKnown'])
+        self.assertIsNone(out['premarketVolume'])
+        self.assertIsNone(out['previousClose'])
+
+    async def test_verification_identity_validation_and_read_only_snapshots(self):
+        detail,minute,daily,opening=self.fixture()
+        ib=NS(reqContractDetailsAsync=AsyncMock(return_value=[detail]),reqHistoricalDataAsync=AsyncMock(side_effect=[minute,daily]))
+        engine=NS(_ib=ib)
+        with patch.object(guns_data.time,'time',return_value=opening.timestamp()):
+            out=await guns_data.verify(engine,'123')
+        self.assertEqual(out['premarketVolume'],100)
+        self.assertEqual(ib.reqHistoricalDataAsync.await_count,2)
+        for call in ib.reqHistoricalDataAsync.await_args_list:self.assertFalse(call.kwargs['keepUpToDate'])
+        detail.contract.conId=999;engine._guns_verify_next=0
+        with self.assertRaises(ValueError):await guns_data.verify(engine,'123')
+        for bad in ['-1','1.5','abc',str(2**53)]:
+            with self.assertRaises(ValueError):await guns_data.verify(engine,bad)
+        self.assertEqual(ib.reqContractDetailsAsync.await_count,2)
+
+    async def test_news_providers_entitlement_and_safe_article_text(self):
+        ib=NS(reqNewsProvidersAsync=AsyncMock(return_value=[]),reqHistoricalNewsAsync=AsyncMock(return_value=[]),reqNewsArticleAsync=AsyncMock())
+        engine=NS(_ib=ib,_stock=AsyncMock(return_value=NS(conId=123)))
+        self.assertIn('entitlements',(await guns_data.news(engine,'TEST'))['warning'])
+        ib.reqHistoricalNewsAsync.assert_not_awaited()
+        ib.reqNewsProvidersAsync.return_value=[NS(code='P1',name='One'),NS(code='P2',name='Two')]
+        out=await guns_data.news(engine,'TEST')
+        self.assertEqual(len(out['providers']),2)
+        self.assertIn('does not establish',out['warning'])
+        self.assertEqual(ib.reqHistoricalNewsAsync.await_args.args[1],'P1+P2')
+        ib.reqHistoricalNewsAsync.return_value=None
+        with self.assertRaises(ValueError):await guns_data.news(engine,'TEST')
+        ib.reqNewsArticleAsync.return_value=NS(articleType=0,articleText='<h1>Headline</h1><script>evil()</script><style>hidden</style><p>Revenue &amp; earnings</p>')
+        self.assertEqual((await guns_data.article(engine,'P1','story/1'))['text'],'Headline\nRevenue & earnings')
+        ib.reqNewsArticleAsync.return_value=NS(articleType=1,articleText='binary')
+        self.assertIn('Binary/PDF',(await guns_data.article(engine,'P1','1'))['warning'])
+        ib.reqNewsArticleAsync.return_value=None
+        with self.assertRaises(ValueError):await guns_data.article(engine,'P1','1')
+        calls=ib.reqNewsArticleAsync.await_count
+        for provider,article_id in [('bad/code','x'),('P1',''),('P1','x'*257),('P1','x\n')]:
+            with self.assertRaises(ValueError):await guns_data.article(engine,provider,article_id)
+        self.assertEqual(ib.reqNewsArticleAsync.await_count,calls)
 
 
 if __name__ == '__main__':
