@@ -178,7 +178,7 @@ async def verify(engine, conid):
         engine._guns_verify_next = time.monotonic()+3
         ib = engine._ib
         details = await asyncio.wait_for(ib.reqContractDetailsAsync(Contract(conId=int(conid),exchange='SMART')),12)
-        if not details or details[0].contract.secType!='STK' or details[0].contract.currency!='USD':
+        if not details or details[0].contract.conId!=int(conid) or details[0].contract.secType!='STK' or details[0].contract.currency!='USD':
             raise ValueError('US dollar stock definition unavailable')
         d = details[0]
         async def get(duration, interval, rth):

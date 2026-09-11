@@ -3184,7 +3184,7 @@ document.addEventListener('input', function(e){
   }
 });
 document.addEventListener('keydown', function(e){
-  if(e.repeat)return;
+  if(e.repeat||e.defaultPrevented||document.querySelector('dialog[open]'))return;
   if(e.altKey && !e.ctrlKey && !e.metaKey && S.settings.hotkeys && tab==='trade' && (e.code==='KeyB'||e.code==='KeyS')){
     e.preventDefault();submit(e.code==='KeyB'?'BUY':'SELL');return;
   }

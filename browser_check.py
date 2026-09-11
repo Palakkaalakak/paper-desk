@@ -44,7 +44,7 @@ def main():
             requests.append(url)
             if '/assets/' in url:
                 name=url.rsplit('/',1)[-1]
-                if name in ('guns.js','guns-execution.js','guns-ui.js','guns.css'):
+                if name in ('guns.js','guns-execution.js','guns-workflow.js','guns-tutorial.js','guns-ui.js','guns.css'):
                     return r.fulfill(content_type='text/css' if name.endswith('.css') else 'text/javascript',body=(ROOT/name).read_text())
             if '/data/stream' in url:return r.fulfill(content_type='text/event-stream',body=': fixture\n\n')
             if '/data/subscriptions' in url:

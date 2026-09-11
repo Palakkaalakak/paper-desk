@@ -36,7 +36,7 @@ def main():
             if path=='/':return r.fulfill(content_type='text/html',body=html)
             if path.startswith('/assets/'):
                 name=path.rsplit('/',1)[-1]
-                if name in ('guns.js','guns-execution.js','guns-ui.js','guns.css'):
+                if name in ('guns.js','guns-execution.js','guns-workflow.js','guns-tutorial.js','guns-ui.js','guns.css'):
                     return r.fulfill(content_type='text/css' if name.endswith('.css') else 'text/javascript',body=(ROOT/name).read_text())
             if path=='/data/providers':return r.fulfill(json={'providers':{'tws':{'name':'IB Gateway','local':True,'quotes':True,'chain':True}}})
             if path=='/data/subscriptions':return r.fulfill(json={'connected':True,'feedHealthy':True,'generation':0,'quotes':{}})
@@ -56,7 +56,7 @@ def main():
         page.evaluate('''() => {window.tick=(bid=10.48,ask=10.5,last=10.49,size=100)=>__gunsTest.feed({connected:true,feedHealthy:true,generation:0,quotes:{12345:{bid,ask,last,bidSize:size,askSize:size,status:'LIVE',at:Date.now(),receivedAt:Date.now()}}});tick();}''')
         page.locator('[data-tab="guns"]').click()
         page.locator('[data-guns="scan"]').click()
-        page.locator('[data-guns-pick="0"]').click()
+        page.locator('[data-guns-pick="12345"]').click()
         page.wait_for_function("document.querySelector('#guns-clock').textContent.includes('s old')")
         page.locator('#guns-stopmode').select_option('FIXED')
         page.locator('#guns-catalyst').check()

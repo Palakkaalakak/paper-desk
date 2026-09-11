@@ -67,7 +67,7 @@ class ServerSecurityTests(unittest.TestCase):
         self.urlopen.assert_not_called()
 
     def test_guns_assets_and_data_are_authenticated_and_allowlisted(self):
-        for name in ('guns.js','guns-execution.js','guns-ui.js','guns.css'):
+        for name in ('guns.js','guns-execution.js','guns-workflow.js','guns-tutorial.js','guns-ui.js','guns.css'):
             path='/assets/'+name
             self.assertEqual(self.request('GET',path)[0],403)
             status,headers,body=self.request('GET',path,self.authed())
