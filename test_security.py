@@ -238,6 +238,19 @@ class AdapterTests(unittest.TestCase):
 
 
 class GunsDataTests(unittest.IsolatedAsyncioTestCase):
+    def test_footer_only_news_is_incomplete_not_a_story(self):
+        footer='(END) Dow Jones Newswires\nSeptember 09, 2026 15:34 ET (19:34 GMT)\nCopyright (c) 2026 Dow Jones & Company, Inc.\nThe statements in this document shall not be considered as an objective or independent explanation.'
+        out=guns_data.article_content(footer)
+        self.assertEqual(out['contentStatus'],'incomplete')
+        self.assertEqual(out['text'],'')
+        self.assertIn('Copyright',out['rawText'])
+        self.assertIn('NOT been verified',out['warning'])
+        body=' '.join(['Company reported higher revenue and earnings in its quarterly release.']*5)
+        out=guns_data.article_content('<p>'+body+'</p>'+footer)
+        self.assertEqual(out['contentStatus'],'body_returned')
+        self.assertEqual(out['text'],body)
+        self.assertIn('Copyright',out['legalText'])
+
     def fixture(self, day='2026-09-10'):
         opening=dt.datetime.combine(dt.date.fromisoformat(day),dt.time(9,30),ZoneInfo('America/New_York'))
         detail=NS(contract=NS(conId=123,secType='STK',currency='USD'),stockType='COMMON',liquidSessions=lambda:[NS(start=opening,end=opening+dt.timedelta(hours=6.5))])
@@ -296,7 +309,7 @@ class GunsDataTests(unittest.IsolatedAsyncioTestCase):
         ib.reqHistoricalNewsAsync.return_value=None
         with self.assertRaises(ValueError):await guns_data.news(engine,'TEST')
         ib.reqNewsArticleAsync.return_value=NS(articleType=0,articleText='<h1>Headline</h1><script>evil()</script><style>hidden</style><p>Revenue &amp; earnings</p>')
-        self.assertEqual((await guns_data.article(engine,'P1','story/1'))['text'],'Headline\nRevenue & earnings')
+        self.assertEqual((await guns_data.article(engine,'P1','story/1'))['text'],'Headline\n\nRevenue & earnings')
         ib.reqNewsArticleAsync.return_value=NS(articleType=1,articleText='binary')
         self.assertIn('Binary/PDF',(await guns_data.article(engine,'P1','1'))['warning'])
         ib.reqNewsArticleAsync.return_value=None
