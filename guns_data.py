@@ -4,6 +4,7 @@ import datetime as dt
 import re
 import time
 from html.parser import HTMLParser
+from html import unescape
 from zoneinfo import ZoneInfo
 
 
@@ -121,11 +122,34 @@ class ArticleText(HTMLParser):
         self.parts, self.hidden = [], 0
     def handle_starttag(self, tag, attrs):
         if tag in ('script', 'style'): self.hidden += 1
-        if tag in ('p', 'div', 'br', 'li', 'h1', 'h2'): self.parts.append('\n')
+        if tag in ('p', 'div', 'br', 'li', 'h1', 'h2', 'h3', 'tr', 'blockquote'): self.parts.append('\n')
     def handle_endtag(self, tag):
         if tag in ('script', 'style'): self.hidden = max(0, self.hidden-1)
+        if tag in ('p', 'div', 'li', 'h1', 'h2', 'h3', 'tr', 'blockquote'): self.parts.append('\n')
     def handle_data(self, data):
         if not self.hidden: self.parts.append(data)
+
+
+def article_content(source):
+    """Expose missing story bodies; preserve publisher/legal text without inventing it."""
+    source = source or ''
+    truncated = len(source)>200000
+    source = source[:200000]
+    if re.match(r'\s*&lt;(?:!doctype|html|body|div|p)[\s&>]', source, re.I):
+        source = unescape(source)
+    parser = ArticleText()
+    parser.feed(source)
+    parser.close()
+    raw = '\n'.join(re.sub(r'[ \t\xa0]+', ' ', line).strip() for line in ''.join(parser.parts).splitlines())
+    raw = re.sub(r'\n{3,}', '\n\n', raw).strip()
+    footer = re.search(r'(?im)^\s*(?:\(END\)(?:\s|$)|Copyright\s*(?:\(c\)|©)|The statements in this document shall not)', raw)
+    text = raw[:footer.start()].strip() if footer else raw
+    legal = raw[footer.start():].strip() if footer else ''
+    meaningful = len(re.findall(r'\b\w+\b', text)) >= 25
+    status = 'body_returned' if meaningful and not truncated else 'incomplete'
+    warning = '' if status=='body_returned' else ('Article response was truncated; review the original licensed source.' if truncated else 'Gateway returned only a footer/disclaimer, headline or short fragment. A usable full story has NOT been verified. Check another article or your licensed TWS/news terminal.')
+    return dict(text=text,rawText=raw,legalText=legal,contentStatus=status,warning=warning,
+                completeness='Text presence is checked, not publisher completeness or factual accuracy.')
 
 
 async def article(engine, provider, article_id):
@@ -137,10 +161,8 @@ async def article(engine, provider, article_id):
     if result is None:
         raise ValueError('Article unavailable or API entitlement missing')
     if result.articleType != 0:
-        return dict(provider=provider,articleId=article_id,text='',warning='Binary/PDF article: review in your licensed news terminal.')
-    parser = ArticleText()
-    parser.feed((result.articleText or '')[:200000])
-    return dict(provider=provider,articleId=article_id,text=''.join(parser.parts).strip(),at=int(time.time()*1000))
+        return dict(provider=provider,articleId=article_id,text='',rawText='',legalText='',contentStatus='binary',warning='Binary/PDF article: review in your licensed news terminal.')
+    return dict(provider=provider,articleId=article_id,at=int(time.time()*1000),source='IB Gateway licensed news article',**article_content(result.articleText))
 
 
 def verification(detail, minute, daily, now):
