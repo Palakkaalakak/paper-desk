@@ -18,3 +18,45 @@ test('same-symbol buys, oversells and combos are rejected before legs execute',(
 test('flatten waits for executable live quotes and never shorts',()=>{const f=fixture(),o=f.arm();f.Q[1].askSize=2;f.E.fill(o);const b=f.E.book().active[0];f.setLive(false);f.E.flatten(b.id);assert.equal(b.qty,2);f.setLive(true);f.tick({bidSize:100});f.E.manage();f.E.manage();assert.equal(f.S.positions[0].qty,0);});
 test('New York trading dates honor DST and indicators never fabricate warmup',()=>{assert.equal(C.day(Date.parse('2026-03-09T03:30Z')),'2026-03-08');assert.equal(C.day(Date.parse('2026-11-02T04:30Z')),'2026-11-01');const rows=Array.from({length:20},(_,i)=>({c:i+1,h:i+2,l:i}));assert.equal(C.average(rows,50,false).at(-1),null);assert.equal(C.atr(rows,30),null);assert.equal(C.average(rows,20,false).at(-1),10.5);});
 test('missing bars and session cannot produce executable setup',()=>{assert.ok(C.analyze(null,null,{},1,{},Date.now()).errors.length);const p=C.analyze({minute:[],daily:[],sessions:[],minTick:.01},null,{},5,{},Date.now());assert.ok(p.errors.includes('Current exchange session known'));assert.ok(p.errors.includes('Valid trigger, stop and target'));});
+
+const W=require('./guns-workflow.js'),T=require('./guns-tutorial.js');
+function chartFixture(){const now=Date.parse('2026-09-10T13:30:10Z'),start=now-10000;return {now,data:{minTick:.01,stockType:'COMMON',updatedAt:now,sessions:[{start,end:start+23400000}],daily:[{t:'2026-09-09',c:9}],minute:Array.from({length:1500},(_,i)=>{const c=8.99+i*.001;return {t:start-(1500-i)*60000,o:c-.001,h:c+.011,l:c-.01,c,v:1000};})},q:{last:10.2,bid:10.2,ask:10.21},notes:{room:true,catalyst:true}};}
+test('human confirmation required; heuristic advice is not a chart-quality veto',()=>{
+ const f=chartFixture(),n={...f.notes,levels:{3:{trigger:10.2,candleLow:10.1}}};
+ let p=C.analyze(f.data,f.q,{},3,n,f.now);assert.ok(p.errors.includes('Chart and setup reviewed by user'));
+ p=C.analyze(f.data,f.q,{},3,{...n,chartSetup:3},f.now);assert.deepEqual(p.errors,[]);assert.ok(p.advisories.some(x=>!x.ok));assert.equal(p.levelSource,'user');assert.equal(p.entry,10.21);assert.equal(p.stop,10.09);
+ assert.ok(C.analyze(f.data,f.q,{},3,{...n,chartSetup:2},f.now).errors.length);
+});
+test('missing flag candle low never falls back to ATR',()=>{
+ const f=chartFixture();for(const setup of [3,4]){const p=C.analyze(f.data,f.q,{},setup,{...f.notes,chartSetup:setup,levels:{[setup]:{trigger:10.2}}},f.now);assert.ok(p.errors.includes('Valid trigger, stop and target'));assert.equal(p.stop,undefined);}
+ const p=C.analyze(f.data,f.q,{},3,{...f.notes,chartSetup:3,levels:{3:{trigger:10.2,candleLow:10.3}}},f.now);assert.ok(p.errors.includes('Valid trigger, stop and target'));
+});
+test('nested review and news evidence are immutable at arm',()=>{
+ const f=fixture(),n={chartSetup:1,levels:{1:{trigger:10}},newsEvidence:{articleId:'first'}},o=f.E.arm(f.plan,f.inst,n).order;
+ n.levels[1].trigger=20;n.newsEvidence.articleId='changed';assert.equal(o.guns.notes.levels[1].trigger,10);assert.equal(o.guns.notes.newsEvidence.articleId,'first');
+});
+test('shortcuts reject unsafe modifiers, repeats, duplicates and malformed bindings',()=>{
+ assert.equal(W.chord({code:'Digit1'}),'1');assert.equal(W.chord({code:'KeyQ',altKey:true}),'Alt+Q');assert.equal(W.chord({code:'Digit8',altKey:true}),'Alt+8');
+ for(const prop of ['ctrlKey','metaKey','shiftKey','repeat','isComposing'])assert.equal(W.chord({code:'Digit1',[prop]:true}),null);
+ assert.equal(W.chord({code:'KeyQ'}),null);assert.equal(W.setBinding(W.defaults,0,'2'),null);assert.equal(W.setBinding(W.defaults,8,'Alt+Q'),null);assert.equal(W.setBinding(W.defaults,0,'bad'),null);
+ const b=W.setBinding(W.defaults,0,'Alt+Q');assert.deepEqual(W.bindings({shortcuts:b}),b);assert.deepEqual(W.bindings({shortcuts:['1','1','2','3']}),W.defaults);
+});
+test('candidate ranking fails closed on missing, stale or mismatched evidence',()=>{
+ const now=100000,row={conid:1,rank:0},q={status:'LIVE',last:10,bid:9.99,ask:10.01},e={conid:1,at:now,sessionKnown:true,stockType:'COMMON',previousClose:9,premarketVolume:100000};
+ const run=(ev=e,quote=q,ready=true)=>W.candidate(row,quote,ev,ready,C.defaults,now);assert.ok(run().eligible);
+ for(const patch of [{at:now-90001},{at:now+5001},{conid:2},{sessionKnown:false},{previousClose:null},{premarketVolume:null},{premarketVolume:-1},{stockType:'ETF'}]){assert.equal(run({...e,...patch}).eligible,false);assert.equal(run({...e,...patch}).score,null);}
+ assert.equal(run(null).eligible,false);assert.equal(run(e,q,false).eligible,false);assert.equal(run(e,{...q,status:'DELAYED'}).eligible,false);assert.equal(run(e,{...q,ask:11}).eligible,false);
+ const ranked=W.rank([{conid:2,rank:0},row],{1:q,2:q},new Map([[1,e]]),()=>true,C.defaults,now);assert.equal(ranked[0].row.conid,1);
+});
+test('four guided lessons cover target, slippage, no-chase and partial breakeven',()=>{
+ const m=T.model();for(let lesson=0;lesson<4;lesson++){
+  let s=m.snapshot();assert.equal(s.lesson,lesson);assert.ok(s.stock.symbol.endsWith('-DEMO'));assert.equal(m.action('confirm',s.stock.setup).stage,0);
+  m.action('pick',s.stock.symbol);assert.equal(m.action('news').stage,1);m.action('read');m.action('news');m.action('chart');
+  for(const [eq,budget] of [[100000,1000],[90000,900],[100100,1001]]){s=m.action('equity',eq);assert.equal(s.risk.budget,budget);assert.ok(s.risk.risk<=budget+1e-8);}
+  m.action('risk');assert.equal(m.action('confirm',99).stage,4);m.action('confirm',s.stock.setup);s=m.action('advance');if(lesson===3)assert.equal(s.position.qty,7);
+  for(let i=0;s.stage!==8&&i<3;i++)s=m.action('advance');assert.equal(s.stage,8);assert.match(s.result,[/TARGET/,/STOP:.*Slippage/,/CANCELLED:.*No shares/,/BREAKEVEN STOP: -2.00/][lesson]);assert.equal(s.position,null);if(lesson<3)m.action('next');
+ }assert.equal(m.action('restart').lesson,0);
+});
+test('tutorial chart rejection skips, and separate models do not share progress',()=>{
+ const m=T.model(),other=T.model();m.action('pick',T.lessons[0].symbol);m.action('read');m.action('news');assert.match(m.action('reject').result,/SKIPPED/);assert.equal(m.snapshot().position,null);assert.equal(other.snapshot().stage,0);
+});
