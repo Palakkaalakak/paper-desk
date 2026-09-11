@@ -433,7 +433,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if not self._authorize():
             return
         assets = {'/assets/' + name: name for name in
-                  ('guns.js', 'guns-execution.js', 'guns-ui.js', 'guns.css')}
+                  ('guns.js', 'guns-execution.js', 'guns-workflow.js', 'guns-tutorial.js', 'guns-ui.js', 'guns.css')}
         asset = assets.get(self.path.split('?')[0])
         if asset:
             mime = 'text/css' if asset.endswith('.css') else 'text/javascript'
