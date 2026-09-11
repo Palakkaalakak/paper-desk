@@ -238,10 +238,12 @@ its changed files. Recovery snapshots may be incomplete between edits: always ru
 before committing them to main. Previous long-form adapter/model notes remain available
 in revision `79169d8`; this README describes the current streaming architecture.
 
-## GUNS upgrade: implemented paper workstation (2026-09-10)
+## GUNS upgrade: user-confirmed paper workstation (2026-09-11)
 
-Status: GUNS tab, read-only data endpoints, dynamic sizing and browser-local paper
-bracket management are implemented. Cloud/post-exit collection is NOT implemented.
+Status: GUNS tab, user-confirmed S1–S4 buttons/shortcuts, independent scanner evidence,
+licensed news article reader, four-stock guided tutorial, dynamic sizing and browser-local
+paper bracket management are implemented and offline-tested. Cloud/post-exit collection
+is NOT implemented; live Gateway acceptance has not been performed.
 See the current implementation section below; the original design remains as a roadmap.
 
 ### Historical baseline review
@@ -351,8 +353,9 @@ with the user. Do not restart IB Gateway, overwrite account state, or continue u
    100,000 at 1% = 1,000; 90,000 = 900; 100,100 = 1,001. Pending quantities are recomputed
    and checked again before fill. Whole shares, estimated round-trip fees and buying power
    may leave risk budget unused; the UI shows this. All held positions need fresh marks.
-5. Arm a PAPER stop-limit entry, or opt into one-shot auto-arm for the selected setup.
-   Auto-arm is not restored across reloads. At most two pending/open GUNS trades are allowed.
+5. Judge chart quality yourself, then confirm using **S1–S4** buttons or default **1–4**
+   keys. The main confirmation button also supports the selected S5. There is no auto-arm:
+   every new entry needs your confirmation. At most two pending/open GUNS trades are allowed.
    Entry windows follow the exchange schedule; missing/stale charts, quotes or sessions
    block entries. Changed pending trigger/stop prices require review and re-arming.
 6. Protection covers actual filled quantity. The unfilled entry remainder is cancelled.
@@ -364,11 +367,60 @@ with the user. Do not restart IB Gateway, overwrite account state, or continue u
 7. Closed trades appear in the journal with fees, net P/L, actual R, sampled bid extrema
    and lifecycle events. **Export research** downloads JSON for all saved GUNS books.
 
+### Confirmation controls, scanner evidence, news and tutorial
+
+- **Your responsibility:** review the actual chart/setup, catalyst, instrument and overhead
+  resistance; choose risk/stop settings; confirm the specific setup. Pattern hints are
+  advisory, not chart approval. Optional reviewed trigger-high overrides are per symbol,
+  day and setup. S3/S4 overrides require the corresponding candle low; missing lows never
+  silently fall back to ATR. Numerical rules (including moving averages, entry windows,
+  valid prices, freshness, buying power and no-chase) remain enforced.
+- **Automatic after confirmation:** pending risk resizing, trigger/cap checks, paper entry,
+  actual-fill-sized protection, configured breakeven/target/stop management and journaling.
+  Entry review and nested level/news references are copied immutably into the order.
+- **Shortcuts:** expand Entry keyboard shortcuts, focus a field and press a unique 1–4 or
+  Alt+letter/digit chord. Settings are stored in `S.guns.config.shortcuts`. Browser-reserved
+  Alt chords may not work. Keys are ignored outside GUNS, in a hidden document, while
+  editing, on focused buttons, during repeated/composing events, and in dialogs. Shortcut
+  input focus and the expanded settings panel survive account-save rerenders.
+- **Scanner:** IB scanner results are preliminary contracts, not verified quotes/volume.
+  The selected stock and first six broker-ranked rows receive separate, serially paced
+  contract/history verification (shared server lock; at least three seconds between starts).
+  Other rows remain explicitly unverified until selected. Evidence is cached 60 seconds,
+  retried roughly every 65 seconds, and rejected for ranking after 90 seconds. Live quote
+  freshness is checked separately. No claim of exhaustive market coverage is made.
+- **Attention score, not expected profit:** eligible candidates are sorted by
+  `min(40,10*log10(max(1,PM volume/30000))) + min(30,gap%) +
+  30*max(0,1-spread/maxSpread)`, rounded, then broker rank. Eligibility requires fresh
+  LIVE quotes, matching conId, COMMON classification, known session, price >= $1.50,
+  gap >= 5%, configured observed PM volume and spread. Unknown evidence does not pass.
+  The source/coverage panel shows prior completed RTH close/date, verification time and
+  observed premarket bars. Missing minutes may mean inactivity or missing data, not zero
+  volume or proof of complete tape coverage. API volume is used without a display-lot multiplier.
+- **News:** headlines refresh approximately every 30 seconds. Provider names, article IDs,
+  source time and entitlement warnings are shown. Read article requests licensed API text;
+  publisher HTML becomes escaped display-only text. Binary/PDF articles require a licensed
+  terminal. Empty results do not establish absence of news. Opening an article records a
+  reference but never marks the catalyst favorable. Your Gateway username needs the relevant
+  API news entitlement; availability in TWS alone is not sufficient.
+- **Guided tutorial:** click Guided tutorial with no pending/active GUNS exposure. Gateway
+  is not required. ZORA-DEMO (S1 target), NIMB-DEMO (S2 stop/slippage), LUMA-DEMO (S3 no-chase)
+  and VELA-DEMO (S4 partial fill/breakeven) guide discovery, news, chart acceptance/rejection,
+  exact equity-risk examples, confirmation, protection and review. Prices/news are fictional;
+  line diagrams illustrate authored candle levels rather than infer them. Prices advance
+  only by explicit actions. Tutorial-local keys never reach account execution. The model has
+  no account, network or localStorage bridge and does not send fake instruments to Gateway.
+  Existing unrelated paper-account processing is not suspended by training; use an idle
+  account for an interruption-free tutorial. These scripted outcomes are not backtests.
+
 New authenticated URIs:
 - `GET /data/guns_scan?provider=tws`: preliminary scanner candidates.
 - `GET /data/guns_bars?provider=tws&symbol=SYMBOL`: streamed minute/daily history snapshot.
-- `GET /data/guns_news?provider=tws&symbol=SYMBOL`: entitled news headlines.
-- `GET /assets/guns.js`, `guns-execution.js`, `guns-ui.js`, `guns.css` under `/assets/`:
+- `GET /data/guns_news?provider=tws&symbol=SYMBOL`: entitled headlines and provider metadata.
+- `GET /data/guns_verify?provider=tws&conid=ID`: independent contract and historical evidence.
+- `GET /data/guns_article?provider=tws&newsProvider=CODE&articleId=ID`: licensed display-only text.
+- `GET /assets/guns.js`, `guns-execution.js`, `guns-workflow.js`, `guns-tutorial.js`,
+  `guns-ui.js`, `guns.css` under `/assets/`:
   explicit allowlisted assets. Existing quote subscriptions/SSE/search/depth are reused.
 
 Data remains in the existing browser account `paperAccount`: `S.guns.config` and
@@ -392,15 +444,24 @@ Known limits / recommended next work:
 - Use one execution tab per account. Browser-local storage is not a multi-writer ledger.
 
 Validation performed on this implementation:
-- `node --test test_guns.cjs test_frontend.cjs`: 17 tests passed.
-- `python3 -m unittest -q`: 26 tests passed, including asset/data authentication.
+- `node --test test_guns.cjs test_frontend.cjs`: 24 tests passed, including user review,
+  immutable notes, missing flag lows, shortcut validation, ranking and all tutorial outcomes.
+- `python3 -m unittest -q`: 30 tests passed, including authenticated assets/routes,
+  conId identity, previous close/completed PM bars, DST, unknown volume and safe news text.
 - `python3 browser_check.py`: 500-position, order, freshness, persistence, export and
   mobile checks passed with no browser errors.
-- An isolated GUNS browser fixture also passed scanner, charts, review checks, pending
-  equity re-sizing, actual partial fill, breakeven, latched partial exit, JSON export,
-  local persistence and mobile layout. This is not a live broker acceptance test.
+- `python3 browser_guns_check.py`: passed independent scanner evidence, escaped article
+  rendering, S1–S4 controls, editable/focused-button/repeat key guards, alternative binding
+  persistence, duplicate binding rejection, reviewed levels, equity re-sizing, partial fills,
+  breakeven, latched exit and JSON export. All four tutorial lessons passed with unchanged
+  serialized account and localStorage; 390px mobile layout passed. No browser errors.
+- All market data in these tests are isolated fixtures, not live broker acceptance.
 
-Preservation: GitHub authorization was unavailable during implementation. Incremental
-full-history Git bundles were uploaded; local-only commits are not considered durable.
+Preservation: temporary GitHub authorization failures were covered by uploaded full-history
+Git bundles. Authorization was subsequently restored and recovered implementation plus
+focused tests were pushed to `main`, through `4558b0a` before this documentation update.
+The earlier uncommitted edits were lost on resets and have now been restored/tested/pushed.
+Always commit and push small checkpoints; if authorization fails, upload a complete bundle
+promptly. Preserve references/source/tests, never credentials, dependencies or account data.
 `GUNS_HANDOFF.txt` preserves the uploaded historical handoff and is superseded by this
 section for current implementation status. No production deployment was performed.
