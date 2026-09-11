@@ -74,3 +74,30 @@ test('S4 uses a full cent above and below the candle even on subpenny ticks',()=
  const p=C.placement({tick:.001,regular:[{o:9,h:10,l:8.9,c:9.9},{o:9.9,h:9.95,l:9.7,c:9.8}]},{},4);
  assert.equal(p.entry,9.96);assert.equal(p.stop,9.69);
 });
+
+test('missing minute groups and unknown volume cannot masquerade as complete bars',()=>{
+ const rows=Array.from({length:5},(_,i)=>({t:i*60000,o:10,h:10.1,l:9.9,c:10,v:100}));
+ assert.equal(C.aggregate(rows,5)[0].complete,true);
+ assert.equal(C.aggregate(rows.filter((_,i)=>i!==2),5)[0].complete,false);
+ assert.equal(C.aggregate(rows.map((b,i)=>i===2?{...b,v:null}:b),5)[0].v,null);
+ assert.equal(C.validBar({o:10,h:9,l:8,c:10}),false);
+});
+test('S1 uses the actual forming premarket high; stale updates and absent trades block',()=>{
+ const f=chartFixture();f.now-=20000;f.data.updatedAt=f.now;
+ const t=Math.floor(f.now/60000)*60000;
+ f.data.minute=f.data.minute.filter(b=>b.t<t);
+ f.data.minute.push({t,o:10.4,h:10.7,l:10.3,c:10.6,v:100});
+ const notes={...f.notes,chartSetup:1};
+ const p=C.analyze(f.data,{last:10.6,bid:10.6,ask:10.61},{stopMode:'FIXED',fixedStop:.2},1,notes,f.now);
+ assert.equal(p.entry,10.71);
+ assert.ok(C.analyze({...f.data,updatedAt:f.now-15001},f.q,{},1,notes,f.now).errors.includes('Chart stream current'));
+ const absent=C.analyze(f.data,{last:10.6,tradeLast:null,bid:10.6,ask:10.61},{},1,notes,f.now);
+ assert.ok(absent.errors.includes('Price at least $1.50'));
+});
+test('tutorial candlesticks and levels use shared strategy calculations',()=>{
+ for(const l of T.lessons){const p=C.placement(l.source,l.config,l.setup);assert.equal(p.entry,l.entry);assert.equal(p.stop,l.stop);assert.equal(p.target,l.target);
+  for(const b of l.candles)assert.equal(C.validBar(b),true);
+  const svg=T.candleChart(l,null);assert.equal((svg.match(/class="candle-body"/g)||[]).length,7);assert.ok(!svg.includes('<polyline'));
+  assert.ok(svg.includes('data-level="SL" data-price="'+l.stop+'"'));
+ }
+});
