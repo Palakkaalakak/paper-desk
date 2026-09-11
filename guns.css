@@ -12,3 +12,5 @@
 #guns-tutorial{overflow-wrap:anywhere}#guns-tutorial button{white-space:normal}
 
 #guns-tutorial svg.lesson-chart{display:block;width:100%;height:auto;max-height:none}#guns-workspace #guns-entry-buttons button{min-width:0;white-space:normal;text-align:left}#guns-entry-buttons b{font-size:20px}
+
+#guns-rulebook{background:#17222f;border:1px solid #426883;padding:16px;margin-bottom:16px}#guns-rulebook article{padding:10px 0;border-top:1px solid #31465a}#guns-rulebook p{max-width:1100px}
