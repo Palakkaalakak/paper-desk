@@ -1,6 +1,6 @@
 /* Pure GUNS rules and risk calculations; no broker order APIs. */
 (function(root,f){if(typeof module==='object'&&module.exports)module.exports=f();else root.Guns=f();})(globalThis,function(){'use strict';
-const VERSION='guns-1.2',defaults={riskPct:1,rewardR:2,maxSpread:.05,minVolume:30000,breakeven:true,atrPeriod:14,stopMode:'ATR',fixedStop:.2};
+const VERSION='guns-1.3',defaults={riskPct:1,rewardR:2,maxSpread:.05,minVolume:30000,breakeven:true,atrPeriod:14,stopMode:'ATR',fixedStop:.2};
 const names={1:'Premarket high breakout',2:'Premarket pivot',3:'Premarket bull flag',4:'First opening bull flag',5:'First bullish minute'};
 const fmt=new Intl.DateTimeFormat('en-US',{timeZone:'America/New_York',year:'numeric',month:'2-digit',day:'2-digit'});
 function day(t){const p=Object.fromEntries(fmt.formatToParts(new Date(t)).map(x=>[x.type,x.value]));return p.year+'-'+p.month+'-'+p.day;}
@@ -19,12 +19,13 @@ function placement(data,cfg,setup,human){cfg=Object.assign({},defaults,cfg);setu
  let trigger=null,stop=setup<=2?null:undefined,pattern=null;
  if(setup===1)trigger=pmHigh;
  if(setup===2)for(let i=1;i<pre5.length-1;i++)if(pre5[i].h>=pre5[i-1].h&&pre5[i].h>pre5[i+1].h&&pre5[i].h<pmHigh)trigger=pre5[i].h;
- if(setup===3||setup===4){pattern=flag(setup===3?pre5:regular);if(pattern){trigger=pattern.candle.h;stop=pattern.candle.l-tick;}}
- if(setup===5){trigger=regular[0]?.h;stop=regular[0]?regular[0].l-tick:undefined;}
- const overridden=setup<=4&&finite(human?.trigger)&&human.trigger>0;
- if(overridden){trigger=human.trigger;if(setup>=3)stop=finite(human.candleLow)&&human.candleLow>0?human.candleLow-tick:undefined;}
+ if(setup===3||setup===4){pattern=flag(setup===3?pre5:regular);if(pattern){trigger=pattern.candle.h;stop=pattern.candle.l-.01;}}
+ if(setup===5){trigger=regular[0]?.h;stop=regular[0]?regular[0].l-.01:undefined;}
+ // S1 is always the premarket high: legacy overrides cannot turn it into S2.
+ const overridden=setup>=2&&setup<=4&&finite(human?.trigger)&&human.trigger>0;
+ if(overridden){trigger=human.trigger;if(setup>=3)stop=finite(human.candleLow)&&human.candleLow>0?human.candleLow-.01:undefined;}
  let entry=null,limit=null,target=null,risk=null;
- if(finite(trigger)&&finite(tick)&&tick>0){entry=round(trigger+tick,tick,true);limit=round(entry+(entry<20?.03:.05),tick,true);
+ if(finite(trigger)&&finite(tick)&&tick>0){entry=round(trigger+.01,tick,true);limit=round(entry+(entry<20?.03:.05),tick,true);
   if(stop===null){const dist=cfg.stopMode==='FIXED'?Number(cfg.fixedStop):cfg.stopMode==='PRICE'?(entry<20?.15:entry<30?.25:entry<50?.4:.5):a;if(finite(dist)&&dist>0)stop=entry-dist;}
   if(finite(stop)){stop=round(stop,tick,false);risk=entry-stop;if(risk>0)target=round(entry+risk*cfg.rewardR,tick,true);}
  }
@@ -54,7 +55,7 @@ function analyze(data,q,cfg,setup,notes,now){cfg=Object.assign({},defaults,cfg);
  check('Above 9/20 EMA and 50/200 SMA',above(basis));
  check('Setup entry window',sess&&now>=sess.start-(setup<=3?120000:0)&&now<Math.min(sess.end,sess.start+(setup<=3?300000:setup===5?120000:3600000)));
  check('Valid trigger, stop and target',entry>0&&stop>0&&risk>0&&target>entry);
- if(setup!==1)check('At least 1R before premarket resistance',entry&&pmHigh&&(entry>pmHigh||pmHigh-entry>=risk));
+ if(setup!==1)check('At least 1R before premarket resistance',entry&&pmHigh&&(setup===2?pmHigh-entry>=risk:entry>pmHigh||pmHigh-entry>=risk));
  check('No chase above entry limit',limit&&q?.ask<=limit);
  return {setup,checks,errors,advisories,levelSource:levels.levelSource,entry,limit,stop,target,risk,atr:a,pmHigh,gap,volume,session:sess,
  expiresAt:sess?Math.min(sess.end,sess.start+(setup<=3?300000:setup===5?120000:3600000)):null};

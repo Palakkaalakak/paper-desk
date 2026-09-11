@@ -60,3 +60,17 @@ test('four guided lessons cover target, slippage, no-chase and partial breakeven
 test('tutorial chart rejection skips, and separate models do not share progress',()=>{
  const m=T.model(),other=T.model();m.action('pick',T.lessons[0].symbol);m.action('read');m.action('news');assert.match(m.action('reject').result,/SKIPPED/);assert.equal(m.snapshot().position,null);assert.equal(other.snapshot().stage,0);
 });
+
+
+test('S1 always uses the premarket high, never a pivot or saved override',()=>{
+ const data={pre:[{h:10},{h:9.8}],pre5:[{h:9.5},{h:9.8},{h:9.6}],tick:.001,atr:.2};
+ const one=C.placement(data,{stopMode:'ATR'},1,{trigger:9.8});
+ const two=C.placement(data,{stopMode:'ATR'},2);
+ assert.equal(one.entry,10.01);assert.equal(one.stop,9.81);assert.equal(one.levelSource,'automatic');assert.equal(two.entry,9.81);
+ assert.equal(C.placement({...data,pre:[]},{stopMode:'ATR'},1,{trigger:9.8}).entry,null);
+ assert.equal(C.placement({...data,atr:null},{stopMode:'ATR'},1).target,null);
+});
+test('S4 uses a full cent above and below the candle even on subpenny ticks',()=>{
+ const p=C.placement({tick:.001,regular:[{o:9,h:10,l:8.9,c:9.9},{o:9.9,h:9.95,l:9.7,c:9.8}]},{},4);
+ assert.equal(p.entry,9.96);assert.equal(p.stop,9.69);
+});
