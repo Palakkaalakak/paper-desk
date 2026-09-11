@@ -4,7 +4,7 @@
  function chord(e){if(e.ctrlKey||e.metaKey||e.shiftKey||e.repeat||e.isComposing)return null;const code=e.code||'';if(!e.altKey&&/^Digit[1-4]$/.test(code))return code.slice(5);if(e.altKey&&/^(Key[A-Z]|Digit[0-9])$/.test(code))return 'Alt+'+code.replace('Key','').replace('Digit','');return null;}
  function bindings(c){const b=c?.shortcuts;return Array.isArray(b)&&b.length===4&&new Set(b).size===4&&b.every(x=>/^(?:[1-4]|Alt\+[A-Z0-9])$/.test(x))?b.slice():defaults.slice();}
  function setBinding(current,index,value){if(!Number.isInteger(index)||index<0||index>3||!/^(?:[1-4]|Alt\+[A-Z0-9])$/.test(value||'')||current.some((x,i)=>i!==index&&x===value))return null;const next=current.slice();next[index]=value;return next;}
- function candidate(row,q,evidence,ready,cfg,now){const why=[],e=evidence||{},finite=Number.isFinite;
+ function candidate(row,q,evidence,ready,cfg,now){const why=[],e=evidence||{},finite=Number.isFinite;q=q?{...q,last:Object.hasOwn(q,'tradeLast')?q.tradeLast:q.last}:q;
   if(!ready||q?.status!=='LIVE')why.push('fresh LIVE quote missing');
   if(!evidence||!finite(e.at)||now-e.at>90000||e.at>now+5000)why.push('verification missing/stale');
   if(Number(e.conid)!==Number(row.conid))why.push('contract identity unverified');

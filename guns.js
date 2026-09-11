@@ -18,7 +18,10 @@ function average(rows,n,exp){let sum=0,v=null;return rows.map((b,i)=>{sum+=b.c;i
 function studies(rows){return [average(rows,9,true),average(rows,20,true),average(rows,50,false),average(rows,200,false)];}
 function above(rows){return rows.length>=200&&studies(rows).every(s=>rows.at(-1).c>s.at(-1));}
 function atr(rows,n){if(rows.length<n+1)return null;let values=rows.slice(1).map((b,i)=>Math.max(b.h-b.l,Math.abs(b.h-rows[i].c),Math.abs(b.l-rows[i].c)));let v=values.slice(0,n).reduce((s,x)=>s+x,0)/n;values.slice(n).forEach(x=>v=(v*(n-1)+x)/n);return v;}
-function aggregate(rows,n){const m=new Map();rows.forEach(b=>{const t=Math.floor(b.t/(n*60000))*n*60000;let x=m.get(t);if(!x){x={t,o:b.o,h:b.h,l:b.l,c:b.c,v:0};m.set(t,x);}x.h=Math.max(x.h,b.h);x.l=Math.min(x.l,b.l);x.c=b.c;x.v+=b.v||0;});return Array.from(m.values());}
+function validBar(b){return b&&['o','h','l','c'].every(k=>finite(b[k])&&b[k]>0)&&b.h>=Math.max(b.o,b.c)&&b.l<=Math.min(b.o,b.c)&&b.h>=b.l;}
+function aggregate(rows,n){const groups=new Map();for(const b of rows){if(!finite(b.t)||!validBar(b))continue;const t=Math.floor(b.t/(n*60000))*n*60000;if(!groups.has(t))groups.set(t,[]);groups.get(t).push(b);}
+ return [...groups].sort((a,b)=>a[0]-b[0]).map(([t,rs])=>{rs.sort((a,b)=>a.t-b.t);return {t,o:rs[0].o,h:Math.max(...rs.map(b=>b.h)),l:Math.min(...rs.map(b=>b.l)),c:rs.at(-1).c,v:rs.every(b=>finite(b.v)&&b.v>=0)?rs.reduce((v,b)=>v+b.v,0):null,complete:rs.length===n&&rs.every((b,i)=>b.t===t+i*60000),observedMinutes:rs.length};});
+}
 function flag(rows){if(rows.length<2)return null;let i=rows.length-1;while(i>0&&rows[i].h<rows[i-1].h)i--;if(i===rows.length-1)return null;let j=i;while(j>0&&rows[j].h>rows[j-1].h)j--;const hi=rows[i].h,lo=Math.min(...rows.slice(j,i+1).map(b=>b.l));if(!(hi>lo)||j===i&&rows[i].c<=rows[i].o)return null;const low=Math.min(...rows.slice(i+1).map(b=>b.l));return {candle:rows.at(-1),low,retracement:(hi-low)/(hi-lo),first:!rows.slice(1,j+1).some((b,k)=>b.h<rows[k].h)};}
 // Shared numerical placement used by the desk and isolated candle tutorial.
 // This calculates levels; it does not approve chart quality or bypass execution guards.
@@ -42,19 +45,23 @@ function placement(data,cfg,setup,human){cfg=Object.assign({},defaults,cfg);setu
 function analyze(data,q,cfg,setup,notes,now){cfg=Object.assign({},defaults,cfg);notes=notes||{};now=now||Date.now();setup=Number(setup);const checks=[],errors=[],advisories=[];const advise=(label,ok)=>advisories.push({label,ok:!!ok});const check=(label,ok)=>{checks.push({label,ok:!!ok});if(!ok)errors.push(label);};
  if(!data)return {checks,advisories,errors:['Waiting for live broker chart data'],setup};
  const sess=(data.sessions||[]).find(s=>day(s.start)===day(now));
- const closed=(data.minute||[]).filter(b=>finite(b.t)&&b.t+60000<=now),m5=aggregate(closed,5).filter(b=>b.t+300000<=now);
+ const raw=data.minute||[],observed=raw.filter(b=>finite(b.t)&&b.t<=now&&validBar(b)),closed=observed.filter(b=>b.t+60000<=now),m5=aggregate(closed,5).filter(b=>b.complete&&b.t+300000<=now);
+ check('Valid ordered broker OHLC bars',raw.every((b,i)=>finite(b.t)&&validBar(b)&&(!i||b.t>raw[i-1].t)));
+ check('Latest completed minute available',closed.at(-1)?.t===Math.floor(now/60000)*60000-60000);
  const pre=closed.filter(b=>sess&&b.t>=sess.start-19800000&&b.t<sess.start),regular=closed.filter(b=>sess&&b.t>=sess.start&&b.t<sess.end);
- const daily=(data.daily||[]).filter(b=>String(b.t)<day(now)),prev=daily.at(-1)?.c,price=q?.last,tick=data.minTick;
- const pmHigh=pre.length?Math.max(...pre.map(b=>b.h)):null,volume=pre.reduce((s,b)=>s+(b.v||0),0),gap=prev&&finite(price)?(price/prev-1)*100:null;
+ const preObserved=observed.filter(b=>sess&&b.t>=sess.start-19800000&&b.t<sess.start);
+ const daily=(data.daily||[]).filter(b=>String(b.t)<day(now)),prev=daily.at(-1)?.c,price=q&&Object.hasOwn(q,'tradeLast')?q.tradeLast:q?.last,tick=data.minTick;
+ const pmHigh=preObserved.length?Math.max(...preObserved.map(b=>b.h)):null,volume=pre.length&&pre.every(b=>finite(b.v)&&b.v>=0)?pre.reduce((s,b)=>s+b.v,0):null,gap=prev&&finite(price)?(price/prev-1)*100:null;
  const period=Math.max(2,Math.min(100,Number(cfg.atrPeriod)||14)),a=atr(closed,period),preAtr=atr(pre,period);
  check('Verified penny-or-finer tick',finite(tick)&&tick>0&&tick<=.01);
  check('Corporate common stock verified',data.stockType==='COMMON'||notes.common===true);
  check('Price at least $1.50',finite(price)&&price>=1.5);check('Gap at least 5%',gap!==null&&gap>=5);
- check('Premarket volume threshold',volume>=cfg.minVolume);check('Favorable catalyst reviewed; no fixed-price buyout',notes.catalyst===true);
- check('Chart and setup reviewed by user',notes.chartSetup===setup);check('Daily overhead resistance reviewed',notes.room===true);check('Chart stream current',finite(data.updatedAt)&&now-data.updatedAt<90000);
- check('Current exchange session known',!!sess);check('Spread within configured limit',q&&finite(q.bid)&&finite(q.ask)&&q.bid>0&&q.ask>=q.bid&&q.ask-q.bid<=cfg.maxSpread+1e-9);
+ check('Premarket volume threshold',finite(volume)&&volume>=cfg.minVolume);check('Favorable catalyst reviewed; no fixed-price buyout',notes.catalyst===true);
+ check('Chart and setup reviewed by user',notes.chartSetup===setup);check('Daily overhead resistance reviewed',notes.room===true);check('Chart stream current',finite(data.updatedAt)&&data.updatedAt<=now+1000&&now-data.updatedAt<15000);
+ check('Current exchange session known',!!sess);check('Spread within configured limit',q&&finite(q.bid)&&finite(q.ask)&&q.bid>0&&q.ask>=q.bid&&q.ask-q.bid<=Math.min(cfg.maxSpread,setup===4?.05:.10)+1e-9);
  const pre5=m5.filter(b=>sess&&b.t>=sess.start-19800000&&b.t<sess.start),basis=setup<=3?m5:closed;
- const levels=placement({pre,pre5,regular,tick,atr:a},cfg,setup,notes.levels?.[setup]);
+ if(setup===2||setup===3)check('Latest completed 5-minute premarket candle available',pre5.at(-1)?.t===Math.floor(Math.min(now,sess?.start||now)/300000)*300000-300000);
+ const levels=placement({pre:preObserved,pre5,regular,tick,atr:a},cfg,setup,notes.levels?.[setup]);
  const {trigger,entry,limit,stop,target,risk,pattern:f}=levels;
  if(setup===1)advise('Within 5% of premarket high',pmHigh&&price>=pmHigh*.95&&price<=pmHigh*1.01);
  if(setup===2)advise('Suggested lower pivot identified',trigger!==null);
@@ -70,5 +77,5 @@ function analyze(data,q,cfg,setup,notes,now){cfg=Object.assign({},defaults,cfg);
 }
 function size(equity,pct,entry,stop,bp,fees){const budget=equity*pct/100,d=entry-stop;const zero={equity,budget:finite(budget)?budget:0,qty:0,risk:0,fees:0,unused:finite(budget)?budget:0};if(![equity,pct,entry,stop,bp].every(finite)||equity<=0||pct<=0||pct>100||entry<=0||stop<=0||d<=0||bp<=0)return zero;fees=fees||(()=>0);let lo=0,hi=Math.floor(Math.min(budget/d,bp/entry));while(lo<hi){const n=Math.ceil((lo+hi)/2),f=fees(n);if(finite(f)&&f>=0&&n*d+f<=budget+1e-8&&n*entry+f<=bp+1e-8)lo=n;else hi=n-1;}const f=lo?fees(lo):0;return {equity,budget,qty:lo,risk:lo*d+f,fees:f,unused:budget-lo*d-f};}
 function exit(b,q,now){if(b.forceExit||b.stopTriggered||q.bid<=b.stop)return {reason:b.forceExit?'MANUAL FLATTEN':'STOP',stop:b.stop};if(now>=b.sessionEnd-60000)return {reason:'SESSION CLOSE',stop:b.stop};if(q.bid>=b.target)return {reason:'TARGET',stop:b.stop};return {reason:null,stop:b.breakeven&&q.bid>=b.entry+b.initialR?Math.max(b.stop,b.entry):b.stop};}
-return {VERSION,defaults,names,rules,day,round,average,studies,atr,aggregate,flag,placement,analyze,size,exit};
+return {VERSION,defaults,names,rules,validBar,day,round,average,studies,atr,aggregate,flag,placement,analyze,size,exit};
 });
