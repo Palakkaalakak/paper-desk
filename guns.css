@@ -8,3 +8,5 @@
 @media(min-width:1600px){.guns-grid{grid-template-columns:240px minmax(500px,1fr) 360px}}@media(max-width:1100px){.guns-grid{grid-template-columns:180px minmax(280px,1fr)}.guns-planner{grid-column:1/-1}.guns-fields{grid-template-columns:repeat(4,1fr)}}@media(max-width:650px){.guns-grid,.guns-context{grid-template-columns:1fr}.guns-planner{grid-column:auto}.guns-header{align-items:flex-start;flex-direction:column}.guns-fields{grid-template-columns:1fr 1fr}.guns-grid>aside:first-child{max-height:290px;overflow:auto}.guns-review article button{float:none;display:block;margin-top:8px}#guns-workspace .guns-panel{padding:12px}}
 
 #guns-tutorial .lesson-body>article,#guns-tutorial .lesson-candidates>button{min-width:0;overflow-wrap:anywhere}#guns-tutorial header>*{min-width:0}#guns-tutorial select{max-width:100%}
+
+#guns-tutorial{overflow-wrap:anywhere}#guns-tutorial button{white-space:normal}

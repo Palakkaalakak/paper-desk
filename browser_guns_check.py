@@ -158,7 +158,7 @@ def main():
             assert page.evaluate('localStorage.paperAccount')==account_storage
             if lesson<3:page.locator('[data-lesson="next"]').click()
         page.set_viewport_size({'width':390,'height':844})
-        assert page.evaluate("document.querySelector('#guns-tutorial').scrollWidth<=document.querySelector('#guns-tutorial').clientWidth+1"),page.evaluate("[...document.querySelectorAll('#guns-tutorial *')].filter(e=>e.getBoundingClientRect().right>window.innerWidth).map(e=>[e.tagName,e.className,e.getBoundingClientRect().width])")
+        assert page.evaluate("document.querySelector('#guns-tutorial').scrollWidth<=document.querySelector('#guns-tutorial').clientWidth+1"),page.evaluate("(()=>{const d=document.querySelector('#guns-tutorial'),r=d.getBoundingClientRect();return {width:d.clientWidth,scroll:d.scrollWidth,rect:r.toJSON(),children:[...d.querySelectorAll('*')].filter(e=>e.getBoundingClientRect().right>r.right-14).map(e=>[e.tagName,String(e.className),e.getBoundingClientRect().toJSON()])};})()")
         page.locator('[data-lesson="close"]').click()
         assert page.evaluate('document.documentElement.scrollWidth<=window.innerWidth+1')
         assert not errors,errors
