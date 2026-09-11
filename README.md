@@ -372,7 +372,8 @@ with the user. Do not restart IB Gateway, overwrite account state, or continue u
 - **Your responsibility:** review the actual chart/setup, catalyst, instrument and overhead
   resistance; choose risk/stop settings; confirm the specific setup. Pattern hints are
   advisory, not chart approval. Optional reviewed trigger-high overrides are per symbol,
-  day and setup. S3/S4 overrides require the corresponding candle low; missing lows never
+  day and setup for S2–S4 only. S1 always uses the actual observed premarket high and ignores
+  any saved legacy override. S3/S4 overrides require the corresponding candle low; missing lows never
   silently fall back to ATR. Numerical rules (including moving averages, entry windows,
   valid prices, freshness, buying power and no-chase) remain enforced.
 - **Automatic after confirmation:** pending risk resizing, trigger/cap checks, paper entry,
@@ -407,7 +408,7 @@ with the user. Do not restart IB Gateway, overwrite account state, or continue u
   is not required. ZORA-DEMO (S1 target), NIMB-DEMO (S2 stop/slippage), LUMA-DEMO (S3 no-chase)
   and VELA-DEMO (S4 partial fill/breakeven) guide discovery, news, chart acceptance/rejection,
   exact equity-risk examples, confirmation, protection and review. Prices/news are fictional;
-  line diagrams illustrate authored candle levels rather than infer them. Prices advance
+  OHLC candlesticks show authored fictional bars with automatically calculated entry/SL/TP overlays. Prices advance
   only by explicit actions. Tutorial-local keys never reach account execution. The model has
   no account, network or localStorage bridge and does not send fake instruments to Gateway.
   Existing unrelated paper-account processing is not suspended by training; use an idle
@@ -444,9 +445,9 @@ Known limits / recommended next work:
 - Use one execution tab per account. Browser-local storage is not a multi-writer ledger.
 
 Validation performed on this implementation:
-- `node --test test_guns.cjs test_frontend.cjs`: 24 tests passed, including user review,
+- `node --test test_guns.cjs test_frontend.cjs`: 29 tests passed, including user review,
   immutable notes, missing flag lows, shortcut validation, ranking and all tutorial outcomes.
-- `python3 -m unittest -q`: 30 tests passed, including authenticated assets/routes,
+- `python3 -m unittest -q`: 31 tests passed, including authenticated assets/routes,
   conId identity, previous close/completed PM bars, DST, unknown volume and safe news text.
 - `python3 browser_check.py`: 500-position, order, freshness, persistence, export and
   mobile checks passed with no browser errors.
@@ -465,3 +466,78 @@ Always commit and push small checkpoints; if authorization fails, upload a compl
 promptly. Preserve references/source/tests, never credentials, dependencies or account data.
 `GUNS_HANDOFF.txt` preserves the uploaded historical handoff and is superseded by this
 section for current implementation status. No production deployment was performed.
+
+
+## Current staged GUNS finish (2026-09-11)
+
+This section supersedes older single-screen instructions above.
+
+- **Scanner**: broad candidate grid; selected symbols advance to News & research.
+- **News & research**: filterable headlines alongside a large article reader. Review
+  common-stock/catalyst/resistance confirmations here before Trading.
+- **Trading**: one large chart with 1 MIN / 5 MIN / DAILY controls; automatic EMA9/20,
+  SMA50/200. Numbered buttons **1–4 place that selected strategy**, not merely switch the
+  dropdown. Entry, SL, TP and whole-share sizing are calculated and previewed on each
+  button. Risk settings, overrides and diagnostic checks are expandable. Shortcuts only
+  operate in this Trading stage. Browser paper protection continues in other stages.
+- **Formation & rules**: reviewed summaries of Adam's supplied course sections for all
+  five setups, including formation, entry, SL, TP, invalidation and application deviations.
+  S1 is prioritized: observed premarket high + **$0.01**, never a pivot or manual substitute.
+  S2 uses the lower pivot; S3 the final premarket flag candle; S4 the opening flag candle.
+  Offsets are one full cent, rounded to the valid tick—not merely one subpenny tick.
+- **Journal**: paper round trips and export, away from the trading chart.
+- **Tutorial**: four isolated fictional OHLC candlestick lessons, using the same numerical
+  placement function as the desk. Fictional data never enters Gateway subscriptions or
+  account execution. S1/S2 tutorial stop distances are explicitly authored presets; the
+  working desk defaults to one-minute ATR, with period 14 an app choice.
+
+### Real data, chart interface and latency
+
+The working desk consumes IB Gateway TRADES OHLC data and renders it locally. It does not
+embed TWS's native chart window, screen-scrape IBKR charts, use another vendor's price feed,
+interpolate missing candles or substitute midpoint values as GUNS last trades.
+IBKR's documented socket API is a data/message interface; Advanced Charts are documented
+as a TWS application feature, not an embeddable chart-window API:
+
+- https://www.interactivebrokers.com/docs/tws-api/doc/introduction
+- https://www.interactivebrokers.com/campus/trading-lessons/tradingview-advanced-charts-in-tws/
+
+For IBKR's exact native chart interface, use TWS alongside Paper Desk, keeping all broker
+order access read-only. A native-chart embedding has not been implemented or claimed.
+
+The app displays Gateway quote receipt age and history-update age, **not measured exchange
+to-browser latency**. Quote delivery/processing remains on the existing SSE/tick path.
+History snapshot polling is approximately once per second; server snapshot cache is 250ms,
+down from the prior 1-second cache plus roughly 3-second browser poll. These settings do
+not speed up the broker's underlying bar publication. Zero latency is not promised.
+
+Entry guards now require valid ordered OHLC, the current latest completed minute, history
+update age under 15 seconds, and (S2/S3) the latest complete premarket five-minute candle.
+Missing one-minute observations cause a five-minute group to be marked incomplete rather
+than manufactured. Incomplete groups are excluded from automatic setup calculations and
+studies; the chart labels genuine partial/forming bars and gaps. S1's observed premarket
+high includes the current real forming premarket bar, rather than waiting for its close.
+Unknown volume stays unknown. S4 retains the stricter $0.05 maximum spread. These guards
+can intentionally block thin/stale names. Missing coverage can reflect no trades or missing
+data; the app cannot prove a complete tape. Live Gateway acceptance is still outstanding.
+
+### Incomplete news handling
+
+The reported `(END) Dow Jones Newswires ... Copyright ... statements ...` response is
+recognized as footer/legal material, not presented as a usable story. Reader warnings state
+when Gateway returns only a short fragment/footer. Legal notices and the full normalized
+returned text remain inspectable; they are not deleted. No missing story is invented.
+HTML is converted to escaped display-only text; excessive blank lines are normalized.
+`contentStatus` reports `body_returned`, `incomplete` or `binary`; body presence is only a
+heuristic, not proof of publisher completeness or accuracy. Only usable returned text is
+recorded as opened news evidence, and reading never approves the catalyst automatically.
+The reader offers a clearly labeled external search for the original release, not a
+purported verified publisher URL. News availability still depends on the API entitlement.
+
+Final offline validation: **29 JavaScript tests, 31 Python tests, staged GUNS browser flow
+and 500-position browser regression pass**. Browser checks cover all five mobile stages,
+large timeframe-switchable charts, candle tutorial/account isolation, article escaping,
+strategy controls and paper lifecycle. The footer-only response is tested separately.
+No production deployment or real broker trading was enabled. Source, course reference,
+tests and continuation information are preserved in GitHub main. Working account data,
+credentials, dependencies and caches remain excluded.
