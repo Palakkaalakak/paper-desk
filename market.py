@@ -361,7 +361,7 @@ class MarketEngine:
             async def work():
                 try:
                     result = await getattr(self,'_'+name)(*args)
-                    ttl = 20 if name == 'guns_scan' else 120 if name == 'guns_news' else 300 if name in ('search','chain') else 1
+                    ttl = 20 if name == 'guns_scan' else 60 if name == 'guns_verify' else 30 if name == 'guns_news' else 300 if name in ('search','chain','guns_article') else 1
                     self._cache[key] = (time.monotonic()+ttl,result)
                     if len(self._cache)>1000:
                         self._cache.pop(next(iter(self._cache)))
@@ -457,6 +457,14 @@ class MarketEngine:
     async def _guns_news(self, symbol):
         from guns_data import news
         return await news(self, symbol)
+
+    async def _guns_verify(self, conid):
+        from guns_data import verify
+        return await verify(self, conid)
+
+    async def _guns_article(self, provider, article_id):
+        from guns_data import article
+        return await article(self, provider, article_id)
 
     async def _depth(self,symbol):
         c = await self._stock(symbol)

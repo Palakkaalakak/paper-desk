@@ -3,6 +3,7 @@ import asyncio
 import datetime as dt
 import re
 import time
+from html.parser import HTMLParser
 from zoneinfo import ZoneInfo
 
 
@@ -28,10 +29,12 @@ async def scan(engine):
                               stockTypeFilter='CORP')
     rows = await asyncio.wait_for(engine._ib.reqScannerDataAsync(
         sub, scannerSubscriptionFilterOptions=[TagValue('changePercAbove','5')]),15)
-    return dict(at=int(time.time()*1000),source='IB Gateway',preliminary=True,
+    return dict(at=int(time.time()*1000),source='IB Gateway scanner',preliminary=True,
+                warning='Scanner returns contracts, not verified prices or premarket volume. Separate quote/history checks required.',
                 rows=[dict(conid=r.contractDetails.contract.conId,symbol=r.contractDetails.contract.symbol,
                            name=r.contractDetails.longName,stockType=r.contractDetails.stockType,
-                           secType='STK',exch='SMART',brokerId=True,rank=r.rank) for r in rows[:30]])
+                           secType='STK',exch='SMART',brokerId=True,rank=r.rank) for r in (rows or [])[:30]
+                      if r.contractDetails.contract.secType == 'STK' and r.contractDetails.contract.currency == 'USD'])
 
 
 def close_idle(engine):
@@ -97,8 +100,89 @@ async def bars(engine,ticker):
 async def news(engine,ticker):
     c = await engine._stock(symbol(ticker))
     providers = await asyncio.wait_for(engine._ib.reqNewsProvidersAsync(),10)
+    info = [dict(code=p.code, name=p.name) for p in (providers or [])]
+    out = dict(rows=[], providers=info, at=int(time.time()*1000), source='IB Gateway API news')
     if not providers:
-        return dict(rows=[])
-    result = await asyncio.wait_for(engine._ib.reqHistoricalNewsAsync(c.conId,'+'.join(p.code for p in providers[:5]),'','',10),12)
-    return dict(rows=[dict(time=stamp(x.time),provider=x.providerCode,headline=x.headline)
-                      for x in (result or [])])
+        return dict(out, warning='No API news providers returned for this Gateway username. TWS news and API entitlements can differ.')
+    result = await asyncio.wait_for(engine._ib.reqHistoricalNewsAsync(c.conId,'+'.join(p.code for p in providers),'','',20),12)
+    if result is None:
+        raise ValueError('News request timed out or was not entitled; no catalyst has been verified')
+    out['rows'] = [dict(time=stamp(x.time),provider=x.providerCode,articleId=x.articleId,headline=x.headline)
+                   for x in result]
+    if not result:
+        out['warning'] = 'No symbol headlines returned. This does not establish that no news exists.'
+    return out
+
+
+class ArticleText(HTMLParser):
+    """Convert publisher HTML into display-only text; never execute remote markup."""
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.parts, self.hidden = [], 0
+    def handle_starttag(self, tag, attrs):
+        if tag in ('script', 'style'): self.hidden += 1
+        if tag in ('p', 'div', 'br', 'li', 'h1', 'h2'): self.parts.append('\n')
+    def handle_endtag(self, tag):
+        if tag in ('script', 'style'): self.hidden = max(0, self.hidden-1)
+    def handle_data(self, data):
+        if not self.hidden: self.parts.append(data)
+
+
+async def article(engine, provider, article_id):
+    if not re.fullmatch(r'[A-Za-z0-9_.-]{1,32}', provider or ''):
+        raise ValueError('Invalid news provider')
+    if not article_id or len(article_id)>256 or any(ord(c)<32 for c in article_id):
+        raise ValueError('Invalid article ID')
+    result = await asyncio.wait_for(engine._ib.reqNewsArticleAsync(provider, article_id),12)
+    if result is None:
+        raise ValueError('Article unavailable or API entitlement missing')
+    if result.articleType != 0:
+        return dict(provider=provider,articleId=article_id,text='',warning='Binary/PDF article: review in your licensed news terminal.')
+    parser = ArticleText()
+    parser.feed((result.articleText or '')[:200000])
+    return dict(provider=provider,articleId=article_id,text=''.join(parser.parts).strip(),at=int(time.time()*1000))
+
+
+def verification(detail, minute, daily, now):
+    """Independent scanner evidence. Missing observations remain unknown, not zero."""
+    from market import number
+    ny = ZoneInfo('America/New_York')
+    day = dt.datetime.fromtimestamp(now/1000, ny).date()
+    sessions = detail.liquidSessions()
+    session = next((s for s in sessions if s.start.astimezone(ny).date()==day), None)
+    prev = [(str(b.date)[:10], number(b.close, True)) for b in daily if str(b.date)[:10]<day.isoformat()]
+    prev = sorted((date,close) for date,close in prev if close is not None and close>0)
+    start = int(dt.datetime.combine(day,dt.time(4),ny).timestamp()*1000)
+    end = min(now, stamp(session.start)) if session else None
+    pre = [b for b in minute if isinstance(stamp(b.date), int) and end is not None and start<=stamp(b.date) and stamp(b.date)+60000<=end]
+    volumes = [number(b.volume, True) for b in pre]
+    return dict(conid=detail.contract.conId,stockType=detail.stockType,source='IB Gateway TRADES / RTH daily close',
+                at=now,sessionDate=day.isoformat(),sessionKnown=session is not None,
+                previousClose=prev[-1][1] if prev else None,previousCloseDate=prev[-1][0] if prev else None,
+                premarketVolume=sum(volumes) if volumes and all(v is not None for v in volumes) else None,
+                premarketStart=start,premarketEnd=stamp(session.start) if session else None,
+                lastPremarketBar=max((stamp(b.date) for b in pre),default=None),observedBars=len(pre),
+                volumeUnit='shares as returned by IB; no display-lot multiplier',
+                coverage='Observed completed TRADES bars only. Missing minutes may be inactivity or unavailable data; not proof of complete tape coverage.')
+
+
+async def verify(engine, conid):
+    from ib_async import Contract
+    if not str(conid).isdigit() or not 0<int(conid)<2**53:
+        raise ValueError('Invalid contract ID')
+    # Shared lock paces separate browser requests, not the quote/event loop.
+    if not hasattr(engine, '_guns_verify_lock'): engine._guns_verify_lock = asyncio.Lock()
+    async with engine._guns_verify_lock:
+        wait = getattr(engine, '_guns_verify_next', 0)-time.monotonic()
+        if wait>0: await asyncio.sleep(wait)
+        engine._guns_verify_next = time.monotonic()+3
+        ib = engine._ib
+        details = await asyncio.wait_for(ib.reqContractDetailsAsync(Contract(conId=int(conid),exchange='SMART')),12)
+        if not details or details[0].contract.secType!='STK' or details[0].contract.currency!='USD':
+            raise ValueError('US dollar stock definition unavailable')
+        d = details[0]
+        async def get(duration, interval, rth):
+            return await ib.reqHistoricalDataAsync(d.contract,'',duration,interval,'TRADES',rth,formatDate=2,keepUpToDate=False,timeout=20)
+        minute,daily = await asyncio.gather(get('2 D','1 min',False),get('1 M','1 day',True))
+        if not minute or not daily: raise ValueError('Scanner verification history incomplete')
+        return verification(d,minute,daily,int(time.time()*1000))
