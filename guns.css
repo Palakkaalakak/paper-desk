@@ -10,3 +10,5 @@
 #guns-tutorial .lesson-body>article,#guns-tutorial .lesson-candidates>button{min-width:0;overflow-wrap:anywhere}#guns-tutorial header>*{min-width:0}#guns-tutorial select{max-width:100%}
 
 #guns-tutorial{overflow-wrap:anywhere}#guns-tutorial button{white-space:normal}
+
+#guns-tutorial svg.lesson-chart{display:block;width:100%;height:auto;max-height:none}#guns-workspace #guns-entry-buttons button{min-width:0;white-space:normal;text-align:left}#guns-entry-buttons b{font-size:20px}
