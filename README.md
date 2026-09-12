@@ -1,5 +1,44 @@
 # Paper Desk — IB Gateway paper-trading workstation
 
+## Current GUNS workflow — 1.4 (2026-09-12)
+
+This section supersedes older GUNS UI descriptions below; historical implementation notes and course material are preserved. All execution remains browser-local PAPER trading. The single read-only IB session and blocked real-order routes are unchanged.
+
+### What changed and how to use it
+
+1. **Scanner:** discovery is followed by paced contract/history/float checks, then publication of at most four passing candidates. No failed or unresolved discoveries are padded into the main list. Rejections live under Screening diagnostics. The broker scan covers up to 30 US-major-exchange gainers, **not every market security**. Required checks are current LIVE quotes, price, gap, observed premarket volume, common-stock identity, session and spread. News quality, resistance and chart quality remain human decisions.
+2. **Stable results:** candidate membership/order is saved per paper book. Quotes and safety checks update without continuously sorting or replacing candidates. A deteriorated or restored candidate keeps its slot and is labeled as awaiting current trading checks. Scan now is explicit; automatic discovery runs initially if no prior attempt exists and once in the actual session's T−30/open window. The first visible GUNS pulse in that window triggers the scheduled attempt; no background/cloud scheduler is implied. The IB SPY liquid-session calendar supplies the schedule; unknown sessions are never guessed.
+3. **News:** search another company/ticker directly on News, or use the scanner quicklist. Research selection does not switch an already selected execution symbol. Open research company in active chart explicitly assigns it. Public RSS supplies excerpts and publisher links alongside IB headlines. An unusable IB article triggers attempts to retrieve an alternative article, including a configured full-body source. A different article is explicitly labeled DIFFERENT; it is not represented as the originally requested story. Publisher/legal responses are retained under diagnostics. Reading text never automatically approves the catalyst.
+4. **Charts:** Trading offers focus and 2×2 modes with four independent, saved symbol/timeframe slots. Activate a slot, then use company search or the quicklist to assign it. Several slots can show the same company in different timeframes. Only the highlighted ACTIVE EXECUTION chart receives keys 1–5. Wheel zooms; Shift+wheel pans; crosshair/OHLC uses real observed candles. Mobile stacks the panels. EMA9/20 and SMA50/200 remain automatic.
+5. **Quick settings:** open Quick settings for risk %, target R, hover mode and automatic timeframe selection when changing the strategy dropdown. Pending entries continue to resize from current marked equity. New risk/R settings apply to previews and pending fills; filled brackets retain their captured stop/target/breakeven settings. Changes to pending entry/stop geometry require explicit re-arm.
+6. **S5:** key 5 and its placement button submit the calculated S5 paper entry after required reviews/checks. Existing custom S1–S4 bindings migrate without resetting; conflicts with 5 receive an available Alt binding. All editing/modal/tab/repeat guards remain.
+7. **Hover mode:** default off. When on, a valid candle column under the pointer in the active chart supplies its real high, not mouse Y-price. S1/S2 use high + $0.01 and the configured stop method; S3/S4 use that candle's high + $0.01 and low − $0.01. S1's automatic mode still uses the actual PM high. S3 requires completed PM 5m, S4 regular 1m; S1/S2 accept completed PM 1m/5m. S5 still requires the first completed regular minute. Wrong-session, incomplete/forming, daily or mismatched candles block the override rather than bypassing safeguards. Pointer outside the active chart/no candle uses AUTO. Use a placement key while hovering; moving to click a toolbar button means AUTO. Candle/symbol/timeframe metadata is copied into the order and cannot move with the pointer after confirmation.
+
+### News and float setup — important limitations
+
+- Free Yahoo Finance RSS, with Google News RSS as a fallback, supplies **excerpts and links, not guaranteed full stories**. A live public-source probe returned 18 AAPL RSS items; this is availability evidence, not full-body acceptance. Search-derived headlines can be ambiguous: verify the company and catalyst yourself.
+- Existing IB API news uses the configured Gateway entitlements. Enable providers in TWS/Gateway API News Configuration. TWS news access and API entitlement are not necessarily equivalent; free DJNL newsletters are not comprehensive breaking-news coverage.
+- Optional `PAPER_BENZINGA_KEY` enables the direct Benzinga News API with `displayOutput=full`. It is a separate licensed API credential, not an IB login. This adapter was fixture-tested; no paid subscription was activated or live entitlement verified.
+- Optional `PAPER_FMP_KEY` enables Financial Modeling Prep `/stable/shares-float`. The adapter returns the actual `floatShares`, source and date; it never substitutes outstanding shares. Set keys in the **server process environment**, restart Paper Desk, and never put them in HTML, URLs shared with others, source control or chat. No paid purchase was made.
+- Float defaults to a below-100M preference. Scanner Strict excludes unknown, stale (45 days or older), or >=100M float. Strict also applies at entry validation. Without a configured source, float is explicitly UNKNOWN, **not checked/passed**. Float responses cache for six hours; external news responses for two minutes. Manual refresh may reuse that provider cache.
+- No provider can guarantee text for every headline. If all retrieval attempts fail, original-source/company links remain available; missing text is never invented or concealed as a full article.
+
+### Data architecture, routes and outstanding acceptance
+
+The Python server still runs at **http://localhost:8765**, with no frontend build. New authenticated GET routes: `/data/guns_sources?symbol=...`, `/data/guns_float?symbol=...`, `/data/guns_schedule`. Existing search, bars, scanner verification, articles and SSE routes remain. External sources use fixed hosts, HTTPS, bounded responses and no redirects; credentials stay server-side. Market data and reference-data caches are transient, not a research database. Shortlists and chart slots are saved in the existing browser paper-account storage.
+
+Historical acquisition is serialized on the existing owner loop and capped at six symbol streams (four chart symbols plus two pending-entry symbols). Cached charts bypass cold-acquisition waits. Generation changes and cancelled/failed acquisitions are handled without cancelling a new connection's reused request IDs.
+
+**Not implemented / not claimed:** native TWS GUI embedding (no supported documented interface found), a chart-library replacement, independently verified live TWS candle/ATR parity, universal full-text news, configured paid float/news entitlements, durable cloud journaling or always-on post-exit collection. The enhanced local canvas still plots observed bars by index and labels time gaps rather than manufacturing candles. Feed accuracy and rendering interactivity are separate. Next acceptance step is a read-only live Gateway comparison of contracts, extended-hours/RTH settings, OHLC, indicators and reconnect behavior under the user's entitlements.
+
+### Preservation and verification
+
+Application changes are pushed through `ec54162`. The final browser fixture removes a navigation race by carrying test request timestamps in a test-only header; this does not modify production fetches. Source, tests and the unchanged Adam course are preserved; no credentials, account files or dependencies are committed. If GitHub authorization fails, use the complete Git bundle supplied in chat.
+
+Verification: 36 JavaScript tests and 37 Python tests passed. Expanded GUNS and 500-position browser suites passed before the final identity/scheduling hardening; final browser rerun status will be recorded below when complete.
+
+---
+
 Paper trading only. Orders execute in the browser's simulated account, never at IBKR.
 The default data connection is now **IB Gateway / TWS socket API**, with continuously
 streamed quotes and an automatically reconnecting browser feed.
