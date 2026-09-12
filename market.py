@@ -361,7 +361,7 @@ class MarketEngine:
             async def work():
                 try:
                     result = await getattr(self,'_'+name)(*args)
-                    ttl = 3600 if name == 'guns_schedule' else .25 if name == 'guns_bars' else 20 if name == 'guns_scan' else 60 if name == 'guns_verify' else 30 if name == 'guns_news' else 300 if name in ('search','chain','guns_article') else 1
+                    ttl = 21600 if name == 'guns_float' and result.get('status')=='returned' else 30 if name == 'guns_float' else 3600 if name == 'guns_schedule' else .25 if name == 'guns_bars' else 20 if name == 'guns_scan' else 10 if name == 'guns_verify' else 30 if name == 'guns_news' else 300 if name in ('search','chain') or name == 'guns_article' and result.get('contentStatus') in ('body_returned','brief','pdf') else 1
                     self._cache[key] = (time.monotonic()+ttl,result)
                     if len(self._cache)>1000:
                         self._cache.pop(next(iter(self._cache)))
@@ -445,6 +445,10 @@ class MarketEngine:
                 symbol='%s %s %s %s' % (symbol,expiry,c.strike,c.right),strike=c.strike,right=c.right,
                 expiry=expiry,mult=number(c.multiplier) or 100,bid=None,ask=None,last=None))
         return out
+
+    async def _guns_float(self, symbol):
+        from guns_data import float_data
+        return await float_data(self, symbol)
 
     async def _guns_schedule(self):
         from guns_data import schedule

@@ -287,13 +287,14 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     lambda: providers.cascade('search', prov, key, q=one('q', '')))
             elif kind == 'twsstatus':
                 out = market.ENGINE.snapshot(one('client', ''))
-            elif kind in ('guns_sources', 'guns_float'):
+            elif kind == 'guns_float':
+                out = market.ENGINE.call(kind, one('symbol', ''), timeout=35)
+            elif kind == 'guns_sources':
                 import guns_data
                 ticker=guns_data.symbol(one('symbol',''))
-                envkey=os.environ.get('PAPER_BENZINGA_KEY' if kind=='guns_sources' else 'PAPER_FMP_KEY','')
+                envkey=os.environ.get('PAPER_BENZINGA_KEY','')
                 identity=hashlib.sha256(envkey.encode()).digest()
-                out=providers._cached((kind,ticker,identity),120 if kind=='guns_sources' else 21600,
-                    lambda: (guns_data.source_news if kind=='guns_sources' else guns_data.float_reference)(ticker))
+                out=providers._cached((kind,ticker,identity),120,lambda: guns_data.source_news(ticker))
             elif kind in ('guns_scan', 'guns_bars', 'guns_news', 'guns_schedule'):
                 args = () if kind in ('guns_scan','guns_schedule') else (one('symbol', ''),)
                 out = market.ENGINE.call(kind, *args, timeout=40)

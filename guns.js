@@ -1,6 +1,6 @@
 /* Pure GUNS rules and risk calculations; no broker order APIs. */
 (function(root,f){if(typeof module==='object'&&module.exports)module.exports=f();else root.Guns=f();})(globalThis,function(){'use strict';
-const VERSION='guns-1.4',defaults={riskPct:1,rewardR:2,maxSpread:.05,minVolume:30000,breakeven:true,atrPeriod:14,stopMode:'ATR',fixedStop:.2,hoverCandle:false,autoFrame:true,floatMode:'prefer',maxFloat:100000000};
+const VERSION='guns-1.5',defaults={riskPct:1,rewardR:2,maxSpread:.05,minVolume:30000,breakeven:true,atrPeriod:14,stopMode:'ATR',fixedStop:.2,hoverCandle:false,autoFrame:true,floatMode:'strict',maxFloat:100000000,openFrame:false,autoCharts:true};
 const names={1:'Premarket high breakout',2:'Premarket pivot',3:'Premarket bull flag',4:'First opening bull flag',5:'First bullish minute'};
 // Reviewed against the preserved Adam course notes; qualitative decisions remain human.
 const rules=[
@@ -69,7 +69,7 @@ function analyze(data,q,cfg,setup,notes,now){cfg=Object.assign({},defaults,cfg);
   check('Hover candle matches this contract, completed strategy timeframe and session',valid);
   human=valid?{mode:'hover',candle:h.candle}:null;
  }
- if(cfg.floatMode==='strict'){const f=data.float,t=Date.parse(f?.date);check('Dated free float below configured cap',finite(f?.floatShares)&&f.floatShares>0&&f.floatShares<cfg.maxFloat&&typeof f.source==='string'&&finite(t)&&t<=now+86400000&&now-t<45*86400000);}
+ if(cfg.floatMode==='strict'){const f=data.float,t=Date.parse(f?.date),count=f?.basis==='outstanding-upper-bound'?f.upperBoundShares:f?.floatShares;check('Dated float or conservative share-count bound below cap',finite(count)&&count>0&&count<cfg.maxFloat&&typeof f.source==='string'&&finite(t)&&t<=now+86400000&&now-t<45*86400000);}
  const levels=placement({pre:preObserved,pre5,regular,tick,atr:a},cfg,setup,human);
  const {trigger,entry,limit,stop,target,risk,pattern:f}=levels;
  if(setup===1)advise('Within 5% of premarket high',pmHigh&&price>=pmHigh*.95&&price<=pmHigh*1.01);
