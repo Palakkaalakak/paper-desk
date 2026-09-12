@@ -2,6 +2,7 @@
 
 All brokerage/provider calls are mocked. No credentials or live services needed.
 """
+import asyncio
 import contextlib
 import http.client
 import io
@@ -318,6 +319,60 @@ class GunsDataTests(unittest.IsolatedAsyncioTestCase):
         for provider,article_id in [('bad/code','x'),('P1',''),('P1','x'*257),('P1','x\n')]:
             with self.assertRaises(ValueError):await guns_data.article(engine,provider,article_id)
         self.assertEqual(ib.reqNewsArticleAsync.await_count,calls)
+
+
+class GunsSourceAndStreamTests(unittest.IsolatedAsyncioTestCase):
+    def test_public_feed_is_excerpt_and_unsafe_links_are_rejected(self):
+        feed=b'<rss><channel><item><title>Company news</title><link>https://example.com/release</link><description>&lt;p&gt;Actual excerpt&lt;/p&gt;</description></item><item><title>bad</title><link>javascript:alert(1)</link></item></channel></rss>'
+        with patch.dict(guns_data.os.environ,{},clear=True),patch.object(guns_data,'source_fetch',return_value=feed):out=guns_data.source_news('TEST')
+        self.assertEqual(len(out['rows']),1);self.assertEqual(out['rows'][0]['contentStatus'],'excerpt');self.assertEqual(out['rows'][0]['text'],'Actual excerpt')
+        self.assertEqual(guns_data.public_link('https://user:password@example.com'),'')
+        with self.assertRaises(ValueError):guns_data.source_fetch('127.0.0.1','/',{})
+
+    def test_full_body_identity_and_float_not_outstanding(self):
+        body='Company reported higher revenue and strong earnings. '*10
+        data=[dict(id=1,title='Report',body=body,stocks=[dict(name='TEST')]),dict(id=2,title='Other',body=body,stocks=[dict(name='OTHER')])]
+        with patch.dict(guns_data.os.environ,{'PAPER_BENZINGA_KEY':'fixture-secret'},clear=True),patch.object(guns_data,'source_fetch',side_effect=[json.dumps(data).encode(),b'<rss/>']):out=guns_data.source_news('TEST')
+        self.assertEqual(len(out['rows']),1);self.assertEqual(out['rows'][0]['contentStatus'],'body_returned');self.assertNotIn('fixture-secret',repr(out))
+        with patch.dict(guns_data.os.environ,{},clear=True):self.assertIsNone(guns_data.float_reference('TEST')['floatShares'])
+        for field,expected in [('outstandingShares',None),('floatShares',15000000)]:
+            with patch.dict(guns_data.os.environ,{'PAPER_FMP_KEY':'fixture-secret'},clear=True),patch.object(guns_data,'source_fetch',return_value=json.dumps([dict(symbol='TEST',date='2026-09-10',**{field:15000000})]).encode()):self.assertEqual(guns_data.float_reference('TEST')['floatShares'],expected)
+
+    def test_provider_errors_redact_keys_and_redirects_are_refused(self):
+        with patch.object(guns_data.urllib.request,'build_opener') as opener:
+            opener.return_value.open.side_effect=ValueError('https://api.benzinga.com?token=fixture-secret')
+            with self.assertRaises(ValueError) as error:guns_data.source_fetch('api.benzinga.com','/api/v2/news',{'token':'fixture-secret'})
+            self.assertNotIn('fixture-secret',str(error.exception))
+        with self.assertRaises(ValueError):guns_data.NoRedirect().redirect_request(None,None,302,'',{},'http://127.0.0.1')
+
+    def engine(self):
+        from ib_async.objects import BarData,BarDataList
+        async def get(contract,*args,**kwargs):
+            await asyncio.sleep(.002)
+            rows=BarDataList();rows.append(BarData(date=dt.datetime(2026,9,10,13,29,tzinfo=dt.timezone.utc),open=10,high=10.1,low=9.9,close=10,volume=100));return rows
+        ib=NS(reqHistoricalDataAsync=AsyncMock(side_effect=get),reqContractDetailsAsync=AsyncMock(side_effect=lambda c:[NS(contract=c,minTick=.01,stockType='COMMON',liquidSessions=lambda:[])]),cancelHistoricalData=Mock())
+        return NS(_ib=ib,info={'generation':0},_stock=AsyncMock(side_effect=lambda s:NS(conId=sum(map(ord,s)),symbol=s)))
+
+    async def test_concurrent_same_symbol_reuses_history_and_cap_is_six(self):
+        e=self.engine();await asyncio.gather(*(guns_data.bars(e,'TEST') for _ in range(4)))
+        self.assertEqual(e._ib.reqHistoricalDataAsync.await_count,2)
+        await asyncio.gather(*(guns_data.bars(e,s) for s in ['AAA','BBB','CCC','DDD','EEE','FFF']))
+        self.assertEqual(len(e._guns_streams),6);self.assertEqual(e._ib.cancelHistoricalData.call_count,2)
+
+    async def test_cached_chart_bypasses_lock_and_old_ids_are_not_cancelled(self):
+        e=self.engine();await guns_data.bars(e,'TEST')
+        async with e._guns_bars_lock:await asyncio.wait_for(guns_data.bars(e,'TEST'),.1)
+        e.info['generation']=1;await guns_data.bars(e,'TEST')
+        e._ib.cancelHistoricalData.assert_not_called();self.assertEqual(e._ib.reqHistoricalDataAsync.await_count,4)
+
+    async def test_cancelled_acquisition_cleans_streams(self):
+        e=self.engine();started=asyncio.Event();release=asyncio.Event();original=e._ib.reqHistoricalDataAsync.side_effect
+        async def delayed(*args,**kwargs):
+            started.set();await release.wait();return await original(*args,**kwargs)
+        e._ib.reqHistoricalDataAsync.side_effect=delayed
+        task=asyncio.create_task(guns_data.bars(e,'TEST'));await started.wait();task.cancel();release.set()
+        with self.assertRaises(asyncio.CancelledError):await task
+        self.assertFalse(e._guns_streams);self.assertEqual(e._ib.cancelHistoricalData.call_count,2)
 
 
 if __name__ == '__main__':

@@ -55,6 +55,10 @@ def close_idle(engine):
 
 async def bars(engine,ticker):
     # One acquisition at a time across all symbols, on the existing owner loop.
+    ticker=symbol(ticker)
+    entry=getattr(engine,'_guns_streams',{}).get(ticker)
+    if entry and entry['generation']==engine.info.get('generation',0) and time.monotonic()-entry['used']<=120:
+        return await _bars(engine,ticker)  # Cached charts must not wait for new acquisitions.
     if not hasattr(engine,'_guns_bars_lock'): engine._guns_bars_lock=asyncio.Lock()
     async with engine._guns_bars_lock:
         return await _bars(engine,ticker)
@@ -78,21 +82,31 @@ async def _bars(engine,ticker):
             if old['generation']==engine.info.get('generation',0):
                 for rows in old['lists']:
                     engine._ib.cancelHistoricalData(rows)
+        ib, generation = engine._ib, engine.info.get('generation',0)
         c = await engine._stock(ticker)
-        details = await asyncio.wait_for(engine._ib.reqContractDetailsAsync(c),12)
+        details = await asyncio.wait_for(ib.reqContractDetailsAsync(c),12)
         if not details:
             raise ValueError('Stock definition unavailable')
-        ib, generation = engine._ib, engine.info.get('generation',0)
+        if engine._ib is not ib or engine.info.get('generation',0)!=generation:
+            raise ValueError('Connection changed during chart definition')
         async def get(duration,interval,rth):
             return await ib.reqHistoricalDataAsync(c,'',duration,interval,'TRADES',rth,
                               formatDate=2,keepUpToDate=True,timeout=20)
-        results = await asyncio.gather(get('2 D','1 min',False),get('1 Y','1 day',True),return_exceptions=True)
+        pending = asyncio.gather(get('2 D','1 min',False),get('1 Y','1 day',True),return_exceptions=True)
+        try:
+            results = await asyncio.shield(pending)
+        except asyncio.CancelledError:
+            results = await pending
+            if engine._ib is ib and engine.info.get('generation',0)==generation:
+                for rows in results:
+                    if rows is not None and not isinstance(rows,BaseException): ib.cancelHistoricalData(rows)
+            raise
         if engine._ib is not ib or engine.info.get('generation',0)!=generation:
             raise ValueError('Connection changed during chart acquisition; retry on current generation')
         if any(isinstance(x,BaseException) or not x for x in results):
             for x in results:
-                if not isinstance(x,BaseException) and x:
-                    engine._ib.cancelHistoricalData(x)
+                if not isinstance(x,BaseException) and x is not None:
+                    ib.cancelHistoricalData(x)
             raise ValueError('Chart history incomplete; check IB history entitlement and connection')
         entry = dict(lists=results,detail=details[0],generation=engine.info.get('generation',0),
                      used=time.monotonic(),updated=int(time.time()*1000))
