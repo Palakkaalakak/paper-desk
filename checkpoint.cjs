@@ -1,60 +1,13 @@
-// Development recovery only. Never started by the production application.
-// Run with: pm2 start checkpoint.cjs --name paper-recovery
-// Stop with: pm2 delete paper-recovery
-// Includes tracked files and new source/tests; excludes ignored/private/runtime files.
-// Credentials must never be embedded in source code.
-const {spawn} = require('node:child_process');
-const path = require('node:path');
-const fs = require('node:fs');
-const root = __dirname;
-const branch = 'recovery/performance-work';
-let busy = false;
-function git(args, env = {}, input = null) {
-  return new Promise((resolve, reject) => {
-    const p = spawn('git', args, {cwd: root, env: {...process.env, ...env}, stdio: ['pipe', 'pipe', 'pipe']});
-    let out = '', error = '';
-    p.stdout.on('data', b => out += b);
-    p.stderr.on('data', b => error += b);
-    p.on('error', reject);
-    p.on('close', code => code ? reject(new Error(error || 'git failed')) : resolve(out.trimEnd()));
-    p.stdin.end(input);
-  });
-}
-async function checkpoint() {
-  if (busy) return;
-  busy = true;
-  let index;
-  try {
-    const gitDir = await git(['rev-parse', '--absolute-git-dir']);
-    index = path.join(gitDir, 'recovery-index-' + process.pid);
-    const env = {GIT_INDEX_FILE: index};
-    const tracked = (await git(['ls-files', '-z'])).split('\0').filter(Boolean);
-    const fresh = (await git(['ls-files', '--others', '--exclude-standard', '-z'])).split('\0').filter(f =>
-      /\.(?:py|cjs|mjs|js|ts|tsx|html|css|md)$/.test(f) && !/(?:secret|credential|private|export)/i.test(f));
-    const files = [...new Set([...tracked,...fresh])].filter(f =>
-      !/(^|\/)(\.env(?:\.|$)|\.dev\.vars|\.contracts\.json|node_modules|__pycache__|\.venv)/.test(f) &&
-      !/\.(?:pem|key|log|pyc|zip|tar\.gz)$/.test(f));
-    let parent;
-    try { parent = await git(['rev-parse', 'refs/heads/' + branch]); }
-    catch { parent = await git(['rev-parse', 'HEAD']); }
-    await git(['read-tree', 'HEAD'], env);
-    await git(['add', '-A', '--pathspec-from-file=-', '--pathspec-file-nul'], env, files.join('\0') + '\0');
-    const tree = await git(['write-tree'], env);
-    const previous = await git(['rev-parse', parent + '^{tree}']);
-    if (tree !== previous) {
-      const commit = await git(['commit-tree', tree, '-p', parent, '-m', 'Recovery checkpoint ' + new Date().toISOString()]);
-      await git(['update-ref', 'refs/heads/' + branch, commit]);
-    } else {
-      await git(['update-ref', 'refs/heads/' + branch, parent]);
-    }
-    await git(['push', 'origin', 'refs/heads/' + branch + ':refs/heads/' + branch]);
-    console.log(new Date().toISOString(), 'Recovery snapshot verified on GitHub');
-  } catch (e) {
-    console.error('Recovery checkpoint failed:', e.message.replace(/https:\/\/[^\s]+/g, '[remote]'));
-  } finally {
-    if (index) { try { fs.unlinkSync(index); } catch {} }
-    busy = false;
-  }
-}
-checkpoint();
-setInterval(checkpoint, 30000);
+// Development recovery only. Run with pm2 start checkpoint.cjs --name paper-recovery.
+// Never used by the production application. Stop before manual git operations.
+const {spawn}=require('node:child_process');
+let busy=false;
+function git(args,input){return new Promise((resolve,reject)=>{const p=spawn('git',args,{cwd:__dirname,stdio:['pipe','pipe','pipe']});let out='',err='';p.stdout.on('data',b=>out+=b);p.stderr.on('data',b=>err+=b);p.on('error',reject);p.on('close',c=>c?reject(Error(err||'git failed')):resolve(out.trimEnd()));p.stdin.end(input);});}
+async function checkpoint(){if(busy)return;busy=true;try{
+ if(await git(['branch','--show-current'])!=='main')throw Error('Recovery requires main branch');
+ const files=(await git(['ls-files','-z'])).split('\0').filter(f=>f&&!/(^|\/)(\.env(?:\.|$)|\.dev\.vars|node_modules|__pycache__|\.venv)/.test(f)&&!/(?:secret|credential)|\.(?:pem|key|log|pyc|zip|tar\.gz)$/i.test(f));
+ await git(['add','-A','--pathspec-from-file=-','--pathspec-file-nul'],files.join('\0')+'\0');
+ if(await git(['diff','--cached','--name-only']))await git(['commit','-m','Checkpoint GUNS implementation '+new Date().toISOString()]);
+ await git(['push','origin','main']);console.log(new Date().toISOString(),'Checkpoint pushed to GitHub main');
+ }catch(e){console.error('Recovery:',e.message.replace(/https:\/\/[^\s]+/g,'[remote]'));}finally{busy=false;}}
+checkpoint();setInterval(checkpoint,30000);
