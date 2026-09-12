@@ -1,4 +1,20 @@
-# 1. Primary Request and Intent
+# CURRENT CONTINUATION — GUNS 1.5, 2026-09-12
+
+This section supersedes the historical handoff below. Do not repeat the old audit or restore obsolete 1.4 behavior. Preserve Python/IB Gateway, vanilla JavaScript, localhost:8765, main branch and browser-local PAPER execution. Never enable real broker orders or migrate this workstation to Cloudflare.
+
+Current implementation is preserved remotely through fc68f32 (article identity/reference retries), followed by 8aa67cb (README 1.5). README.md's current 1.5 section describes the implemented behavior and routes.
+
+Implemented: IBKR HOT_BY_VOLUME discovery of up to 50 candidates; independent verification before publishing at most four; strict dated float or explicitly labeled outstanding-share upper-bound evidence; saved screening snapshots, stable survivor slots and recovery without consuming successful scheduled publication. News supports independent company search, scanner quicklist, article prefetch, stable IDs, genuine short flashes, leading-copyright preservation and validated IB PDFs. Fallback coverage requires exact normalized headline matching, not fuzzy overlap or an unrelated company story. Charts have four saved presets (four-company 1m/5m/Daily and linked single-company execution 1m/5m/Daily/15m), per-panel search/select/frame/reset, focus-mode slot selection and observed volume. S1–S5, hover-candle H, quick-settings Q and synchronized risk/R/stop presets remain paper-only.
+
+Limits: no live Gateway is available in this sandbox. ReportSnapshot schemas/entitlements, actual full news bodies and OHLC/volume/indicator parity still require read-only acceptance on the user's Gateway. Native TWS embedding and universal full-text retrieval are not implemented. Source-only headlines are not fabricated bodies. No cloud collector or deployment was added.
+
+Preservation: local-only commits disappear on resets. After setup_github_environment succeeds, run `pm2 start checkpoint.cjs --name paper-recovery` for tracked-source commits and pushes every 30 seconds. Stop the helper before manual git operations; verify remote main afterward. Do not commit secrets, dependencies, logs or paper-account exports.
+
+Validation status: final post-hardening regression rerun is in progress. The previous background shell was lost on reset, not a verified passing result. Run `node --test test_guns.cjs test_frontend.cjs`, `python3 -m unittest -q`, `python3 browser_guns_check.py`, and `python3 browser_check.py`. Record actual final outcomes here and in README, then commit/push and verify remote main.
+
+---
+
+# Historical handoff — 1. Primary Request and Intent
 
 ## Original project and preservation requirements
 The project is **Paper Desk**, a Python/vanilla-JavaScript paper-trading workstation using IB Gateway market data.
