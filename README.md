@@ -23,6 +23,8 @@ Existing authenticated endpoints remain: `/data/guns_scan`, `/data/guns_verify?c
 
 ### Verification and preservation
 
+Final post-hardening verification completed on 2026-09-12: **41 JavaScript tests and 40 Python tests passed**. Both `browser_guns_check.py` and `browser_check.py` completed successfully with no browser errors. The 500-position fixture measured a 7.25 ms median positions-tab render, 14.8 ms live row update and 18.1 ms paper-order acknowledgement. These are isolated fixture timings, not live broker latency. Syntax checks also passed for guns-ui.js, guns-workflow.js, guns_data.py, market.py and serve.py.
+
 The expanded offline browser suite covers all four presets, panel search/selection, linked execution symbols, focused-slot switching, synchronized presets, H/Q, S1–S5, hover capture, independent news, no unrelated-story substitution, mobile layout and paper lifecycle. Unit tests cover float provenance/units/dates, PDF decoding, copyright placement, recovery scheduling, stable slots and news identity. These are fixtures, not live IBKR acceptance or an entitlement guarantee. Next operational acceptance is a read-only comparison on the user's Gateway for actual report coverage, news bodies, OHLC/volume and indicators.
 
 `checkpoint.cjs` is a development-only 30-second tracked-source commit-and-push helper on `main`. It is not launched by the application. Stop it before manual Git operations. Local-only commits were lost in a sandbox reset; all restored implementation batches are being pushed to the selected GitHub repository. No secrets, account exports or dependencies are included.

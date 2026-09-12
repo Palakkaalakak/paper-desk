@@ -10,7 +10,14 @@ Limits: no live Gateway is available in this sandbox. ReportSnapshot schemas/ent
 
 Preservation: local-only commits disappear on resets. After setup_github_environment succeeds, run `pm2 start checkpoint.cjs --name paper-recovery` for tracked-source commits and pushes every 30 seconds. Stop the helper before manual git operations; verify remote main afterward. Do not commit secrets, dependencies, logs or paper-account exports.
 
-Validation status: final post-hardening regression rerun is in progress. The previous background shell was lost on reset, not a verified passing result. Run `node --test test_guns.cjs test_frontend.cjs`, `python3 -m unittest -q`, `python3 browser_guns_check.py`, and `python3 browser_check.py`. Record actual final outcomes here and in README, then commit/push and verify remote main.
+Final validation completed on 2026-09-12 after restoring dependencies in the reset sandbox:
+- `node --test test_guns.cjs test_frontend.cjs`: 41 passed, zero failed, including material-negation news identity.
+- `python3 -m unittest -q`: 40 passed.
+- `python3 browser_guns_check.py`: passed; no browser errors. Covers chart presets/per-panel controls, S1–S5, hover, quick controls, scanner/news, paper lifecycle, persistence and mobile.
+- `python3 browser_check.py`: passed; 500 positions, no browser errors. Fixture medians: positions tab 7.25 ms, live row update 14.8 ms, paper-order acknowledgement 18.1 ms. Not live broker latency.
+- JavaScript/Python syntax checks passed. No production-code correction was needed in this final run.
+
+README and this handoff record the completed offline acceptance. No live Gateway acceptance or deployment occurred. To update locally, pull main, install requirements if needed, restart `python3 serve.py`, and reload http://localhost:8765 while keeping Gateway read-only. Remaining operational work is live read-only provider/chart acceptance, not another rewrite or audit.
 
 ---
 
