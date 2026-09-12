@@ -122,6 +122,43 @@ def main():
         page.locator('[data-guns-slot="0"]').first.click()
         assert 'TEST' in page.locator('[data-guns-slot="0"]').first.inner_text()
         page.locator('[data-guns="layout"]').click()
+        # Four saved layout presets and direct per-panel ticker assignment.
+        for preset,expected in [('m5',['5']*4),('daily',['d']*4),('m1',['1']*4),('execution',['1','5','d','15'])]:
+            page.locator('[data-guns-layout="'+preset+'"]').click()
+            assert page.locator('canvas[data-chart-slot]').count()==4
+            assert page.evaluate('[...document.querySelectorAll("canvas[data-chart-slot]")].map(e=>e.dataset.chartFrame)')==expected
+        assert page.evaluate('new Set(__gunsTest.desk.execution.book().desk.slots.map(s=>s.inst.symbol)).size')==1
+        page.locator('[data-guns-layout="m1"]').click()
+        page.locator('[data-guns-slot-search="2"] input').fill('THIRD')
+        page.locator('[data-guns-slot-search="2"] input').press('Enter')
+        page.locator('[data-guns-slot-result="2:0"]').click()
+        assert page.evaluate('__gunsTest.desk.execution.book().desk.slots[2].inst.symbol')=='THIRD'
+        page.locator('#guns-slot-symbol-2').select_option('12345')
+        assert page.evaluate('__gunsTest.desk.execution.book().desk.slots[2].inst.symbol')=='TEST'
+        page.locator('[data-guns-layout="m5"]').click()
+        page.locator('[data-guns-layout="m1"]').click()
+        assert page.evaluate('__gunsTest.desk.execution.book().desk.slots[2].inst.symbol')=='TEST'
+        page.locator('[data-guns-slot="0"]').first.click()
+        page.locator('[data-guns="layout"]').click()
+        assert page.locator('canvas[data-chart-slot]').count()==1
+        # Hidden slots remain selectable while focused.
+        page.locator('[data-guns-slot="1"]').first.click()
+        assert page.locator('canvas[data-chart-slot="1"]').count()==1
+        page.locator('[data-guns-slot="0"]').first.click()
+        page.locator('[data-guns-preset="riskPct:0.25"]').click()
+        assert page.locator('#guns-quick-risk').input_value()=='0.25'
+        assert page.locator('#guns-risk').input_value()=='0.25'
+        page.locator('[data-guns-preset="rewardR:2.5"]').click()
+        assert page.locator('#guns-quick-reward').input_value()=='2.5'
+        page.evaluate('document.activeElement.blur()')
+        page.keyboard.press('h')
+        assert page.locator('#guns-hover').is_checked()
+        page.keyboard.press('h')
+        assert not page.locator('#guns-hover').is_checked()
+        page.keyboard.press('q')
+        assert not page.locator('#guns-quick-settings').evaluate('(e)=>e.open')
+        page.keyboard.press('q')
+        assert page.locator('#guns-quick-settings').evaluate('(e)=>e.open')
         # Quick settings retain focused editing and update risk/R without transmitting.
         page.locator('#guns-quick-settings').evaluate('(e)=>e.open=true')
         page.locator('#guns-quick-risk').fill('0.5');page.locator('#guns-quick-risk').press('Tab')
