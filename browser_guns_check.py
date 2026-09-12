@@ -51,7 +51,7 @@ def main():
                 return r.fulfill(json={'results':[dict(conid=12345 if sym=='TEST' else 23456,symbol=sym,name='Fixture '+sym,type='STK')]})
             if path=='/data/guns_bars':
                 sym=(params.get('symbol') or ['TEST'])[0]
-                return r.fulfill(json={**history,'symbol':sym,'conid':12345 if sym=='TEST' else 23456,'updatedAt':page.evaluate('Date.now()')})
+                return r.fulfill(json={**history,'symbol':sym,'conid':12345 if sym=='TEST' else 23456,'updatedAt':int(r.request.headers.get('x-fixture-now',str(OPEN+10000)))})
             if path=='/data/guns_schedule':return r.fulfill(json={'sessions':[dict(start=OPEN,end=OPEN+23400000)]})
             if path=='/data/guns_float':return r.fulfill(json={'floatShares':15000000,'date':'2026-09-09','source':'Fixture float'})
             if path=='/data/guns_sources':return r.fulfill(json={'rows':[dict(headline='Fixture linked company release',provider='Fixture RSS',time='2026-09-10',articleId='',url='https://example.com/release',contentStatus='excerpt',text='Fixture source excerpt')],'diagnostics':[]})
@@ -64,6 +64,7 @@ def main():
             return r.fulfill(status=404,body='Unexpected fixture request')
         page.route('**/*',route)
         # Direct test feed supplies quotes; avoid EOF/reconnect races in this fixture.
+        page.add_init_script("const realFetch=window.fetch;window.fetch=(url,options={})=>{const headers=new Headers(options.headers);headers.set('X-Fixture-Now',String(Date.now()));return realFetch(url,{...options,headers});};")
         page.add_init_script('window.EventSource=class {constructor(){this.readyState=1;} close(){} addEventListener(){}};')
         page.add_init_script('localStorage.setItem("paperAccount",'+json.dumps(json.dumps(state))+');')
         page.goto('http://paper.test/',wait_until='domcontentloaded')
@@ -101,7 +102,7 @@ def main():
         page.locator('.guns-stage-nav [data-guns-stage="trade"]').click()
         page.locator('#guns-settings summary').click()
         page.locator('#guns-stopmode').select_option('FIXED')
-        assert page.locator('#guns-chart-1').bounding_box()['height']>=300
+        page.wait_for_function("document.querySelector('#guns-chart-1')?.getBoundingClientRect().height>=300")
         for tf in ['5','d','1']:
             page.locator('[data-guns-frame="'+tf+'"]').click()
             assert page.locator('#guns-chart-'+tf).count()==1
@@ -264,7 +265,7 @@ def main():
         assert page.evaluate('__gunsTest.desk.execution.pending()[0]?.guns.setup')==5,page.locator('#guns-error').inner_text()
         page.locator('[data-guns-cancel]').click()
         assert not errors,errors
-        print(json.dumps({'guns':'verified scanner, escaped articles, S1-S4 controls, focus guards, four-stock tutorial isolation, dynamic risk, paper lifecycle, persistence/mobile','browser_errors':errors}))
+        print(json.dumps({'guns':'verified scanner, escaped articles, S1-S5 controls, four charts, hover capture, news fallback, focus guards, four-stock tutorial isolation, dynamic risk, paper lifecycle, persistence/mobile','browser_errors':errors}))
         page.unroute_all(behavior='ignoreErrors')
         browser.close()
 
