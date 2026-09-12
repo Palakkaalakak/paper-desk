@@ -1,6 +1,33 @@
 # Paper Desk — IB Gateway paper-trading workstation
 
-## Current GUNS workflow — 1.4 (2026-09-12)
+## Current GUNS workflow — 1.5 (2026-09-12)
+
+This section supersedes the historical 1.4 notes below. Python/IB Gateway architecture and browser-local PAPER execution are unchanged. No Cloudflare deployment or live-money order capability was added.
+
+### Implemented controls
+
+- **Scanner:** IBKR `HOT_BY_VOLUME`, up to 50 US-major-exchange corporate stocks, price >= $1.50, gap >= 5%, volume >= 30,000. Each candidate then receives independent IBKR history/quote checks for observed premarket volume, prior RTH close, stock classification, session, spread and float evidence before publication. Numerical failures never pad the four-slot shortlist. Finalists are refreshed when their earlier evidence would expire during a slow sweep.
+- **Float:** strict by default, including migration of old preference-mode settings. `/data/guns_float?symbol=...` now requests IBKR `ReportSnapshot` first. Explicit dated free-float counts are accepted. Dated total outstanding shares may prove a conservative upper bound below the cap; the UI labels this as an **outstanding-share bound**, never an exact float. Percentages, undated counts, unrecognized units and >=45-day-old counts are rejected. Configured FMP reference data remains an optional fallback. IB API report availability/entitlements vary: without actual count/bound evidence that stock is excluded, not shown as an unknown pass.
+- **Stable results:** published membership/order is saved per paper book. Cards show the successful screening snapshot, not repeatedly changing PASS/FAIL labels. Quotes still update. Surviving symbols retain slots during a refresh when possible. Initial acquisition, one successful T−30 refresh and explicit manual scans only. Transient transport problems retry without consuming the scheduled publication or replacing an existing shortlist. Rejections/provider detail remain in diagnostics. The browser and Gateway must be running; this is not a cloud scheduler.
+- **News:** independent company search plus scanner quicklist; research does not switch an existing execution selection. The first eight IB articles are prefetched two at a time. Short wire flashes are labeled as flashes. Leading copyright lines no longer discard the body that follows. Valid base64 IB PDFs can be opened/read from the news panel. Stable provider/article IDs prevent refreshed headline lists from opening the wrong story. Recovery retries the selected article and only accepts matching normalized headline/date coverage; a different company catalyst is never silently substituted. Provider-only headlines retain exact-story links rather than a footer/disclaimer as the story body. Full text still depends on what licensed/public sources actually return; no text is invented and no paywall is bypassed.
+- **Charts:** four saved 2x2 presets: **four companies / 1m**, **four companies / 5m**, **four companies / Daily**, **one company / Execution**. Execution links the same company across 1m, 5m, Daily and 15m. Every panel has a direct company selector, arbitrary ticker/company search, timeframe selector and reset-view button. Slot buttons remain accessible in single-chart focus mode. Volume bars are now displayed. Indicators and 5m/15m aggregation use observed IBKR data, not synthetic bars. This is a local canvas renderer, not embedded native TWS; live candle/indicator parity remains unverified.
+- **Fast controls:** quick settings open by default and synchronize with full settings. Risk presets 0.25/0.5/1/2%, target presets 1/2/2.5/3R, stop mode/fixed distance and breakeven. **Q** toggles quick settings; **H** toggles hover-candle mode. **1–5** place their corresponding paper strategy on the active execution chart, with editable Alt bindings and editing/dialog guards. Risk/R update pending sizing/fills, not already-filled brackets.
+- **Hover:** a valid candle column in the active chart supplies the actual candle high (and low for candle-stop strategies), regardless of the automatic pattern suggestion. Outside the chart uses AUTO. Strategy timeframe/session/data guards remain; S5 cannot become a later-candle strategy. The selected anchor is copied into the order at confirmation and does not follow subsequent mouse movement.
+- **Automation:** optional empty-chart population from a completed shortlist; optional 5m-overview to 1m switch once at the regular open; automatic timeframe selection on strategy dropdown changes. No unattended strategy approval or broker orders.
+
+### Run, data and entry points
+
+Run `python3 -m pip install -r requirements.txt`, then `python3 serve.py` alongside your read-only IB Gateway and visit **http://localhost:8765**. After updating from GitHub, restart the Python process and reload the browser so backend and frontend versions match. No hosted production URL was created.
+
+Existing authenticated endpoints remain: `/data/guns_scan`, `/data/guns_verify?conid=...`, `/data/guns_bars?symbol=...`, `/data/guns_news?symbol=...`, `/data/guns_article?newsProvider=...&articleId=...`, `/data/guns_sources?symbol=...`, `/data/guns_float?symbol=...`, `/data/guns_schedule`, and `/data/search?provider=tws&q=...`. API credentials remain server-side environment variables. Quotes/history/article caches are transient; paper books, scan snapshots, chart layouts and trade journals use the existing browser account storage.
+
+### Verification and preservation
+
+The expanded offline browser suite covers all four presets, panel search/selection, linked execution symbols, focused-slot switching, synchronized presets, H/Q, S1–S5, hover capture, independent news, no unrelated-story substitution, mobile layout and paper lifecycle. Unit tests cover float provenance/units/dates, PDF decoding, copyright placement, recovery scheduling, stable slots and news identity. These are fixtures, not live IBKR acceptance or an entitlement guarantee. Next operational acceptance is a read-only comparison on the user's Gateway for actual report coverage, news bodies, OHLC/volume and indicators.
+
+`checkpoint.cjs` is a development-only 30-second tracked-source commit-and-push helper on `main`. It is not launched by the application. Stop it before manual Git operations. Local-only commits were lost in a sandbox reset; all restored implementation batches are being pushed to the selected GitHub repository. No secrets, account exports or dependencies are included.
+
+## Historical GUNS workflow — 1.4 (2026-09-12)
 
 This section supersedes older GUNS UI descriptions below; historical implementation notes and course material are preserved. All execution remains browser-local PAPER trading. The single read-only IB session and blocked real-order routes are unchanged.
 
