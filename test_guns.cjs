@@ -101,3 +101,42 @@ test('tutorial candlesticks and levels use shared strategy calculations',()=>{
   assert.ok(svg.includes('data-level="SL" data-price="'+l.stop+'"'));
  }
 });
+
+test('five-key migration preserves custom bindings, including conflicts with default 5',()=>{
+ assert.equal(W.chord({code:'Digit5'}),'5');
+ assert.deepEqual(W.bindings({shortcuts:['Alt+Q','2','3','4']}),['Alt+Q','2','3','4','5']);
+ assert.deepEqual(W.bindings({shortcuts:['5','Alt+5','Alt+A','4']}),['5','Alt+5','Alt+A','4','Alt+B']);
+ assert.equal(W.setBinding(W.defaults,4,'Alt+Z')[4],'Alt+Z');
+});
+test('shortlist is at most four qualifying rows, no padding or mutation after ranking',()=>{
+ const now=Date.parse('2026-09-10T13:00Z'),rows=Array.from({length:8},(_,i)=>({conid:i+1,rank:i})),quotes={},ev=new Map();
+ for(const r of rows){quotes[r.conid]={status:'LIVE',last:10,bid:9.99,ask:10.01};ev.set(r.conid,{conid:r.conid,at:now,sessionKnown:true,stockType:'COMMON',previousClose:9,premarketVolume:50000});}
+ ev.get(1).premarketVolume=null;ev.get(2).stockType='ETF';
+ const list=W.shortlist(rows,quotes,ev,()=>true,C.defaults,now);assert.deepEqual(list.map(r=>r.conid),[3,4,5,6]);
+ quotes[3].last=11;W.rank(rows,quotes,ev,()=>true,C.defaults,now);assert.deepEqual(list.map(r=>r.conid),[3,4,5,6]);
+ assert.equal(W.shortlist(rows,quotes,new Map(),()=>true,C.defaults,now).length,0);
+});
+test('scheduled scan occurs once in T-30/open window with supplied DST/session schedule',()=>{
+ for(const open of ['2026-09-10T13:30Z','2026-11-02T14:30Z']){const start=Date.parse(open),sessions=[{start,end:start+23400000}],state={attemptedAt:start-86400000};
+ assert.equal(W.scanDue(state,sessions,start-1800001),null);assert.equal(W.scanDue(state,sessions,start-1800000),'scheduled');state.scheduledOpen=start;assert.equal(W.scanDue(state,sessions,start-60000),null);assert.equal(W.scanDue(state,sessions,start+1),null);}
+ assert.equal(W.scanDue({},[],1),'initial');assert.equal(W.scanDue({attemptedAt:1},[],2),null);
+});
+test('strict float excludes unknown, stale, outstanding-only and cap equality',()=>{
+ const now=Date.parse('2026-09-10T13:30Z'),row={conid:1},q={status:'LIVE',last:10,bid:9.99,ask:10.01},e={conid:1,at:now,sessionKnown:true,stockType:'COMMON',previousClose:9,premarketVolume:50000};
+ const run=f=>W.candidate(row,q,{...e,float:f},true,{...C.defaults,floatMode:'strict'},now);
+ assert.equal(run({floatShares:15000000,date:'2026-09-09',source:'Fixture'}).eligible,true);
+ for(const f of [null,{outstandingShares:1000000,date:'2026-09-09',source:'Fixture'},{floatShares:100000000,date:'2026-09-09',source:'Fixture'},{floatShares:15000000,date:'2020-01-01',source:'Fixture'}])assert.equal(run(f).eligible,false);
+});
+test('explicit hover overrides S1 but rejects changed candle, wrong contract or frame',()=>{
+ const f=chartFixture();Object.assign(f.data,{symbol:'TEST',conid:1});const candle=f.data.minute.at(-20),hover={enabled:true,symbol:'TEST',conid:1,timeframe:'1',candle:{...candle}},n={...f.notes,chartSetup:1,hover},cfg={stopMode:'FIXED',fixedStop:.2};
+ const p=C.analyze(f.data,f.q,cfg,1,n,f.now);assert.equal(p.levelSource,'hover');assert.equal(p.entry,C.round(candle.h+.01,.01,true));assert.notEqual(p.entry,C.analyze(f.data,f.q,cfg,1,{...n,hover:null},f.now).entry);
+ for(const patch of [{symbol:'OTHER'},{conid:2},{timeframe:'d'},{candle:{...candle,h:candle.h+.1}},{candle:{...candle,t:f.data.sessions[0].start}}])assert.ok(C.analyze(f.data,f.q,cfg,1,{...n,hover:{...hover,...patch}},f.now).errors.some(e=>e.startsWith('Hover candle')));
+});
+test('hover flag uses same candle low and S5 cannot use a later candle',()=>{
+ const candle={t:1,o:10,h:10.1,l:9.9,c:10};for(const setup of [3,4]){const p=C.placement({tick:.01},{},setup,{mode:'hover',candle});assert.equal(p.entry,10.11);assert.equal(p.stop,9.89);}
+ const f=chartFixture(),start=f.data.sessions[0].start;Object.assign(f.data,{symbol:'TEST',conid:1,updatedAt:start+121000});
+ f.data.minute.push({t:start,o:10.5,h:10.53,l:10.50,c:10.52,v:100},{t:start+60000,o:10.52,h:10.54,l:10.51,c:10.53,v:100});
+ const h={enabled:true,symbol:'TEST',conid:1,timeframe:'1',candle:f.data.minute.at(-1)};
+ assert.ok(C.analyze(f.data,f.q,{},5,{...f.notes,chartSetup:5,hover:h},start+121000).errors.some(e=>e.startsWith('Hover candle')));
+ const x=fixture(),o=x.E.arm(x.plan,x.inst,{hover:h}).order;h.candle.h=99;assert.notEqual(o.guns.notes.hover.candle.h,99);
+});
