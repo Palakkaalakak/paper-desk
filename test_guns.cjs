@@ -168,3 +168,5 @@ test('news recovery never substitutes a different catalyst, amount or trading da
  assert.equal(W.sameStory(a,{headline:'TEST Company announces acquisition',time:a.time}),false);
  assert.equal(W.sameStory(a,{...a,time:'2025-09-10'}),false);
 });
+
+test('matching news titles never ignores a material negation',()=>{assert.equal(W.sameStory({headline:'Company says FDA will approve the new therapy this month'},{headline:'Company says FDA will not approve the new therapy this month'}),false);});

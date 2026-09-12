@@ -31,6 +31,7 @@
  function stableSlots(previous,next){const out=Array(next.length).fill(null),used=new Set();previous.forEach((r,i)=>{const match=next.find(x=>x.conid===r.conid);if(i<out.length&&match){out[i]=match;used.add(match.conid);}});const remaining=next.filter(r=>!used.has(r.conid));return out.map(r=>r||remaining.shift());}
  function screenSnapshot(c,at){return {...c.row,screen:{at,gap:c.gap,volume:c.volume,spread:c.spread,float:c.float,price:c.price,source:'IBKR scanner + verified market data'}};}
  function storyKey(n){return n.provider+':'+(n.articleId||n.url||n.headline);}
- function sameStory(a,b){const clean=s=>String(s||'').toLowerCase().replace(/^\{[^}]*\}/,'').replace(/[^a-z0-9.%]+/g,' ').trim(),x=clean(a.headline),y=clean(b.headline);if(!x||!y)return false;const ta=Date.parse(a.time),tb=Date.parse(b.time);if(Number.isFinite(ta)&&Number.isFinite(tb)&&Math.abs(ta-tb)>86400000)return false;if(x===y)return true;const numbers=s=>(s.match(/\d+(?:\.\d+)?%?/g)||[]).sort().join('|');if(numbers(x)!==numbers(y))return false;const aa=new Set(x.split(' ').filter(t=>t.length>2)),bb=new Set(y.split(' ').filter(t=>t.length>2)),common=[...aa].filter(t=>bb.has(t)).length;return common>=5&&common/Math.max(aa.size,bb.size)>=.85;}
+ function sameStory(a,b){const clean=s=>String(s||'').toLowerCase().replace(/^\{[^}]*\}/,'').replace(/[^a-z0-9.%]+/g,' ').trim(),x=clean(a.headline),y=clean(b.headline);if(!x||!y)return false;const ta=Date.parse(a.time),tb=Date.parse(b.time);if(Number.isFinite(ta)&&Number.isFinite(tb)&&Math.abs(ta-tb)>86400000)return false;return x===y;}
+
  return {defaults,chord,bindings,setBinding,candidate,rank,shortlist,scanDue,floatKnown,floatBelow,floatLabel,stableSlots,screenSnapshot,storyKey,sameStory};
 });

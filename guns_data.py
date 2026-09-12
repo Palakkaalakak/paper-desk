@@ -37,6 +37,7 @@ async def scan(engine):
                               stockTypeFilter='CORP')
     rows = await asyncio.wait_for(engine._ib.reqScannerDataAsync(
         sub, scannerSubscriptionFilterOptions=[TagValue('changePercAbove','5')]),15)
+    if rows is None: raise ValueError('IBKR scanner response pending')
     return dict(at=int(time.time()*1000),source='IB Gateway scanner',preliminary=True,
                 warning='Scanner returns contracts, not verified prices or premarket volume. Separate quote/history checks required.',
                 rows=[dict(conid=r.contractDetails.contract.conId,symbol=r.contractDetails.contract.symbol,
