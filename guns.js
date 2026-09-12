@@ -1,10 +1,10 @@
 /* Pure GUNS rules and risk calculations; no broker order APIs. */
 (function(root,f){if(typeof module==='object'&&module.exports)module.exports=f();else root.Guns=f();})(globalThis,function(){'use strict';
-const VERSION='guns-1.3',defaults={riskPct:1,rewardR:2,maxSpread:.05,minVolume:30000,breakeven:true,atrPeriod:14,stopMode:'ATR',fixedStop:.2};
+const VERSION='guns-1.4',defaults={riskPct:1,rewardR:2,maxSpread:.05,minVolume:30000,breakeven:true,atrPeriod:14,stopMode:'ATR',fixedStop:.2,hoverCandle:false,autoFrame:true,floatMode:'prefer',maxFloat:100000000};
 const names={1:'Premarket high breakout',2:'Premarket pivot',3:'Premarket bull flag',4:'First opening bull flag',5:'First bullish minute'};
 // Reviewed against the preserved Adam course notes; qualitative decisions remain human.
 const rules=[
- {id:1,formation:'Premarket-high breakout: a rising 5-minute premarket chart consolidates just beneath its highest premarket print, ideally less than 5% below. Judge freshness of the move, extension and daily overhead resistance.',entry:'1 places a buy stop-limit at the observed premarket high + $0.01. It NEVER uses a lower pivot, flag high or manual substitute. Arm around 09:28–09:29 ET; entry execution waits until the regular open.',stop:'Default SL distance is ATR of completed 1-minute broker candles (app default period 14). PRICE/FIXED are explicit optional presets, never an automatic fallback when ATR is missing.',target:'TP = entry + 2R or 2.5R; R = entry minus SL. Limit cap is entry + $0.03 below $20, otherwise + $0.05 (app interpretation of the source range).',invalid:'Missing premarket high, stale/invalid data, inadequate history or spread/risk failure blocks placement. Do not chase a jump above the cap. If weak after the open, cancel; app expiry is 5 minutes after open. Switching to another strategy is YOUR decision.',source:'Part II, Setup One, paragraphs 213–219. Adam emphasizes S1 as his dominant premarket setup.'},
+ {id:1,formation:'Premarket-high breakout: a rising 5-minute premarket chart consolidates just beneath its highest premarket print, ideally less than 5% below. Judge freshness of the move, extension and daily overhead resistance.',entry:'1 places a buy stop-limit at the observed premarket high + $0.01. AUTO always uses the actual high. Explicit HOVER mode can instead use your selected completed premarket candle, labeled as a user override. Arm around 09:28–09:29 ET; entry execution waits until the regular open.',stop:'Default SL distance is ATR of completed 1-minute broker candles (app default period 14). PRICE/FIXED are explicit optional presets, never an automatic fallback when ATR is missing.',target:'TP = entry + 2R or 2.5R; R = entry minus SL. Limit cap is entry + $0.03 below $20, otherwise + $0.05 (app interpretation of the source range).',invalid:'Missing premarket high, stale/invalid data, inadequate history or spread/risk failure blocks placement. Do not chase a jump above the cap. If weak after the open, cancel; app expiry is 5 minutes after open. Switching to another strategy is YOUR decision.',source:'Part II, Setup One, paragraphs 213–219. Adam emphasizes S1 as his dominant premarket setup.'},
  {id:2,formation:'After a premarket high, a pullback forms a distinct LOWER local pivot/consolidation. Price should retain moving-average support. This is not S1.',entry:'2 uses the most recent completed 5-minute lower pivot + $0.01. No pivot means no automatic placement; never substitute the premarket high.',stop:'1-minute ATR by default, or your explicitly selected price/fixed preset, below entry.',target:'2R or 2.5R. At least 1R of room from ENTRY to the premarket high is mandatory.',invalid:'Reject when the pivot is too close to overhead resistance, or data/risk guards fail. The app never changes S2 to S1 for you.',source:'Part II, Setup Two, paragraphs 239–245.'},
  {id:3,formation:'On the 5-minute premarket chart, impulse candles make higher highs, then one or more pullback candles make lower highs/inside bars. Judge support at EMA9/20 (at worst SMA50), extension and room to resistance.',entry:'3 uses the FINAL completed premarket flag candle high + $0.01, not the premarket high.',stop:'SL = that same final flag candle low - $0.01, rounded to the valid tick. No ATR fallback for a missing flag candle.',target:'2R or 2.5R. The app conservatively requires 1R of room to premarket resistance.',invalid:'If too close to the premarket high, Adam suggests considering S1; YOU must choose 1. The software will not substitute strategies. Pattern hints do not replace your support/formation judgment.',source:'Part II, Setup Three, paragraphs 249–259.'},
  {id:4,formation:'FIRST opening bull flag after 09:30 ET: rising impulse followed by completed lower-high/inside pullback candle(s), usually on 1-minute candles within the first hour. Judge EMA9/20 support and pullback no deeper than roughly 50–60%.',entry:'4 uses the latest completed OPENING flag candle high + $0.01. It never uses a premarket pivot. App uses 1-minute bars.',stop:'SL = the SAME flag candle low - $0.01. If another lower-high candle closes, app requires cancellation/review/re-arming rather than silently replacing your confirmed order.',target:'2R or 2.5R; inspect premarket/daily resistance and real Level II ask walls. Breakeven setting moves SL to actual entry at +1R, before fees.',invalid:'App enforces a maximum $0.05 spread for S4. First-flag/retracement/support interpretation remains your judgment. Source also mentions wider spread examples; app adopts the stricter S4 rule.',source:'Part II, Setup Four, paragraphs 287–299.'},
@@ -32,15 +32,17 @@ function placement(data,cfg,setup,human){cfg=Object.assign({},defaults,cfg);setu
  if(setup===2)for(let i=1;i<pre5.length-1;i++)if(pre5[i].h>=pre5[i-1].h&&pre5[i].h>pre5[i+1].h&&pre5[i].h<pmHigh)trigger=pre5[i].h;
  if(setup===3||setup===4){pattern=flag(setup===3?pre5:regular);if(pattern){trigger=pattern.candle.h;stop=pattern.candle.l-.01;}}
  if(setup===5){trigger=regular[0]?.h;stop=regular[0]?regular[0].l-.01:undefined;}
- // S1 is always the premarket high: legacy overrides cannot turn it into S2.
+ // S1 legacy trigger overrides remain ignored; only explicit, validated hover is allowed.
+ const hovered=human?.mode==='hover'&&validBar(human.candle);
  const overridden=setup>=2&&setup<=4&&finite(human?.trigger)&&human.trigger>0;
- if(overridden){trigger=human.trigger;if(setup>=3)stop=finite(human.candleLow)&&human.candleLow>0?human.candleLow-.01:undefined;}
+ if(hovered){trigger=human.candle.h;if(setup>=3)stop=human.candle.l-.01;}
+ else if(overridden){trigger=human.trigger;if(setup>=3)stop=finite(human.candleLow)&&human.candleLow>0?human.candleLow-.01:undefined;}
  let entry=null,limit=null,target=null,risk=null;
  if(finite(trigger)&&finite(tick)&&tick>0){entry=round(trigger+.01,tick,true);limit=round(entry+(entry<20?.03:.05),tick,true);
   if(stop===null){const dist=cfg.stopMode==='FIXED'?Number(cfg.fixedStop):cfg.stopMode==='PRICE'?(entry<20?.15:entry<30?.25:entry<50?.4:.5):a;if(finite(dist)&&dist>0)stop=entry-dist;}
   if(finite(stop)){stop=round(stop,tick,false);risk=entry-stop;if(risk>0)target=round(entry+risk*cfg.rewardR,tick,true);}
  }
- return {trigger,entry,limit,stop,target,risk,pattern,pmHigh,levelSource:overridden?'user':'automatic'};
+ return {trigger,entry,limit,stop,target,risk,pattern,pmHigh,levelSource:hovered?'hover':overridden?'user':'automatic'};
 }
 function analyze(data,q,cfg,setup,notes,now){cfg=Object.assign({},defaults,cfg);notes=notes||{};now=now||Date.now();setup=Number(setup);const checks=[],errors=[],advisories=[];const advise=(label,ok)=>advisories.push({label,ok:!!ok});const check=(label,ok)=>{checks.push({label,ok:!!ok});if(!ok)errors.push(label);};
  if(!data)return {checks,advisories,errors:['Waiting for live broker chart data'],setup};
@@ -61,7 +63,14 @@ function analyze(data,q,cfg,setup,notes,now){cfg=Object.assign({},defaults,cfg);
  check('Current exchange session known',!!sess);check('Spread within configured limit',q&&finite(q.bid)&&finite(q.ask)&&q.bid>0&&q.ask>=q.bid&&q.ask-q.bid<=Math.min(cfg.maxSpread,setup===4?.05:.10)+1e-9);
  const pre5=m5.filter(b=>sess&&b.t>=sess.start-19800000&&b.t<sess.start),basis=setup<=3?m5:closed;
  if(setup===2||setup===3)check('Latest completed 5-minute premarket candle available',pre5.at(-1)?.t===Math.floor(Math.min(now,sess?.start||now)/300000)*300000-300000);
- const levels=placement({pre:preObserved,pre5,regular,tick,atr:a},cfg,setup,notes.levels?.[setup]);
+ let human=notes.levels?.[setup];
+ if(notes.hover?.enabled){const h=notes.hover,frame=String(h.timeframe),pool=frame==='5'?pre5:setup<=3?pre:regular,b=pool.find(b=>b.t===h.candle?.t);
+  const valid=h.symbol===data.symbol&&Number(h.conid)===Number(data.conid)&&['1','5'].includes(frame)&&(setup!==3||frame==='5')&&(setup<4||frame==='1')&&b&&validBar(h.candle)&&['o','h','l','c'].every(k=>b[k]===h.candle[k])&&(setup!==5||b.t===sess?.start);
+  check('Hover candle matches this contract, completed strategy timeframe and session',valid);
+  human=valid?{mode:'hover',candle:h.candle}:null;
+ }
+ if(cfg.floatMode==='strict'){const f=data.float,t=Date.parse(f?.date);check('Dated free float below configured cap',finite(f?.floatShares)&&f.floatShares>0&&f.floatShares<cfg.maxFloat&&typeof f.source==='string'&&finite(t)&&t<=now+86400000&&now-t<45*86400000);}
+ const levels=placement({pre:preObserved,pre5,regular,tick,atr:a},cfg,setup,human);
  const {trigger,entry,limit,stop,target,risk,pattern:f}=levels;
  if(setup===1)advise('Within 5% of premarket high',pmHigh&&price>=pmHigh*.95&&price<=pmHigh*1.01);
  if(setup===2)advise('Suggested lower pivot identified',trigger!==null);
