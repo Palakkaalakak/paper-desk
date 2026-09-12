@@ -40,3 +40,11 @@
 @media(max-width:1000px){.guns-execution-grid{grid-template-columns:minmax(0,1fr)}.guns-execution-grid .guns-planner{grid-column:1/-1}}
 @media(max-width:620px){.guns-chart-panels.guns-four-charts{grid-template-columns:minmax(0,1fr)}#guns-workspace .guns-discovery #guns-scanner{grid-template-columns:1fr}.guns-company-controls #guns-search{flex-wrap:wrap}.guns-company-controls nav button{white-space:normal}}
 
+
+/* Saved chart layouts, direct panel selection and rapid risk controls. */
+.guns-slot-tabs,.guns-risk-presets{display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin:8px 0}
+.guns-panel-search{display:flex;gap:6px;margin-bottom:10px}.guns-panel-search input{min-width:0;flex:1}
+#guns-workspace .guns-panel-symbol{width:100%;margin:8px 0}.guns-large-chart nav{flex-wrap:wrap}
+#guns-workspace .guns-chart-toolbar button{font-size:11px}.guns-chart-toolbar{margin-bottom:8px}
+#guns-quick-settings .guns-risk-presets button{padding:6px 9px}.guns-slot-tabs button[aria-pressed="true"]{box-shadow:inset 0 -2px #7fcaff}
+#guns-pdf{min-width:0}#guns-slot-results-0,#guns-slot-results-1,#guns-slot-results-2,#guns-slot-results-3{display:flex;flex-wrap:wrap;gap:5px;margin:5px 0}
