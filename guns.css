@@ -20,3 +20,23 @@
 @media(max-width:1100px){.guns-discovery #guns-scanner{grid-template-columns:repeat(2,minmax(0,1fr))}.guns-execution-grid{grid-template-columns:minmax(0,1fr) 310px}.guns-news-layout{grid-template-columns:minmax(240px,1fr) minmax(0,1.7fr)}}
 @media(max-width:760px){#guns-workspace{padding:0}.guns-stage-nav{gap:4px}#guns-workspace .guns-stage-nav button{padding:9px;font-size:11px}.guns-discovery,.guns-execution-grid,.guns-news-layout{grid-template-columns:1fr}.guns-discovery #guns-scanner{grid-template-columns:1fr 1fr}.guns-headline-list{max-height:45vh}.guns-reader{padding:16px}.guns-execution-grid .guns-planner{grid-column:auto}.guns-header>div:last-child{display:flex;gap:5px;flex-wrap:wrap}}
 @media(max-width:430px){.guns-discovery #guns-scanner{grid-template-columns:1fr}}
+
+/* Independent chart slots and fast settings. */
+.guns-chart-panels{display:grid;grid-template-columns:minmax(0,1fr);gap:12px;min-width:0}
+.guns-chart-panels.guns-four-charts{grid-template-columns:repeat(2,minmax(0,1fr))}
+#guns-workspace .guns-execution-chart{border:2px solid #6bbdff}
+#guns-workspace .guns-large-chart{min-width:0;padding:12px;overflow:hidden}
+#guns-workspace .guns-large-chart header button{white-space:normal;text-align:left;flex:1;min-width:0}
+#guns-workspace .guns-large-chart header label{width:95px;margin:0}
+#guns-workspace canvas[data-chart-slot]{cursor:crosshair;touch-action:pan-y}
+.guns-chart-surface{position:relative}.guns-crosshair{display:none;position:absolute;top:0;bottom:0;border-left:1px dashed #b9d7ed;pointer-events:none}
+.guns-candle-readout{min-height:32px;font:11px/1.5 monospace;color:#a9c9e3;overflow-wrap:anywhere}
+.guns-chart-toolbar,.guns-company-controls nav{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.guns-company-controls{margin-bottom:16px}.guns-company-controls #guns-search{max-width:600px;align-items:end}.guns-company-controls label{flex:1}
+#guns-quicklist{margin:10px 0}#guns-quick-settings{background:#112e42;border:1px solid #467b9c;border-radius:6px;padding:12px!important;margin-bottom:14px}
+#guns-anchor-mode{border-left:3px solid #6bbdff;padding:9px;background:#112637;overflow-wrap:anywhere}
+#guns-scan-diagnostics{white-space:pre-wrap;overflow-wrap:anywhere;max-height:300px;overflow:auto}
+#guns-workspace .guns-discovery #guns-scanner{grid-template-columns:repeat(2,minmax(0,1fr))}
+@media(max-width:1000px){.guns-execution-grid{grid-template-columns:minmax(0,1fr)}.guns-execution-grid .guns-planner{grid-column:1/-1}}
+@media(max-width:620px){.guns-chart-panels.guns-four-charts{grid-template-columns:minmax(0,1fr)}#guns-workspace .guns-discovery #guns-scanner{grid-template-columns:1fr}.guns-company-controls #guns-search{flex-wrap:wrap}.guns-company-controls nav button{white-space:normal}}
+
