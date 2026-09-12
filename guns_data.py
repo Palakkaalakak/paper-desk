@@ -5,6 +5,8 @@ import re
 import time
 import os
 import json
+import base64
+import binascii
 import urllib.request
 import urllib.parse
 import xml.etree.ElementTree as ET
@@ -30,8 +32,8 @@ def stamp(value):
 
 async def scan(engine):
     from ib_async import ScannerSubscription, TagValue
-    sub = ScannerSubscription(numberOfRows=30, instrument='STK', locationCode='STK.US.MAJOR',
-                              scanCode='TOP_PERC_GAIN', abovePrice=1.5, aboveVolume=30000,
+    sub = ScannerSubscription(numberOfRows=50, instrument='STK', locationCode='STK.US.MAJOR',
+                              scanCode='HOT_BY_VOLUME', abovePrice=1.5, aboveVolume=30000,
                               stockTypeFilter='CORP')
     rows = await asyncio.wait_for(engine._ib.reqScannerDataAsync(
         sub, scannerSubscriptionFilterOptions=[TagValue('changePercAbove','5')]),15)
@@ -39,7 +41,7 @@ async def scan(engine):
                 warning='Scanner returns contracts, not verified prices or premarket volume. Separate quote/history checks required.',
                 rows=[dict(conid=r.contractDetails.contract.conId,symbol=r.contractDetails.contract.symbol,
                            name=r.contractDetails.longName,stockType=r.contractDetails.stockType,
-                           secType='STK',exch='SMART',brokerId=True,rank=r.rank) for r in (rows or [])[:30]
+                           secType='STK',exch='SMART',brokerId=True,rank=r.rank) for r in (rows or [])[:50]
                       if r.contractDetails.contract.secType == 'STK' and r.contractDetails.contract.currency == 'USD'])
 
 
@@ -172,14 +174,22 @@ def article_content(source):
     parser.close()
     raw = '\n'.join(re.sub(r'[ \t\xa0]+', ' ', line).strip() for line in ''.join(parser.parts).splitlines())
     raw = re.sub(r'\n{3,}', '\n\n', raw).strip()
-    footer = re.search(r'(?im)^\s*(?:\(END\)(?:\s|$)|Copyright\s*(?:\(c\)|©)|The statements in this document shall not)', raw)
-    text = raw[:footer.start()].strip() if footer else raw
-    legal = raw[footer.start():].strip() if footer else ''
-    meaningful = len(re.findall(r'\b\w+\b', text)) >= 25
-    status = 'body_returned' if meaningful and not truncated else 'incomplete'
-    warning = '' if status=='body_returned' else ('Article response was truncated; review the original licensed source.' if truncated else 'Gateway returned only a footer/disclaimer, headline or short fragment. A usable full story has NOT been verified. Check another article or your licensed TWS/news terminal.')
-    return dict(text=text,rawText=raw,legalText=legal,contentStatus=status,warning=warning,
-                completeness='Text presence is checked, not publisher completeness or factual accuracy.')
+    lines, notices = [], []
+    for line in raw.splitlines():
+        if re.match(r'(?i)^\s*Copyright\s*(?:\(c\)|©|\d{4})',line): notices.append(line)
+        else: lines.append(line)
+    body = '\n'.join(lines).strip()
+    footer = re.search(r'(?im)^\s*(?:\(END\)(?:\s|$)|The statements in this document shall not)',body)
+    if footer:
+        notices.append(body[footer.start():].strip())
+        body = body[:footer.start()].strip()
+    words = len(re.findall(r'\b\w+\b',body))
+    status = 'body_returned' if words>=25 else 'brief' if words>=4 else 'incomplete'
+    if truncated: status='incomplete'
+    warning = 'Response exceeds reader limit' if truncated else 'Provider response contains no story text' if status=='incomplete' else ''
+    return dict(text=body,rawText=raw,legalText='\n'.join(notices),contentStatus=status,warning=warning,
+                completeness='Provider text, not independently verified for completeness or accuracy.')
+
 
 
 async def article(engine, provider, article_id):
@@ -191,7 +201,16 @@ async def article(engine, provider, article_id):
     if result is None:
         raise ValueError('Article unavailable or API entitlement missing')
     if result.articleType != 0:
-        return dict(provider=provider,articleId=article_id,text='',rawText='',legalText='',contentStatus='binary',warning='Binary/PDF article: review in your licensed news terminal.')
+        try:
+            encoded = re.sub(r'\s','',result.articleText)
+            if len(encoded)>8000000: raise ValueError('PDF too large')
+            pdf = base64.b64decode(encoded,validate=True)
+            if not pdf.startswith(b'%PDF-'): raise ValueError('Invalid PDF')
+            return dict(provider=provider,articleId=article_id,text='',rawText='',legalText='',
+                        contentStatus='pdf',pdfBase64=encoded,source='IBKR licensed PDF',warning='')
+        except (ValueError,TypeError,binascii.Error):
+            return dict(provider=provider,articleId=article_id,text='',rawText='',legalText='',
+                        contentStatus='incomplete',warning='IBKR returned an invalid or oversized PDF')
     return dict(provider=provider,articleId=article_id,at=int(time.time()*1000),source='IB Gateway licensed news article',**article_content(result.articleText))
 
 
@@ -281,6 +300,60 @@ def float_reference(ticker):
         return dict(symbol=ticker,floatShares=value,date=date,source='Financial Modeling Prep / shares-float',status='returned',retrievedAt=int(time.time()*1000))
     except Exception:
         return dict(symbol=ticker,floatShares=None,date=None,source='Financial Modeling Prep',status='unavailable',warning='Free float unavailable; check key, plan and symbol coverage.')
+
+
+def broker_float(xml, ticker, conid, now):
+    """Explicit dated share counts only. Outstanding shares are an upper bound,
+    never an exact free-float substitute. Percentages/market caps are not counts.
+    """
+    if not xml or len(xml)>2000000 or '<!DOCTYPE' in xml.upper() or '<!ENTITY' in xml.upper(): return None
+    tree=ET.fromstring(xml)
+    candidates=[]
+    for node in tree.iter():
+        name=re.sub(r'[^a-z]','',node.tag.split('}')[-1].lower())
+        kind=re.sub(r'[^a-z]','',str(node.get('FieldName') or node.get('Type') or '').lower())
+        exact=name in ('floatshares','sharesfloat','freefloatshares') or kind in ('floatshares','sharesfloat','freefloatshares')
+        bound=name in ('sharesout','sharesoutstanding')
+        if not exact and not bound: continue
+        unit=str(node.get('Unit') or node.get('Units') or 'shares').strip().lower()
+        scale={'shares':1,'units':1,'thousands':1000,'millions':1000000}.get(unit)
+        date=node.get('Date') or node.get('AsOfDate')
+        try:
+            value=float((node.text or '').strip().replace(',',''))*scale
+            dated=dt.datetime.fromisoformat(date.replace('Z','+00:00')).date()
+            age=(dt.datetime.fromtimestamp(now/1000,dt.timezone.utc).date()-dated).days
+            if not 0<value<1e15 or not 0<=age<45: continue
+        except (ValueError,TypeError,AttributeError): continue
+        item=dict(symbol=ticker,conid=conid,date=dated.isoformat(),retrievedAt=now,
+                  source='IBKR ReportSnapshot',status='returned',floatShares=value if exact else None,
+                  basis='free-float' if exact else 'outstanding-upper-bound')
+        if bound: item['upperBoundShares']=value
+        candidates.append(item)
+    return next((x for x in candidates if x['basis']=='free-float'),candidates[0] if candidates else None)
+
+
+async def float_data(engine,ticker):
+    ticker=symbol(ticker)
+    c=await engine._stock(ticker)
+    ib,generation=engine._ib,engine.info.get('generation',0)
+    try:
+        req_id=ib.client.getReqId()
+        future=ib.wrapper.startReq(req_id,c)
+        try:
+            ib.client.reqFundamentalData(req_id,c,'ReportSnapshot',[])
+            xml=await asyncio.wait_for(future,12)
+        finally:
+            if engine._ib is ib and engine.info.get('generation',0)==generation:
+                ib.client.cancelFundamentalData(req_id)
+        if engine._ib is not ib or engine.info.get('generation',0)!=generation:
+            raise ValueError('Gateway generation changed')
+        found=broker_float(xml,ticker,c.conId,int(time.time()*1000))
+        if found: return found
+    except (ValueError,TypeError,ET.ParseError,asyncio.TimeoutError): pass
+    fallback=await asyncio.to_thread(float_reference,ticker)
+    if fallback.get('floatShares'): return dict(fallback,conid=c.conId,basis='free-float')
+    return dict(symbol=ticker,conid=c.conId,status='unavailable',floatShares=None,source='IBKR ReportSnapshot',
+                warning='Gateway supplied no current float or share-count bound. Check IBKR fundamentals entitlement; stocks with missing evidence are excluded.')
 
 
 async def schedule(engine):
