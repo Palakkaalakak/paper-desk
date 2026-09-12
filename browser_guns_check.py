@@ -3,7 +3,7 @@ import datetime as dt
 import json
 import pathlib
 import re
-from urllib.parse import urlsplit
+from urllib.parse import urlsplit, parse_qs
 from playwright.sync_api import sync_playwright
 
 ROOT=pathlib.Path(__file__).resolve().parent
@@ -26,6 +26,7 @@ def main():
         day=dt.date(2026,9,9)-dt.timedelta(days=239-i)
         history['daily'].append(dict(t=day.isoformat(),o=8,h=9.1,l=7.9,c=9,v=100000))
     errors=[]
+    requests=[]
     with sync_playwright() as pw:
         browser=pw.chromium.launch(args=['--no-sandbox'])
         page=browser.new_page(viewport={'width':1440,'height':1000})
@@ -33,6 +34,8 @@ def main():
         page.on('pageerror',lambda e:errors.append(str(e)))
         def route(r):
             path=urlsplit(r.request.url).path
+            params=parse_qs(urlsplit(r.request.url).query)
+            requests.append(path)
             if path=='/':return r.fulfill(content_type='text/html',body=html)
             if path.startswith('/assets/'):
                 name=path.rsplit('/',1)[-1]
@@ -43,10 +46,18 @@ def main():
             if path=='/data/stream':return r.fulfill(content_type='text/event-stream',body=': fixture\n\n')
             if path in ('/data/twsstatus','/api/iserver/auth/status'):return r.fulfill(json={'connected':True,'authenticated':True})
             if path=='/data/guns_scan':return r.fulfill(json={'rows':[dict(conid=12345,symbol='TEST',name='Fixture stock',secType='STK',brokerId=True)]})
-            if path=='/data/search':return r.fulfill(json={'results':[dict(conid=12345,symbol='TEST',name='Fixture stock',type='STK')]})
-            if path=='/data/guns_bars':return r.fulfill(json={**history,'updatedAt':page.evaluate('Date.now()')})
+            if path=='/data/search':
+                sym=(params.get('q') or ['TEST'])[0].upper()
+                return r.fulfill(json={'results':[dict(conid=12345 if sym=='TEST' else 23456,symbol=sym,name='Fixture '+sym,type='STK')]})
+            if path=='/data/guns_bars':
+                sym=(params.get('symbol') or ['TEST'])[0]
+                return r.fulfill(json={**history,'symbol':sym,'conid':12345 if sym=='TEST' else 23456,'updatedAt':page.evaluate('Date.now()')})
+            if path=='/data/guns_schedule':return r.fulfill(json={'sessions':[dict(start=OPEN,end=OPEN+23400000)]})
+            if path=='/data/guns_float':return r.fulfill(json={'floatShares':15000000,'date':'2026-09-09','source':'Fixture float'})
+            if path=='/data/guns_sources':return r.fulfill(json={'rows':[dict(headline='Fixture linked company release',provider='Fixture RSS',time='2026-09-10',articleId='',url='https://example.com/release',contentStatus='excerpt',text='Fixture source excerpt')],'diagnostics':[]})
             if path=='/data/guns_verify':return r.fulfill(json=dict(conid=12345,at=OPEN+10000,sessionDate='2026-09-10',sessionKnown=True,stockType='COMMON',previousClose=9,previousCloseDate='2026-09-09',premarketVolume=330000,observedBars=330,source='Fixture IB TRADES',volumeUnit='shares',coverage='Observed bars only'))
-            if path=='/data/guns_news':return r.fulfill(json={'source':'Fixture API news','at':OPEN+10000,'providers':[dict(code='TEST',name='Fixture provider')],'rows':[dict(time='2026-09-10',provider='TEST',articleId='story1',headline='Fixture earnings beat')]})
+            if path=='/data/guns_news':return r.fulfill(json={'source':'Fixture API news','at':OPEN+10000,'providers':[dict(code='TEST',name='Fixture provider')],'rows':[dict(time='2026-09-10',provider='TEST',articleId='story1',headline='Fixture earnings beat'),dict(time='2026-09-10',provider='TEST',articleId='footer',headline='Footer-only fixture')]})
+            if path=='/data/guns_article' and params.get('articleId')==['footer']:return r.fulfill(json={'text':'','rawText':'(END) Copyright fixture','contentStatus':'incomplete'})
             if path=='/data/guns_article':return r.fulfill(json={'text':'Fixture earnings article <img src=x onerror=alert(1)>','provider':'TEST','articleId':'story1','contentStatus':'body_returned','rawText':'Fixture earnings article <img src=x onerror=alert(1)>'})
             if path=='/data/depth':return r.fulfill(json={'bids':[dict(price=10.48,size=100)],'asks':[dict(price=10.50,size=100)]})
             if path.startswith('/api/'):return r.fulfill(json={})
@@ -71,6 +82,18 @@ def main():
         assert page.locator('#guns-article img').count()==0
         assert not page.locator('#guns-catalyst').is_checked()
         assert 'Fixture provider' in page.locator('#guns-news-meta').inner_text()
+        # Footer-only requests recover to a real alternative, explicitly labeled.
+        page.locator('[data-guns-article="1"]').click()
+        page.wait_for_function("document.querySelector('#guns-article-warning').textContent.includes('DIFFERENT')")
+        assert 'Fixture earnings article' in page.locator('#guns-article').inner_text()
+        assert '(END)' in page.locator('#guns-article-raw').text_content(),page.locator('#guns-article-raw').text_content()
+        page.locator('#guns-symbol').fill('OTHER');page.locator('#guns-symbol').press('Enter')
+        page.locator('[data-guns-search-pick="0"]').click()
+        assert page.evaluate('__gunsTest.desk.execution.book().desk.slots[0].inst.symbol')=='TEST'
+        assert 'OTHER' in page.locator('#guns-article-heading').inner_text()
+        page.locator('#guns-quicklist [data-guns-pick="12345"]').click()
+        page.locator('[data-guns-article="0"]').click()
+        page.wait_for_function("document.querySelector('#guns-article').textContent.includes('Fixture earnings article')")
         page.locator('#guns-catalyst').check()
         page.locator('#guns-room').check()
         page.keyboard.press('1')
@@ -85,8 +108,46 @@ def main():
         assert page.locator('#guns-chart-quality').inner_text().startswith('Source:')
         page.evaluate('tick()')
         assert page.locator('[data-guns="arm"]').is_enabled(),page.locator('#guns-error').inner_text()
-        assert page.locator('[data-guns-confirm]').count()==4
+        assert page.locator('[data-guns-confirm]').count()==5
         assert page.locator('#guns-auto').count()==0
+        # Four independent slots; research selection never silently changes execution.
+        page.locator('[data-guns="layout"]').click()
+        assert page.locator('canvas[data-chart-slot]').count()==4
+        page.locator('[data-guns-slot="1"]').click()
+        page.locator('#guns-symbol').fill('OTHER');page.locator('#guns-symbol').press('Enter')
+        page.locator('[data-guns-search-pick="0"]').click()
+        page.locator('#guns-slot-frame-1').select_option('d')
+        assert page.evaluate('__gunsTest.desk.execution.book().desk.slots[1].inst.symbol')=='OTHER'
+        page.locator('[data-guns-slot="0"]').click()
+        assert 'TEST' in page.locator('[data-guns-slot="0"]').inner_text()
+        page.locator('[data-guns="layout"]').click()
+        # Quick settings retain focused editing and update risk/R without transmitting.
+        page.locator('#guns-quick-settings summary').click()
+        page.locator('#guns-quick-risk').fill('0.5');page.locator('#guns-quick-risk').press('Tab')
+        assert page.evaluate('__gunsTest.desk.execution.cfg().riskPct')==0.5
+        page.locator('#guns-quick-reward').fill('3');page.locator('#guns-quick-reward').press('Tab')
+        assert page.evaluate('__gunsTest.desk.execution.cfg().rewardR')==3
+        page.locator('#guns-quick-risk').fill('1');page.locator('#guns-quick-risk').press('Tab')
+        page.locator('#guns-quick-reward').fill('2');page.locator('#guns-quick-reward').press('Tab')
+        page.locator('#guns-hover').check()
+        page.evaluate('document.activeElement.blur()')
+        page.locator('#guns-chart-1').scroll_into_view_if_needed()
+        rect=page.locator('#guns-chart-1').bounding_box()
+        x=rect['x']+(rect['width']-55)*60.5/80
+        page.mouse.move(x,rect['y']+80);page.clock.run_for(30)
+        assert page.locator('#guns-anchor-mode').inner_text().startswith('HOVER')
+        high=page.locator('#guns-anchor-mode').inner_text()
+        page.mouse.move(x,rect['y']+180);page.clock.run_for(30)
+        assert page.locator('#guns-anchor-mode').inner_text()==high
+        page.keyboard.press('1')
+        assert page.evaluate('__gunsTest.desk.execution.pending()[0]?.guns.notes.hover.enabled') is True,page.locator('#guns-error').inner_text()
+        assert page.evaluate('__gunsTest.desk.execution.pending()[0].guns.plan.levelSource')=='hover'
+        page.mouse.move(0,0);page.clock.run_for(30)
+        assert page.locator('#guns-anchor-mode').inner_text().startswith('AUTO')
+        page.locator('[data-guns-cancel]').click()
+        page.clock.run_for(600)
+        page.locator('#guns-hover').uncheck()
+        page.evaluate('tick()')
         page.locator('#guns-fixed').focus();page.keyboard.press('1');page.locator('#guns-fixed').fill('0.2');page.locator('#guns-fixed').press('Tab')
         page.locator('[data-guns="arm"]').focus();page.keyboard.press('1')
         assert page.evaluate('__gunsTest.desk.execution.pending().length')==0
@@ -99,7 +160,7 @@ def main():
         page.locator('[data-guns-key="1"]').focus();page.keyboard.press('Alt+q')
         assert page.locator('[data-guns-key="1"]').input_value()=='2'
         page.locator('[data-guns-key="1"]').evaluate('(e)=>e.blur()')
-        assert page.evaluate('GunsWorkflow.bindings(__gunsTest.desk.execution.cfg())')==['Alt+Q','2','3','4']
+        assert page.evaluate('GunsWorkflow.bindings(__gunsTest.desk.execution.cfg())')==['Alt+Q','2','3','4','5']
         page.keyboard.press('1')
         assert page.evaluate('__gunsTest.desk.execution.pending().length')==0
         page.keyboard.press('Alt+q')
@@ -180,8 +241,31 @@ def main():
             page.locator('.guns-stage-nav [data-guns-stage="'+view+'"]').click()
             assert page.evaluate('document.documentElement.scrollWidth<=window.innerWidth+1'),view
         assert page.locator('#guns-journal').count()==1
+        # Outside the T-30/open window neither pulse nor quote changes rediscover.
+        scans=requests.count('/data/guns_scan')
+        page.clock.run_for(31000)
+        page.evaluate('__gunsTest.desk.pulse()')
+        assert requests.count('/data/guns_scan')==scans
+        # Fresh desktop context verifies that key 5 actually places S5, not a selector.
+        history['minute'].append(dict(t=OPEN,o=10.51,h=10.54,l=10.51,c=10.53,v=1000))
+        page.clock.set_fixed_time(dt.datetime.fromtimestamp((OPEN+61000)/1000,dt.timezone.utc))
+        page.reload(wait_until='domcontentloaded')
+        page.wait_for_function('window.__gunsTest && __gunsTest.desk')
+        page.evaluate("__gunsTest.feed({connected:true,feedHealthy:true,generation:0,quotes:{12345:{bid:10.52,ask:10.54,last:10.53,bidSize:100,askSize:100,status:'LIVE',at:Date.now(),receivedAt:Date.now()}}})")
+        page.set_viewport_size({'width':1440,'height':1000})
+        page.locator('[data-tab="guns"]').click()
+        page.locator('[data-guns="scan"]').click()
+        page.locator('[data-guns-pick="12345"]').click()
+        page.locator('#guns-catalyst').check();page.locator('#guns-room').check()
+        page.locator('.guns-stage-nav [data-guns-stage="trade"]').click()
+        page.locator('#guns-setup').select_option('5')
+        page.wait_for_function("!document.querySelector('[data-guns-confirm=\"5\"]').disabled")
+        page.evaluate('document.activeElement.blur()');page.keyboard.press('5')
+        assert page.evaluate('__gunsTest.desk.execution.pending()[0]?.guns.setup')==5,page.locator('#guns-error').inner_text()
+        page.locator('[data-guns-cancel]').click()
         assert not errors,errors
         print(json.dumps({'guns':'verified scanner, escaped articles, S1-S4 controls, focus guards, four-stock tutorial isolation, dynamic risk, paper lifecycle, persistence/mobile','browser_errors':errors}))
+        page.unroute_all(behavior='ignoreErrors')
         browser.close()
 
 
