@@ -20,7 +20,8 @@ test('New York trading dates honor DST and indicators never fabricate warmup',()
 test('missing bars and session cannot produce executable setup',()=>{assert.ok(C.analyze(null,null,{},1,{},Date.now()).errors.length);const p=C.analyze({minute:[],daily:[],sessions:[],minTick:.01},null,{},5,{},Date.now());assert.ok(p.errors.includes('Current exchange session known'));assert.ok(p.errors.includes('Valid trigger, stop and target'));});
 
 const W=require('./guns-workflow.js'),T=require('./guns-tutorial.js');
-function chartFixture(){const now=Date.parse('2026-09-10T13:30:10Z'),start=now-10000;return {now,data:{minTick:.01,stockType:'COMMON',updatedAt:now,sessions:[{start,end:start+23400000}],daily:[{t:'2026-09-09',c:9}],minute:Array.from({length:1500},(_,i)=>{const c=8.99+i*.001;return {t:start-(1500-i)*60000,o:c-.001,h:c+.011,l:c-.01,c,v:1000};})},q:{last:10.2,bid:10.2,ask:10.21},notes:{room:true,catalyst:true}};}
+function referenceFloat(now){return {floatShares:15000000,date:new Date(now-86400000).toISOString(),source:"Fixture IBKR"};}
+function chartFixture(){const now=Date.parse('2026-09-10T13:30:10Z'),start=now-10000;return {now,data:{float:referenceFloat(now),minTick:.01,stockType:'COMMON',updatedAt:now,sessions:[{start,end:start+23400000}],daily:[{t:'2026-09-09',c:9}],minute:Array.from({length:1500},(_,i)=>{const c=8.99+i*.001;return {t:start-(1500-i)*60000,o:c-.001,h:c+.011,l:c-.01,c,v:1000};})},q:{last:10.2,bid:10.2,ask:10.21},notes:{room:true,catalyst:true}};}
 test('human confirmation required; heuristic advice is not a chart-quality veto',()=>{
  const f=chartFixture(),n={...f.notes,levels:{3:{trigger:10.2,candleLow:10.1}}};
  let p=C.analyze(f.data,f.q,{},3,n,f.now);assert.ok(p.errors.includes('Chart and setup reviewed by user'));
@@ -42,7 +43,7 @@ test('shortcuts reject unsafe modifiers, repeats, duplicates and malformed bindi
  const b=W.setBinding(W.defaults,0,'Alt+Q');assert.deepEqual(W.bindings({shortcuts:b}),b);assert.deepEqual(W.bindings({shortcuts:['1','1','2','3']}),W.defaults);
 });
 test('candidate ranking fails closed on missing, stale or mismatched evidence',()=>{
- const now=100000,row={conid:1,rank:0},q={status:'LIVE',last:10,bid:9.99,ask:10.01},e={conid:1,at:now,sessionKnown:true,stockType:'COMMON',previousClose:9,premarketVolume:100000};
+ const now=100000,row={conid:1,rank:0},q={status:'LIVE',last:10,bid:9.99,ask:10.01},e={conid:1,at:now,sessionKnown:true,stockType:'COMMON',previousClose:9,premarketVolume:100000,float:referenceFloat(now)};
  const run=(ev=e,quote=q,ready=true)=>W.candidate(row,quote,ev,ready,C.defaults,now);assert.ok(run().eligible);
  for(const patch of [{at:now-90001},{at:now+5001},{conid:2},{sessionKnown:false},{previousClose:null},{premarketVolume:null},{premarketVolume:-1},{stockType:'ETF'}]){assert.equal(run({...e,...patch}).eligible,false);assert.equal(run({...e,...patch}).score,null);}
  assert.equal(run(null).eligible,false);assert.equal(run(e,q,false).eligible,false);assert.equal(run(e,{...q,status:'DELAYED'}).eligible,false);assert.equal(run(e,{...q,ask:11}).eligible,false);
@@ -110,16 +111,16 @@ test('five-key migration preserves custom bindings, including conflicts with def
 });
 test('shortlist is at most four qualifying rows, no padding or mutation after ranking',()=>{
  const now=Date.parse('2026-09-10T13:00Z'),rows=Array.from({length:8},(_,i)=>({conid:i+1,rank:i})),quotes={},ev=new Map();
- for(const r of rows){quotes[r.conid]={status:'LIVE',last:10,bid:9.99,ask:10.01};ev.set(r.conid,{conid:r.conid,at:now,sessionKnown:true,stockType:'COMMON',previousClose:9,premarketVolume:50000});}
+ for(const r of rows){quotes[r.conid]={status:'LIVE',last:10,bid:9.99,ask:10.01};ev.set(r.conid,{conid:r.conid,at:now,sessionKnown:true,stockType:'COMMON',previousClose:9,premarketVolume:50000,float:referenceFloat(now)});}
  ev.get(1).premarketVolume=null;ev.get(2).stockType='ETF';
  const list=W.shortlist(rows,quotes,ev,()=>true,C.defaults,now);assert.deepEqual(list.map(r=>r.conid),[3,4,5,6]);
  quotes[3].last=11;W.rank(rows,quotes,ev,()=>true,C.defaults,now);assert.deepEqual(list.map(r=>r.conid),[3,4,5,6]);
  assert.equal(W.shortlist(rows,quotes,new Map(),()=>true,C.defaults,now).length,0);
 });
 test('scheduled scan occurs once in T-30/open window with supplied DST/session schedule',()=>{
- for(const open of ['2026-09-10T13:30Z','2026-11-02T14:30Z']){const start=Date.parse(open),sessions=[{start,end:start+23400000}],state={attemptedAt:start-86400000};
+ for(const open of ['2026-09-10T13:30Z','2026-11-02T14:30Z']){const start=Date.parse(open),sessions=[{start,end:start+23400000}],state={publishedAt:start-86400000};
  assert.equal(W.scanDue(state,sessions,start-1800001),null);assert.equal(W.scanDue(state,sessions,start-1800000),'scheduled');state.scheduledOpen=start;assert.equal(W.scanDue(state,sessions,start-60000),null);assert.equal(W.scanDue(state,sessions,start+1),null);}
- assert.equal(W.scanDue({},[],1),'initial');assert.equal(W.scanDue({attemptedAt:1},[],2),null);
+ assert.equal(W.scanDue({},[],1),'initial');assert.equal(W.scanDue({publishedAt:1},[],2),null);
 });
 test('strict float excludes unknown, stale, outstanding-only and cap equality',()=>{
  const now=Date.parse('2026-09-10T13:30Z'),row={conid:1},q={status:'LIVE',last:10,bid:9.99,ask:10.01},e={conid:1,at:now,sessionKnown:true,stockType:'COMMON',previousClose:9,premarketVolume:50000};
@@ -141,4 +142,29 @@ test('hover flag uses same candle low and S5 cannot use a later candle',()=>{
  const x=fixture(),o=x.E.arm(x.plan,x.inst,{hover:h}).order;h.candle.h=99;assert.notEqual(o.guns.notes.hover.candle.h,99);
 });
 
-test('late schedule response does not duplicate an initial T-30 scan',()=>{const start=Date.parse('2026-09-10T13:30Z');assert.equal(W.scanDue({attemptedAt:start-1700000},[{start}],start-1600000),null);});
+test('late schedule response does not duplicate an initial T-30 scan',()=>{const start=Date.parse('2026-09-10T13:30Z');assert.equal(W.scanDue({publishedAt:start-1700000},[{start}],start-1600000),null);});
+
+test('recovery does not consume successful publication or scheduled refresh',()=>{
+ const start=Date.parse('2026-09-10T13:30Z'),sessions=[{start}];
+ assert.equal(W.scanDue({attemptedAt:start-1700000,retryAt:start-1600000},sessions,start-1650000),null);
+ assert.equal(W.scanDue({attemptedAt:start-1700000,retryAt:start-1600000},sessions,start-1599999),'recovery');
+ assert.equal(W.scanDue({publishedAt:start-3600000,attemptedAt:start-1700000},sessions,start-1600000),'scheduled');
+});
+test('scheduled refresh retains surviving candidate slots without reranking',()=>{
+ const previous=[1,2,3,4].map(conid=>({conid})),next=[4,5,2,3].map(conid=>({conid}));
+ assert.deepEqual(W.stableSlots(previous,next).map(r=>r.conid),[5,2,3,4]);
+ assert.deepEqual(previous.map(r=>r.conid),[1,2,3,4]);
+});
+test('broker outstanding bound never becomes an exact float and must be under cap',()=>{
+ const now=Date.parse('2026-09-10T13:00Z'),f={...referenceFloat(now),floatShares:null,basis:'outstanding-upper-bound',upperBoundShares:20000000};
+ assert.equal(W.floatBelow(f,100000000,now),true);assert.match(W.floatLabel(f),/bound/);
+ assert.equal(W.floatBelow({...f,upperBoundShares:200000000},100000000,now),false);
+ assert.equal(W.floatBelow({...f,date:'2099-01-01'},100000000,now),false);
+});
+test('news recovery never substitutes a different catalyst, amount or trading day',()=>{
+ const a={headline:'TEST Company reports quarterly earnings of $1.20 per share',time:'2026-09-10'};
+ assert.equal(W.sameStory(a,{...a,headline:a.headline+'!'}),true);
+ assert.equal(W.sameStory(a,{...a,headline:a.headline.replace('1.20','2.20')}),false);
+ assert.equal(W.sameStory(a,{headline:'TEST Company announces acquisition',time:a.time}),false);
+ assert.equal(W.sameStory(a,{...a,time:'2025-09-10'}),false);
+});

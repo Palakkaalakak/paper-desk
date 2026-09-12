@@ -76,24 +76,24 @@ def main():
         page.wait_for_function("document.querySelector('#guns-clock').textContent.includes('s old')")
         page.evaluate('__gunsTest.desk.pulse()')
         page.locator('.guns-stage-nav [data-guns-stage="scanner"]').click()
-        page.wait_for_function("document.querySelector('#guns-scanner').textContent.includes('SCREEN PASS')")
+        page.wait_for_function("document.querySelector('#guns-scanner').textContent.includes('IBKR screened')")
         page.locator('.guns-stage-nav [data-guns-stage="news"]').click()
-        page.locator('[data-guns-article="0"]').click()
+        page.locator('[data-guns-article="TEST:story1"]').click()
         page.wait_for_function("document.querySelector('#guns-article').textContent.includes('Fixture earnings article')")
         assert page.locator('#guns-article img').count()==0
         assert not page.locator('#guns-catalyst').is_checked()
         assert 'Fixture provider' in page.locator('#guns-news-meta').inner_text()
-        # Footer-only requests recover to a real alternative, explicitly labeled.
-        page.locator('[data-guns-article="1"]').click()
-        page.wait_for_function("document.querySelector('#guns-article-warning').textContent.includes('DIFFERENT')")
-        assert 'Fixture earnings article' in page.locator('#guns-article').inner_text()
+        # Unrelated stories must not replace the clicked article.
+        page.locator('[data-guns-article="TEST:footer"]').click()
+        page.wait_for_function("document.querySelector('#guns-article-warning').textContent.includes('source-only')")
+        assert 'Fixture earnings article' not in page.locator('#guns-article').inner_text()
         assert '(END)' in page.locator('#guns-article-raw').text_content(),page.locator('#guns-article-raw').text_content()
         page.locator('#guns-symbol').fill('OTHER');page.locator('#guns-symbol').press('Enter')
         page.locator('[data-guns-search-pick="0"]').click()
         assert page.evaluate('__gunsTest.desk.execution.book().desk.slots[0].inst.symbol')=='TEST'
         assert 'OTHER' in page.locator('#guns-article-heading').inner_text()
         page.locator('#guns-quicklist [data-guns-pick="12345"]').click()
-        page.locator('[data-guns-article="0"]').click()
+        page.locator('[data-guns-article="TEST:story1"]').click()
         page.wait_for_function("document.querySelector('#guns-article').textContent.includes('Fixture earnings article')")
         page.locator('#guns-catalyst').check()
         page.locator('#guns-room').check()
@@ -114,16 +114,16 @@ def main():
         # Four independent slots; research selection never silently changes execution.
         page.locator('[data-guns="layout"]').click()
         assert page.locator('canvas[data-chart-slot]').count()==4
-        page.locator('[data-guns-slot="1"]').click()
+        page.locator('[data-guns-slot="1"]').first.click()
         page.locator('#guns-symbol').fill('OTHER');page.locator('#guns-symbol').press('Enter')
         page.locator('[data-guns-search-pick="0"]').click()
         page.locator('#guns-slot-frame-1').select_option('d')
         assert page.evaluate('__gunsTest.desk.execution.book().desk.slots[1].inst.symbol')=='OTHER'
-        page.locator('[data-guns-slot="0"]').click()
-        assert 'TEST' in page.locator('[data-guns-slot="0"]').inner_text()
+        page.locator('[data-guns-slot="0"]').first.click()
+        assert 'TEST' in page.locator('[data-guns-slot="0"]').first.inner_text()
         page.locator('[data-guns="layout"]').click()
         # Quick settings retain focused editing and update risk/R without transmitting.
-        page.locator('#guns-quick-settings summary').click()
+        page.locator('#guns-quick-settings').evaluate('(e)=>e.open=true')
         page.locator('#guns-quick-risk').fill('0.5');page.locator('#guns-quick-risk').press('Tab')
         assert page.evaluate('__gunsTest.desk.execution.cfg().riskPct')==0.5
         page.locator('#guns-quick-reward').fill('3');page.locator('#guns-quick-reward').press('Tab')

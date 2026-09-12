@@ -245,7 +245,7 @@ class GunsDataTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(out['contentStatus'],'incomplete')
         self.assertEqual(out['text'],'')
         self.assertIn('Copyright',out['rawText'])
-        self.assertIn('NOT been verified',out['warning'])
+        self.assertIn('no story text',out['warning'])
         body=' '.join(['Company reported higher revenue and earnings in its quarterly release.']*5)
         out=guns_data.article_content('<p>'+body+'</p>'+footer)
         self.assertEqual(out['contentStatus'],'body_returned')
@@ -312,7 +312,7 @@ class GunsDataTests(unittest.IsolatedAsyncioTestCase):
         ib.reqNewsArticleAsync.return_value=NS(articleType=0,articleText='<h1>Headline</h1><script>evil()</script><style>hidden</style><p>Revenue &amp; earnings</p>')
         self.assertEqual((await guns_data.article(engine,'P1','story/1'))['text'],'Headline\n\nRevenue & earnings')
         ib.reqNewsArticleAsync.return_value=NS(articleType=1,articleText='binary')
-        self.assertIn('Binary/PDF',(await guns_data.article(engine,'P1','1'))['warning'])
+        self.assertEqual((await guns_data.article(engine,'P1','1'))['contentStatus'],'incomplete')
         ib.reqNewsArticleAsync.return_value=None
         with self.assertRaises(ValueError):await guns_data.article(engine,'P1','1')
         calls=ib.reqNewsArticleAsync.await_count
@@ -373,6 +373,31 @@ class GunsSourceAndStreamTests(unittest.IsolatedAsyncioTestCase):
         task=asyncio.create_task(guns_data.bars(e,'TEST'));await started.wait();task.cancel();release.set()
         with self.assertRaises(asyncio.CancelledError):await task
         self.assertFalse(e._guns_streams);self.assertEqual(e._ib.cancelHistoricalData.call_count,2)
+
+
+class Guns15Tests(unittest.IsolatedAsyncioTestCase):
+    def test_leading_copyright_and_news_flashes(self):
+        body='Company reported record quarterly revenue and raised guidance. '*6
+        out=guns_data.article_content('<p>Copyright (c) 2026 Publisher</p><p>'+body+'</p>')
+        self.assertEqual(out['contentStatus'],'body_returned')
+        self.assertIn('raised guidance',out['text'])
+        self.assertEqual(guns_data.article_content('Company raises annual earnings outlook')['contentStatus'],'brief')
+
+    def test_broker_float_units_date_and_conservative_bound(self):
+        now=int(dt.datetime(2026,9,10,tzinfo=dt.timezone.utc).timestamp()*1000)
+        out=guns_data.broker_float('<Report><FloatShares Date="2026-09-09" Unit="millions">15</FloatShares></Report>','TEST',123,now)
+        self.assertEqual(out['floatShares'],15000000)
+        out=guns_data.broker_float('<Report><SharesOut Date="2026-09-09">20000000</SharesOut></Report>','TEST',123,now)
+        self.assertIsNone(out['floatShares']);self.assertEqual(out['upperBoundShares'],20000000)
+        for source in ['<Report><FloatShares>15</FloatShares></Report>','<Report><FloatShares Date="2020-01-01">15</FloatShares></Report>','<Report><FloatShares Date="2026-09-09" Unit="percent">15</FloatShares></Report>']:
+            self.assertIsNone(guns_data.broker_float(source,'TEST',123,now))
+
+    async def test_valid_ib_pdf_is_returned_for_reader(self):
+        import base64
+        encoded=base64.b64encode(b'%PDF-1.4\nfixture').decode()
+        engine=NS(_ib=NS(reqNewsArticleAsync=AsyncMock(return_value=NS(articleType=1,articleText=encoded))))
+        out=await guns_data.article(engine,'BZ','BZ$1')
+        self.assertEqual(out['contentStatus'],'pdf');self.assertEqual(out['pdfBase64'],encoded)
 
 
 if __name__ == '__main__':
