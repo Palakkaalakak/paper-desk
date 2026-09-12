@@ -3,6 +3,11 @@ import asyncio
 import datetime as dt
 import re
 import time
+import os
+import json
+import urllib.request
+import urllib.parse
+import xml.etree.ElementTree as ET
 from html.parser import HTMLParser
 from html import unescape
 from zoneinfo import ZoneInfo
@@ -42,12 +47,20 @@ def close_idle(engine):
     streams = getattr(engine,'_guns_streams',{})
     for sym,entry in list(streams.items()):
         if time.monotonic()-entry['used']>120:
-            for rows in entry['lists']:
-                engine._ib.cancelHistoricalData(rows)
+            if entry['generation']==engine.info.get('generation',0):
+                for rows in entry['lists']:
+                    engine._ib.cancelHistoricalData(rows)
             streams.pop(sym,None)
 
 
 async def bars(engine,ticker):
+    # One acquisition at a time across all symbols, on the existing owner loop.
+    if not hasattr(engine,'_guns_bars_lock'): engine._guns_bars_lock=asyncio.Lock()
+    async with engine._guns_bars_lock:
+        return await _bars(engine,ticker)
+
+
+async def _bars(engine,ticker):
     from market import number
     ticker = symbol(ticker)
     if not hasattr(engine,'_guns_streams'):
@@ -56,23 +69,26 @@ async def bars(engine,ticker):
     close_idle(engine)
     entry = streams.get(ticker)
     if entry and entry['generation']!=engine.info.get('generation',0):
-        for rows in entry['lists']:
-            engine._ib.cancelHistoricalData(rows)
+        # Old request IDs must never cancel requests on a new connection.
         streams.pop(ticker,None)
         entry = None
     if not entry:
-        if len(streams)>=4:
+        if len(streams)>=6:  # Four chart symbols plus two pending-entry symbols.
             old = streams.pop(min(streams,key=lambda s:streams[s]['used']))
-            for rows in old['lists']:
-                engine._ib.cancelHistoricalData(rows)
+            if old['generation']==engine.info.get('generation',0):
+                for rows in old['lists']:
+                    engine._ib.cancelHistoricalData(rows)
         c = await engine._stock(ticker)
         details = await asyncio.wait_for(engine._ib.reqContractDetailsAsync(c),12)
         if not details:
             raise ValueError('Stock definition unavailable')
+        ib, generation = engine._ib, engine.info.get('generation',0)
         async def get(duration,interval,rth):
-            return await engine._ib.reqHistoricalDataAsync(c,'',duration,interval,'TRADES',rth,
+            return await ib.reqHistoricalDataAsync(c,'',duration,interval,'TRADES',rth,
                               formatDate=2,keepUpToDate=True,timeout=20)
         results = await asyncio.gather(get('2 D','1 min',False),get('1 Y','1 day',True),return_exceptions=True)
+        if engine._ib is not ib or engine.info.get('generation',0)!=generation:
+            raise ValueError('Connection changed during chart acquisition; retry on current generation')
         if any(isinstance(x,BaseException) or not x for x in results):
             for x in results:
                 if not isinstance(x,BaseException) and x:
@@ -163,6 +179,101 @@ async def article(engine, provider, article_id):
     if result.articleType != 0:
         return dict(provider=provider,articleId=article_id,text='',rawText='',legalText='',contentStatus='binary',warning='Binary/PDF article: review in your licensed news terminal.')
     return dict(provider=provider,articleId=article_id,at=int(time.time()*1000),source='IB Gateway licensed news article',**article_content(result.articleText))
+
+
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        raise ValueError('Provider redirect refused')
+
+
+def source_fetch(host, path, params):
+    """Fixed provider hosts only. No caller URLs, redirects, credential logs or scraping."""
+    if host not in ('feeds.finance.yahoo.com', 'news.google.com', 'api.benzinga.com', 'financialmodelingprep.com'):
+        raise ValueError('Unsupported source')
+    url = 'https://' + host + path + '?' + urllib.parse.urlencode(params)
+    req = urllib.request.Request(url, headers={'User-Agent':'PaperDesk/1.0', 'Accept':'application/json, application/rss+xml, application/xml'})
+    try:
+        with urllib.request.build_opener(NoRedirect()).open(req, timeout=8) as response:
+            payload = response.read(2000001)
+            if len(payload)>2000000: raise ValueError('Response too large')
+            return payload
+    except Exception:
+        # urllib errors can contain a URL with an API key. Never propagate those.
+        raise ValueError('Source unavailable; check network, entitlement or provider limits') from None
+
+
+def public_link(value):
+    try:
+        p = urllib.parse.urlsplit(str(value or ''))
+        return str(value) if p.scheme=='https' and p.hostname and not p.username and not p.password else ''
+    except ValueError:
+        return ''
+
+
+def source_news(ticker):
+    """Public RSS excerpts/links plus optional licensed full bodies. Not an IB session."""
+    ticker = symbol(ticker)
+    rows, diagnostics = [], []
+    key = os.environ.get('PAPER_BENZINGA_KEY')
+    if key:
+        try:
+            data = json.loads(source_fetch('api.benzinga.com','/api/v2/news',dict(token=key,tickers=ticker,displayOutput='full',pageSize=20,sort='created:desc')))
+            if not isinstance(data,list): raise ValueError('Unexpected response')
+            for item in data[:20]:
+                if ticker not in [str(s.get('name','')).upper() for s in item.get('stocks',[])]: continue
+                body = article_content(item.get('body',''))
+                rows.append(dict(headline=str(item.get('title','')),time=item.get('created'),provider='Benzinga API',articleId=str(item.get('id','')),url=public_link(item.get('url')),**body))
+        except Exception:
+            diagnostics.append('Benzinga full-body API unavailable; check PAPER_BENZINGA_KEY entitlement.')
+    else:
+        diagnostics.append('Optional full-body API not configured. Public feeds supply excerpts and publisher links, not guaranteed full text.')
+    for host,path,params,label in [
+        ('feeds.finance.yahoo.com','/rss/2.0/headline',dict(s=ticker,region='US',lang='en-US'),'Yahoo Finance RSS'),
+        ('news.google.com','/rss/search',dict(q='"'+ticker+'" stock company when:7d',hl='en-US',gl='US',ceid='US:en'),'Google News RSS')]:
+        try:
+            payload = source_fetch(host,path,params)
+            if b'<!DOCTYPE' in payload.upper() or b'<!ENTITY' in payload.upper(): raise ValueError('Unsafe XML')
+            feed = ET.fromstring(payload)
+            for item in feed.findall('./channel/item')[:20]:
+                title=item.findtext('title') or ''
+                link=public_link(item.findtext('link'))
+                if not link or not title: continue
+                excerpt=article_content(item.findtext('description') or '')['rawText']
+                rows.append(dict(headline=title,time=item.findtext('pubDate'),provider=label,articleId='',url=link,text=excerpt,rawText=excerpt,contentStatus='excerpt',warning='Feed excerpt, not a full article. Open the linked source to read the story.'))
+            if rows: break
+        except Exception:
+            diagnostics.append(label+' unavailable; trying the next configured source.')
+    seen=set()
+    unique=[]
+    for row in rows:
+        identity=re.sub(r'\W+','',row['headline']).lower()
+        if identity not in seen:
+            seen.add(identity); unique.append(row)
+    return dict(symbol=ticker,rows=unique[:40],source='Independent company news sources',at=int(time.time()*1000),diagnostics=diagnostics)
+
+
+def float_reference(ticker):
+    ticker=symbol(ticker)
+    key=os.environ.get('PAPER_FMP_KEY')
+    if not key:
+        return dict(symbol=ticker,floatShares=None,source='Not configured',date=None,status='unavailable',warning='Free float requires a reference-data entitlement (PAPER_FMP_KEY); outstanding shares are not substituted.')
+    try:
+        data=json.loads(source_fetch('financialmodelingprep.com','/stable/shares-float',dict(symbol=ticker,apikey=key)))
+        row=next(x for x in data if str(x.get('symbol','')).upper()==ticker)
+        value=row.get('floatShares')
+        if isinstance(value,bool) or not isinstance(value,(float,int)) or not 0<value<1e15: raise ValueError('Missing float')
+        date=str(row.get('date') or '')
+        dt.datetime.fromisoformat(date.replace('Z','+00:00'))
+        return dict(symbol=ticker,floatShares=value,date=date,source='Financial Modeling Prep / shares-float',status='returned',retrievedAt=int(time.time()*1000))
+    except Exception:
+        return dict(symbol=ticker,floatShares=None,date=None,source='Financial Modeling Prep',status='unavailable',warning='Free float unavailable; check key, plan and symbol coverage.')
+
+
+async def schedule(engine):
+    c=await engine._stock('SPY')
+    details=await asyncio.wait_for(engine._ib.reqContractDetailsAsync(c),12)
+    sessions=[dict(start=stamp(s.start),end=stamp(s.end)) for s in details[0].liquidSessions()] if details else []
+    return dict(sessions=sessions,source='IB US equity liquid session schedule',at=int(time.time()*1000))
 
 
 def verification(detail, minute, daily, now):
