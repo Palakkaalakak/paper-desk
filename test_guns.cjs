@@ -140,3 +140,5 @@ test('hover flag uses same candle low and S5 cannot use a later candle',()=>{
  assert.ok(C.analyze(f.data,f.q,{},5,{...f.notes,chartSetup:5,hover:h},start+121000).errors.some(e=>e.startsWith('Hover candle')));
  const x=fixture(),o=x.E.arm(x.plan,x.inst,{hover:h}).order;h.candle.h=99;assert.notEqual(o.guns.notes.hover.candle.h,99);
 });
+
+test('late schedule response does not duplicate an initial T-30 scan',()=>{const start=Date.parse('2026-09-10T13:30Z');assert.equal(W.scanDue({attemptedAt:start-1700000},[{start}],start-1600000),null);});

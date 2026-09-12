@@ -1,10 +1,10 @@
 /* GUNS workstation: Gateway data, human-reviewed setups, local paper orders only. */
 (function(root){'use strict';root.GunsUI={create:function(a){
- const C=root.Guns,W=root.GunsWorkflow,cache=new Map(),evidence=new Map(),jobs=new Set(),times={},errors={};let stage='scanner',chartFrame='1',newsFilter='',articleMeta={},selected=null,newsSelected=null,discovery=[],sessions=[],scanProgress='',scanDiagnostics=[],rows=[],results=[],news=[],newsMeta={},articleText='',depth=null,setup=1,lastConfirm=-Infinity,bookId=a.state().bookId;
+ const C=root.Guns,W=root.GunsWorkflow,cache=new Map(),floatRefs=new Map(),evidence=new Map(),jobs=new Set(),times={},errors={};let stage='scanner',chartFrame='1',newsFilter='',articleMeta={},selected=null,newsSelected=null,discovery=[],sessions=[],scanProgress='',scanDiagnostics=[],rows=[],results=[],news=[],newsMeta={},articleText='',depth=null,setup=1,lastConfirm=-Infinity,bookId=a.state().bookId;
  let slots=[],activeSlot=0,grid=false,hover=null;
  const tutorial=root.GunsTutorial.create({bindings:()=>W.bindings(E.cfg())});
- function analyze(d,q,s,n){const f=evidence.get(d?.conid)?.float||rows.find(r=>r.conid===d?.conid)?.screen?.float;const p=C.analyze(d?{...d,float:f}:d,q,E.cfg(),s,n,a.now());p.tick=d?.minTick;return p;}
- const E=root.GunsExecution({...a,validate:o=>analyze(cache.get(o.symbol),a.quotes()[o.conid],o.guns.setup,o.guns.notes)});
+ function analyze(d,q,s,n,inst=selected){const f=floatRefs.get(d?.symbol)||evidence.get(d?.conid)?.float||rows.find(r=>r.conid===d?.conid)?.screen?.float;const p=C.analyze(d?{...d,float:f}:d,q,E.cfg(),s,n,a.now());p.tick=d?.minTick;if(d&&inst&&(Number(d.conid)!==Number(inst.conid)||d.symbol!==inst.symbol)){p.errors.push('Chart contract does not match execution symbol');p.checks.push({label:'Chart contract matches execution symbol',ok:false});}return p;}
+ const E=root.GunsExecution({...a,validate:o=>analyze(cache.get(o.symbol),a.quotes()[o.conid],o.guns.setup,o.guns.notes,o)});
  function screenState(){const b=E.book();return b.scan||(b.scan={});}
  function desk(){const b=E.book();return b.desk||(b.desk={slots:[],active:0,grid:false});}
  function restoreCharts(){const d=desk();slots=Array.from({length:4},(_,i)=>({inst:d.slots?.[i]?.inst||null,frame:['1','5','d'].includes(d.slots?.[i]?.frame)?d.slots[i].frame:'1'}));activeSlot=Math.max(0,Math.min(3,d.active||0));grid=!!d.grid;selected=slots[activeSlot].inst;chartFrame=slots[activeSlot].frame;newsSelected=selected;hover=null;}
@@ -52,12 +52,12 @@
    for(let i=0;i<30&&discovery.some(x=>!a.ready(x.conid));i++)await new Promise(resolve=>setTimeout(resolve,200));
    for(let i=0;i<found.length;i++){if(bookId!==bid)return;const row=found[i];scanProgress='Checking '+(i+1)+' / '+found.length+' · '+row.symbol;live();
     if(!a.ready(row.conid)){scanDiagnostics.push(row.symbol+': fresh quote unavailable');continue;}
-    try{const [ev,f]=await Promise.all([request('guns_verify',{conid:row.conid}),request('guns_float',{symbol:row.symbol}).catch(()=>({floatShares:null,status:'unavailable'}))]);if(bookId!==bid)return;if(Number(ev.conid)!==Number(row.conid))throw Error('Contract mismatch');evidence.set(row.conid,{...ev,float:f});times['verify:'+row.conid]=a.now();}catch(e){scanDiagnostics.push(row.symbol+': '+e.message);}
+    try{const [ev,f]=await Promise.all([request('guns_verify',{conid:row.conid}),request('guns_float',{symbol:row.symbol}).catch(()=>({floatShares:null,status:'unavailable'}))]);if(bookId!==bid)return;if(Number(ev.conid)!==Number(row.conid))throw Error('Contract mismatch');evidence.set(row.conid,{...ev,float:f});floatRefs.set(row.symbol,f);times['verify:'+row.conid]=a.now();}catch(e){scanDiagnostics.push(row.symbol+': '+e.message);}
    }
    if(bookId!==bid)return;const ranked=W.rank(found,a.quotes(),evidence,cid=>a.ready(cid),E.cfg(),a.now());ranked.filter(c=>!c.eligible).forEach(c=>scanDiagnostics.push(c.row.symbol+': '+c.why.join('; ')));
    rows=W.shortlist(found,a.quotes(),evidence,cid=>a.ready(cid),E.cfg(),a.now());st.rows=rows;st.publishedAt=a.now();scanProgress='Complete · '+rows.length+' qualified of '+found.length+' discovered. Order stays fixed.';a.save();
   }finally{if(bookId===bid){discovery=[];a.sync();}}});}
- function bars(sym){if(a.now()-(times['bars:'+sym]||0)>900)job('bars:'+sym,async()=>{cache.set(sym,await request('guns_bars',{symbol:sym}));if(cache.size>8)cache.delete(cache.keys().next().value);});}
+ function bars(sym){if(a.now()-(times['float:'+sym]||0)>21600000)job('float:'+sym,async()=>{floatRefs.set(sym,await request('guns_float',{symbol:sym}));if(floatRefs.size>60)floatRefs.delete(floatRefs.keys().next().value);});if(a.now()-(times['bars:'+sym]||0)>900)job('bars:'+sym,async()=>{cache.set(sym,await request('guns_bars',{symbol:sym}));if(cache.size>8)cache.delete(cache.keys().next().value);});}
  function activateSlot(index){activeSlot=index;selected=slots[index].inst;chartFrame=slots[index].frame;hover=null;depth=null;results=[];delete errors.arm;saveDesk();a.render();a.sync();if(selected)bars(selected.symbol);live();}
  function assignChart(inst){if(!inst)return;slots[activeSlot].inst={...inst,secType:'STK',exch:'SMART',mult:1,brokerId:true};activateSlot(activeSlot);}
  function choose(inst){if(!inst)return;const stock={...inst,secType:'STK',exch:'SMART',mult:1,brokerId:true};if(stage==='trade'){assignChart(stock);return;}
@@ -68,7 +68,7 @@
   if(a.usingTws()){const symbols=new Set(E.pending().map(o=>o.symbol));if(a.tab()==='guns'&&!tutorial.isOpen())slots.filter(s=>s.inst).forEach(s=>symbols.add(s.inst.symbol));symbols.forEach(bars);
    if(a.tab()==='guns'&&!tutorial.isOpen()){if(a.now()-(times.schedule||0)>3600000)job('schedule',async()=>{sessions=(await request('guns_schedule')).sessions||[];});if(W.scanDue(screenState(),sessions,a.now()))scan();if(!jobs.has('scan'))verifyCandidate(rows.find(x=>x&&a.now()-(times['verify:'+x.conid]||0)>65000));if(selected){const sym=selected.symbol,bid=bookId;
     if(newsSelected&&stage==='news'){const ns=newsSelected.symbol;if(a.now()-(times['news:'+ns]||0)>120000)job('news:'+ns,()=>loadNews(ns,bid));}
-    if(a.now()-(times['depth:'+sym]||0)>5000)job('depth:'+sym,async()=>{const j=await request('depth',{symbol:sym});if(selected?.symbol===sym&&bookId===bid)depth=j;});
+    if(stage==='trade'&&a.now()-(times['depth:'+sym]||0)>5000)job('depth:'+sym,async()=>{const j=await request('depth',{symbol:sym});if(selected?.symbol===sym&&bookId===bid)depth=j;});
    }}
   }E.pulse();live();
  }

@@ -25,6 +25,6 @@
  function rank(rows,quotes,evidence,ready,cfg,now){return rows.map(r=>candidate(r,quotes[r.conid],evidence.get(r.conid),ready(r.conid),cfg,now)).sort((a,b)=>Number(b.eligible)-Number(a.eligible)||(b.score??-1)-(a.score??-1)||(a.row.rank??999)-(b.row.rank??999));}
  function shortlist(rows,quotes,evidence,ready,cfg,now){return rank(rows,quotes,evidence,ready,cfg,now).filter(c=>c.eligible).slice(0,4).map(c=>({...c.row,screen:{at:now,gap:c.gap,volume:c.volume,score:c.score,float:c.float}}));}
  // Exactly one attempt in the known session's T-30/open window. Never guess holidays/DST.
- function scanDue(state,sessions,now){if(!state?.attemptedAt)return 'initial';const s=(sessions||[]).find(s=>now>=s.start-1800000&&now<s.start);return s&&state.scheduledOpen!==s.start?'scheduled':null;}
+ function scanDue(state,sessions,now){if(!state?.attemptedAt)return 'initial';const s=(sessions||[]).find(s=>now>=s.start-1800000&&now<s.start);return s&&state.scheduledOpen!==s.start&&!(state.attemptedAt>=s.start-1800000&&state.attemptedAt<=now)?'scheduled':null;}
  return {defaults,chord,bindings,setBinding,candidate,rank,shortlist,scanDue,floatKnown};
 });
