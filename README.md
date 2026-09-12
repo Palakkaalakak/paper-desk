@@ -33,9 +33,9 @@ Historical acquisition is serialized on the existing owner loop and capped at si
 
 ### Preservation and verification
 
-Application changes are pushed through `ec54162`. The final browser fixture removes a navigation race by carrying test request timestamps in a test-only header; this does not modify production fetches. Source, tests and the unchanged Adam course are preserved; no credentials, account files or dependencies are committed. If GitHub authorization fails, use the complete Git bundle supplied in chat.
+Application changes, the final browser fixture and usage documentation are pushed through `c5d68c7`; the following verification update is committed separately. The final browser fixture removes a navigation race by carrying test request timestamps in a test-only header; this does not modify production fetches. Source, tests and the unchanged Adam course are preserved; no credentials, account files or dependencies are committed. If GitHub authorization fails, use the complete Git bundle supplied in chat.
 
-Verification: 36 JavaScript tests and 37 Python tests passed. Expanded GUNS and 500-position browser suites passed before the final identity/scheduling hardening; final browser rerun status will be recorded below when complete.
+Final verification: 36 JavaScript tests and 37 Python tests passed. The final expanded GUNS browser run reported successful scanner, news recovery, S1–S5 placement, four-slot chart selection, hover capture, quick settings, focus guards, tutorial isolation, dynamic risk, paper lifecycle and mobile checks with no browser errors. The final 500-position browser run also reported no browser errors: positions-tab median 5.75 ms, quote update 8.1 ms, paper acknowledgement 17.1 ms. These are isolated fixture measurements, not live broker latency or Gateway acceptance.
 
 ---
 
