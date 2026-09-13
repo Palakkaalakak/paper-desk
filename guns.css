@@ -21,6 +21,11 @@
 @media(max-width:760px){#guns-workspace{padding:0}.guns-stage-nav{gap:4px}#guns-workspace .guns-stage-nav button{padding:9px;font-size:11px}.guns-discovery,.guns-execution-grid,.guns-news-layout{grid-template-columns:1fr}.guns-discovery #guns-scanner{grid-template-columns:1fr 1fr}.guns-headline-list{max-height:45vh}.guns-reader{padding:16px}.guns-execution-grid .guns-planner{grid-column:auto}.guns-header>div:last-child{display:flex;gap:5px;flex-wrap:wrap}}
 @media(max-width:430px){.guns-discovery #guns-scanner{grid-template-columns:1fr}}
 
+/* Live strategy context: visible summary plus keyboard/touch-accessible details. */
+#guns-workspace .guns-strategy-context{padding:12px;border:1px solid #426883;border-left:3px solid #80c9ff;border-radius:5px;background:#102636;margin:12px 0;overflow-wrap:anywhere}
+#guns-strategy-summary{font-variant-numeric:tabular-nums;cursor:help;margin:8px 0}
+#guns-strategy-summary:focus-visible{outline:2px solid #80c9ff;outline-offset:3px}
+#guns-strategy-details{font-size:11px;color:#b8cce0}
 /* Independent chart slots and fast settings. */
 .guns-chart-panels{display:grid;grid-template-columns:minmax(0,1fr);gap:12px;min-width:0}
 .guns-chart-panels.guns-four-charts{grid-template-columns:repeat(2,minmax(0,1fr))}
