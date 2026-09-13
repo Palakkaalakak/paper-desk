@@ -111,6 +111,28 @@ def main():
         assert page.locator('[data-guns="arm"]').is_enabled(),page.locator('#guns-error').inner_text()
         assert page.locator('[data-guns-confirm]').count()==5
         assert page.locator('#guns-auto').count()==0
+        # Selected-strategy context updates from real quote fields, without placing orders.
+        page.locator('#guns-setup').select_option('1')
+        page.evaluate('tick(10.28,10.3,10.29);__gunsTest.desk.live()')
+        assert '$0.21 (2.00%) below premarket high $10.50' in page.locator('#guns-strategy-summary').inner_text()
+        assert 'premarket high' in page.locator('#guns-setup').get_attribute('title')
+        page.locator('#guns-strategy-guide summary').click()
+        assert page.locator('#guns-strategy-details').is_visible()
+        for strategy,label in [('2','lower pivot'),('3','premarket flag'),('4','opening flag'),('5','09:30 candle')]:
+            page.locator('#guns-setup').select_option(strategy)
+            assert 'S'+strategy in page.locator('#guns-strategy-title').inner_text()
+            assert label in page.locator('#guns-strategy-summary').inner_text()
+        assert 'later candles never substitute' in page.locator('#guns-strategy-details').inner_text()
+        page.locator('#guns-setup').select_option('1')
+        page.evaluate('tick(10.68,10.7,10.69);__gunsTest.desk.live()')
+        assert 'above premarket high' in page.locator('#guns-strategy-summary').inner_text()
+        page.evaluate("__gunsTest.feed({connected:false,feedHealthy:false,quotes:{}});__gunsTest.desk.live()")
+        assert 'distance unavailable' in page.locator('#guns-strategy-summary').inner_text()
+        page.evaluate('tick();__gunsTest.desk.live()')
+        assert 'below premarket high' in page.locator('#guns-strategy-summary').inner_text()
+        assert page.evaluate('__gunsTest.desk.execution.pending().length')==0
+        page.locator('#guns-strategy-guide summary').click()
+        page.locator('[data-guns-frame="1"]').click()
         # Four independent slots; research selection never silently changes execution.
         page.locator('[data-guns="layout"]').click()
         assert page.locator('canvas[data-chart-slot]').count()==4

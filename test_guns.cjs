@@ -19,6 +19,44 @@ test('flatten waits for executable live quotes and never shorts',()=>{const f=fi
 test('New York trading dates honor DST and indicators never fabricate warmup',()=>{assert.equal(C.day(Date.parse('2026-03-09T03:30Z')),'2026-03-08');assert.equal(C.day(Date.parse('2026-11-02T04:30Z')),'2026-11-01');const rows=Array.from({length:20},(_,i)=>({c:i+1,h:i+2,l:i}));assert.equal(C.average(rows,50,false).at(-1),null);assert.equal(C.atr(rows,30),null);assert.equal(C.average(rows,20,false).at(-1),10.5);});
 test('missing bars and session cannot produce executable setup',()=>{assert.ok(C.analyze(null,null,{},1,{},Date.now()).errors.length);const p=C.analyze({minute:[],daily:[],sessions:[],minTick:.01},null,{},5,{},Date.now());assert.ok(p.errors.includes('Current exchange session known'));assert.ok(p.errors.includes('Valid trigger, stop and target'));});
 
+test('strategy context reports PM-high distance below, at and above with level-based percentages',()=>{
+ const p={setup:1,contextCurrent:true,pmHigh:10,trigger:10,entry:10.01};
+ for(const [last,expected] of [[9.8,'$0.20 (2.00%) below'],[10,'at premarket high'],[10.2,'$0.20 (2.00%) above']]){
+  const h=C.strategyHint(p,{last},true,Date.now());assert.ok(h.summary.includes(expected),h.summary);
+ }
+ const before=JSON.stringify(p);C.strategyHint(p,{last:9.8},true,Date.now());assert.equal(JSON.stringify(p),before);
+});
+test('strategy context never presents stale charts, absent trades or midpoint prices as live proximity',()=>{
+ const p={setup:1,contextCurrent:true,pmHigh:10};
+ assert.match(C.strategyHint({...p,contextCurrent:false},{last:9.8},true,0).summary,/stale or mismatched/);
+ for(const q of [{last:9.8,tradeLast:null},{last:NaN},{last:Infinity},{last:0}])assert.match(C.strategyHint(p,q,true,0).summary,/distance unavailable/);
+ assert.match(C.strategyHint(p,{last:9.8},false,0).summary,/live trade quote required/);
+ assert.match(C.strategyHint({...p,pmHigh:null},{last:9.8},true,0).summary,/reference/);
+});
+test('S2-S4 context follows the strategy reference and reports room and flag estimates',()=>{
+ const base={contextCurrent:true,pmHigh:10,trigger:9.6,entry:9.61,risk:.2,pattern:{retracement:.4,first:true}};
+ for(const [setup,label] of [[2,'lower pivot'],[3,'final premarket flag high'],[4,'opening flag high']]){
+  const h=C.strategyHint({...base,setup},{last:9.5},true,0);assert.match(h.summary,new RegExp(label));
+  if(setup<=3)assert.ok(h.details.some(x=>x.includes('1.95R')));
+  if(setup>=3)assert.ok(h.details.some(x=>x.includes('40.0%')));
+ }
+ assert.match(C.strategyHint({...base,setup:2,trigger:null},{last:9.5},true,0).summary,/unavailable/);
+});
+test('S1 hover context retains actual PM high and labels the independent entry override',()=>{
+ const h=C.strategyHint({setup:1,contextCurrent:true,pmHigh:10,trigger:9.7,levelSource:'hover',entry:9.71,limit:9.74},{last:9.6,ask:9.8},true,0);
+ assert.match(h.summary,/premarket high \$10.00/);assert.ok(h.details.some(x=>x.includes('hover override')&&x.includes('$9.70')));assert.ok(h.details.some(x=>x.includes('no chase')));
+});
+test('S5 context reports first-candle range and exact window without substituting later bars',()=>{
+ const start=100000,p={setup:5,contextCurrent:true,session:{start},trigger:10,firstCandle:{t:start,o:9.8,h:10,l:9.7,c:9.9},preAtr:.2};
+ let h=C.strategyHint(p,{last:9.9},true,start+61000);assert.ok(h.details.some(x=>x.includes('1.50×')));assert.ok(h.details.some(x=>x.includes('59s')));
+ h=C.strategyHint(p,{last:9.9},true,start+120000);assert.ok(h.details.some(x=>x.includes('window closed')));
+ h=C.strategyHint({...p,firstCandle:null,trigger:null},{last:9.9},true,start+10000);assert.ok(h.details.some(x=>x.includes('later candles never substitute')));assert.ok(h.details.some(x=>x.includes('50s')));
+});
+test('analyzed tooltip context becomes unavailable when chart timestamps are stale',()=>{
+ const f=chartFixture(),p=C.analyze(f.data,f.q,{},1,f.notes,f.now);assert.equal(p.contextCurrent,true);assert.equal(p.trigger,p.pmHigh);
+ const stale=C.analyze({...f.data,updatedAt:f.now-16000},f.q,{},1,f.notes,f.now);assert.equal(stale.contextCurrent,false);
+});
+
 const W=require('./guns-workflow.js'),T=require('./guns-tutorial.js');
 function referenceFloat(now){return {floatShares:15000000,date:new Date(now-86400000).toISOString(),source:"Fixture IBKR"};}
 function chartFixture(){const now=Date.parse('2026-09-10T13:30:10Z'),start=now-10000;return {now,data:{float:referenceFloat(now),minTick:.01,stockType:'COMMON',updatedAt:now,sessions:[{start,end:start+23400000}],daily:[{t:'2026-09-09',c:9}],minute:Array.from({length:1500},(_,i)=>{const c=8.99+i*.001;return {t:start-(1500-i)*60000,o:c-.001,h:c+.011,l:c-.01,c,v:1000};})},q:{last:10.2,bid:10.2,ask:10.21},notes:{room:true,catalyst:true}};}
