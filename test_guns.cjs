@@ -50,7 +50,7 @@ test('S5 context reports first-candle range and exact window without substitutin
  const start=100000,p={setup:5,contextCurrent:true,session:{start},trigger:10,firstCandle:{t:start,o:9.8,h:10,l:9.7,c:9.9},preAtr:.2};
  let h=C.strategyHint(p,{last:9.9},true,start+61000);assert.ok(h.details.some(x=>x.includes('1.50×')));assert.ok(h.details.some(x=>x.includes('59s')));
  h=C.strategyHint(p,{last:9.9},true,start+120000);assert.ok(h.details.some(x=>x.includes('window closed')));
- h=C.strategyHint({...p,firstCandle:null,trigger:null},{last:9.9},true,start+10000);assert.ok(h.details.some(x=>x.includes('later candles never substitute')));assert.ok(h.details.some(x=>x.includes('50s')));
+ h=C.strategyHint({...p,firstCandle:null,trigger:11},{last:9.9},true,start+10000);assert.match(h.summary,/unavailable/);assert.ok(h.details.some(x=>x.includes('later candles never substitute')));assert.ok(h.details.some(x=>x.includes('50s')));
 });
 test('analyzed tooltip context becomes unavailable when chart timestamps are stale',()=>{
  const f=chartFixture(),p=C.analyze(f.data,f.q,{},1,f.notes,f.now);assert.equal(p.contextCurrent,true);assert.equal(p.trigger,p.pmHigh);

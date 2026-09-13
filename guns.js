@@ -99,7 +99,7 @@ function strategyHint(p,q,quoteReady,now){
  let summary='Live context unavailable — chart/session data is missing, stale or mismatched.';
  if(p.contextCurrent){
   const labels={1:'premarket high',2:'lower pivot',3:'final premarket flag high',4:'opening flag high',5:'first 09:30 candle high'};
-  const level=setup===1?p.pmHigh:p.trigger,label=p.levelSource==='hover'?'hover candle high':p.levelSource==='user'?'manual trigger':labels[setup];
+  const level=setup===1?p.pmHigh:setup===5?p.firstCandle?.h:p.trigger,label=p.levelSource==='hover'?'hover candle high':p.levelSource==='user'?'manual trigger':labels[setup];
   summary=distance(level,setup===1?'premarket high':label);
   if(setup===1&&live&&finite(p.pmHigh)&&p.pmHigh>0)details.push(price<=p.pmHigh&&price>=p.pmHigh*.95?'Within the 5% preparation zone below PM high; this does not confirm a breakout.':price>p.pmHigh?'Above PM high; inspect the entry limit before acting.':'More than 5% below PM high.');
   if(p.levelSource==='hover'||p.levelSource==='user')details.push('Entry reference: '+p.levelSource+' override. '+distance(p.trigger,label)+ ' Actual PM high remains '+(finite(p.pmHigh)?usd(p.pmHigh):'unavailable')+'.');
