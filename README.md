@@ -25,6 +25,8 @@ Existing authenticated endpoints remain: `/data/guns_scan`, `/data/guns_verify?c
 
 ### Verification and preservation
 
+Tooltip update verified on 2026-09-13: **47 JavaScript tests and 40 Python tests passed**; both browser suites passed with no browser errors. Added coverage checks below/at/above PM-high distances, missing/stale trade data, S2–S4 references, hover overrides, S5 first-candle/window context, strategy switching, expandable-guide persistence and disconnect/reconnect updates without creating orders. These are offline fixture results, not live Gateway acceptance.
+
 Final post-hardening verification completed on 2026-09-12: **41 JavaScript tests and 40 Python tests passed**. Both `browser_guns_check.py` and `browser_check.py` completed successfully with no browser errors. The 500-position fixture measured a 7.25 ms median positions-tab render, 14.8 ms live row update and 18.1 ms paper-order acknowledgement. These are isolated fixture timings, not live broker latency. Syntax checks also passed for guns-ui.js, guns-workflow.js, guns_data.py, market.py and serve.py.
 
 The expanded offline browser suite covers all four presets, panel search/selection, linked execution symbols, focused-slot switching, synchronized presets, H/Q, S1–S5, hover capture, independent news, no unrelated-story substitution, mobile layout and paper lifecycle. Unit tests cover float provenance/units/dates, PDF decoding, copyright placement, recovery scheduling, stable slots and news identity. These are fixtures, not live IBKR acceptance or an entitlement guarantee. Next operational acceptance is a read-only comparison on the user's Gateway for actual report coverage, news bodies, OHLC/volume and indicators.
