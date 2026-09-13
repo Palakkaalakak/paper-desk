@@ -81,10 +81,39 @@ function analyze(data,q,cfg,setup,notes,now){cfg=Object.assign({},defaults,cfg);
  check('Valid trigger, stop and target',entry>0&&stop>0&&risk>0&&target>entry);
  if(setup!==1)check('At least 1R before premarket resistance',entry&&pmHigh&&(setup===2?pmHigh-entry>=risk:entry>pmHigh||pmHigh-entry>=risk));
  check('No chase above entry limit',limit&&q?.ask<=limit);
- return {setup,checks,errors,advisories,levelSource:levels.levelSource,entry,limit,stop,target,risk,atr:a,pmHigh,gap,volume,session:sess,
+ return {setup,checks,errors,advisories,levelSource:levels.levelSource,trigger,pattern:f,firstCandle:regular.find(b=>b.t===sess?.start),preAtr,
+ contextCurrent:checks.filter(c=>['Valid ordered broker OHLC bars','Latest completed minute available','Chart stream current','Current exchange session known'].includes(c.label)).every(c=>c.ok),
+ entry,limit,stop,target,risk,atr:a,pmHigh,gap,volume,session:sess,
  expiresAt:sess?Math.min(sess.end,sess.start+(setup<=3?300000:setup===5?120000:3600000)):null};
+}
+// Informational context only: uses the same analyzed levels as execution, never changes orders.
+function strategyHint(p,q,quoteReady,now){
+ const setup=Number(p.setup),rule=rules.find(r=>r.id===setup),title='S'+setup+' · '+(names[setup]||'Select a strategy');
+ const price=q&&Object.hasOwn(q,'tradeLast')?q.tradeLast:q?.last;
+ const live=quoteReady&&finite(price)&&price>0,usd=v=>'$'+v.toFixed(2);
+ const details=[rule?.formation||'Select S1–S5 for context.'];
+ const distance=(level,label)=>{if(!finite(level)||level<=0)return label+' unavailable — waiting for a valid reference.';
+  if(!live)return label+' '+usd(level)+' · distance unavailable (live trade quote required).';
+  const delta=price-level,relation=Math.abs(delta)<1e-8?'at':delta<0?'below':'above';
+  return 'Last '+usd(price)+' is '+(relation==='at'?'at':usd(Math.abs(delta))+' ('+(Math.abs(delta)/level*100).toFixed(2)+'%) '+relation)+' '+label+' '+usd(level)+'.';};
+ let summary='Live context unavailable — chart/session data is missing, stale or mismatched.';
+ if(p.contextCurrent){
+  const labels={1:'premarket high',2:'lower pivot',3:'final premarket flag high',4:'opening flag high',5:'first 09:30 candle high'};
+  const level=setup===1?p.pmHigh:p.trigger,label=p.levelSource==='hover'?'hover candle high':p.levelSource==='user'?'manual trigger':labels[setup];
+  summary=distance(level,setup===1?'premarket high':label);
+  if(setup===1&&live&&finite(p.pmHigh)&&p.pmHigh>0)details.push(price<=p.pmHigh&&price>=p.pmHigh*.95?'Within the 5% preparation zone below PM high; this does not confirm a breakout.':price>p.pmHigh?'Above PM high; inspect the entry limit before acting.':'More than 5% below PM high.');
+  if(p.levelSource==='hover'||p.levelSource==='user')details.push('Entry reference: '+p.levelSource+' override. '+distance(p.trigger,label)+ ' Actual PM high remains '+(finite(p.pmHigh)?usd(p.pmHigh):'unavailable')+'.');
+  if(setup===2||setup===3){const room=p.pmHigh-p.entry;details.push(finite(p.pmHigh)&&finite(p.entry)&&finite(p.risk)&&p.risk>0?(room>=0?'Room from entry to PM high: '+usd(room)+' / '+(room/p.risk).toFixed(2)+'R (1R minimum).':'Entry is above PM high; it is not overhead resistance at this entry.'):'Room to PM high unavailable — valid entry, risk and PM high required.');}
+  if(setup===3||setup===4)details.push(p.pattern&&finite(p.pattern.retracement)?'Automatic flag estimate: '+(p.pattern.retracement*100).toFixed(1)+'% retracement; '+(p.pattern.first?'first detected flag.':'not the first detected flag.')+' Heuristic only; an override may use a different candle.':'No automatic completed flag detected; any explicit override still needs review.');
+  if(setup===5){const first=p.firstCandle;details.push(validBar(first)?'First minute closed '+(first.c>first.o?'bullish':'not bullish')+'; range '+usd(first.h-first.l)+(finite(p.preAtr)&&p.preAtr>0?' / '+((first.h-first.l)/p.preAtr).toFixed(2)+'× premarket ATR (maximum 2×).':'; premarket ATR unavailable.'):'Waiting for the completed 09:30–09:31 ET candle; later candles never substitute.');
+   if(finite(p.session?.start)&&finite(now)){const opens=p.session.start+60000,ends=p.session.start+120000;details.push(now<opens?'First-candle close in '+Math.ceil((opens-now)/1000)+'s.':now<ends?'S5 entry window closes in '+Math.ceil((ends-now)/1000)+'s.':'S5 entry window closed at 09:32 ET.');}}
+  details.push(distance(p.entry,'planned entry'));
+  if(live&&finite(q?.ask)&&q.ask>0&&finite(p.limit))details.push(q.ask>p.limit?'Ask is '+usd(q.ask-p.limit)+' above limit cap '+usd(p.limit)+' — no chase.':'Ask-to-limit headroom: '+usd(p.limit-q.ask)+' (cap '+usd(p.limit)+').');
+ }
+ details.push(rule?.entry||'',rule?.stop||'','Informational only. All existing reviews, live-data guards and paper-only controls still apply.');
+ return {title,summary,details:details.filter(Boolean)};
 }
 function size(equity,pct,entry,stop,bp,fees){const budget=equity*pct/100,d=entry-stop;const zero={equity,budget:finite(budget)?budget:0,qty:0,risk:0,fees:0,unused:finite(budget)?budget:0};if(![equity,pct,entry,stop,bp].every(finite)||equity<=0||pct<=0||pct>100||entry<=0||stop<=0||d<=0||bp<=0)return zero;fees=fees||(()=>0);let lo=0,hi=Math.floor(Math.min(budget/d,bp/entry));while(lo<hi){const n=Math.ceil((lo+hi)/2),f=fees(n);if(finite(f)&&f>=0&&n*d+f<=budget+1e-8&&n*entry+f<=bp+1e-8)lo=n;else hi=n-1;}const f=lo?fees(lo):0;return {equity,budget,qty:lo,risk:lo*d+f,fees:f,unused:budget-lo*d-f};}
 function exit(b,q,now){if(b.forceExit||b.stopTriggered||q.bid<=b.stop)return {reason:b.forceExit?'MANUAL FLATTEN':'STOP',stop:b.stop};if(now>=b.sessionEnd-60000)return {reason:'SESSION CLOSE',stop:b.stop};if(q.bid>=b.target)return {reason:'TARGET',stop:b.stop};return {reason:null,stop:b.breakeven&&q.bid>=b.entry+b.initialR?Math.max(b.stop,b.entry):b.stop};}
-return {VERSION,defaults,names,rules,validBar,day,round,average,studies,atr,aggregate,flag,placement,analyze,size,exit};
+return {VERSION,defaults,names,rules,validBar,day,round,average,studies,atr,aggregate,flag,placement,analyze,strategyHint,size,exit};
 });
