@@ -304,7 +304,7 @@ class MarketEngine:
             return self._contracts[key]
         legacy = 900000000 <= cid < 990000000 and not row.get('brokerId')
         if not legacy:
-            c = m.Contract(conId=cid,exchange=row.get('exch') or 'SMART',currency='USD')
+            c = m.Contract(conId=cid,secType=kind,exchange=row.get('exch') or 'SMART',currency='USD')
         elif kind == 'STK':
             c = m.Stock(sym,'SMART','USD')
         elif kind == 'OPT' and row.get('expiry') and row.get('right') in ('C','P') and row.get('strike') is not None:
@@ -327,9 +327,12 @@ class MarketEngine:
         return c
 
     async def _subscribe_one(self,cid,row):
+        ib,generation=self._ib,self.info.get('generation',0)
         try:
             c = await self._contract(row)
-            ticker = self._ib.reqMktData(c,'',False,False)
+            if self._ib is not ib or self.info.get('generation',0)!=generation:
+                return
+            ticker = ib.reqMktData(c,'',False,False)
             self._active[cid] = dict(contract=c,ticker=ticker)
             self._ticker_ids.setdefault(id(ticker),set()).add(cid)
             if any(number(getattr(ticker,k,None),True) is not None for k in ('bid','ask','last')):
@@ -390,20 +393,62 @@ class MarketEngine:
             self._contracts[key] = c
         return self._contracts[key]
 
+    @staticmethod
+    def _screen_quote_complete(q,now):
+        return (q.get('status')=='LIVE' and not q.get('halted') and not q.get('error') and
+                all(number(q.get(k),True) is not None and q[k]>0 for k in ('bid','ask','last')) and
+                q['ask']>=q['bid'] and isinstance(q.get('at'),(int,float)) and 0<=now-q['at']<15000)
+
+    async def _snapshot_quote(self,c):
+        # ib_async 2.1 keys tickers by conId. A temporary streaming request can
+        # overwrite ticker2ReqId['mktData']; cancelMktData(contract) then cancels
+        # the browser stream. Snapshot ownership and cancellation must use IDs.
+        ib,generation=self._ib,self.info.get('generation',0)
+        req_id=ib.client.getReqId()
+        future=ib.wrapper.startReq(req_id,c)
+        ticker=ib.wrapper.startTicker(req_id,c,'snapshot')
+        try:
+            ib.client.reqMktData(req_id,c,'',True,False,[])
+            await asyncio.wait_for(future,12)
+            if self._ib is not ib or self.info.get('generation',0)!=generation:
+                raise ConnectionError('Gateway changed during quote snapshot')
+            return self._quote(ticker)
+        finally:
+            if self._ib is ib and self.info.get('generation',0)==generation:
+                try: ib.client.cancelMktData(req_id)
+                except Exception: pass
+            if ib.wrapper.ticker2ReqId['snapshot'].get(ticker)==req_id:
+                ib.wrapper.endTicker(ticker,'snapshot')
+            ib.wrapper.reqId2Ticker.pop(req_id,None)
+            ib.wrapper._endReq(req_id)
+
     async def _quote_symbol(self,symbol):
         c = await self._stock(symbol)
-        # Diagnostic-only transient read; the UI uses persistent subscriptions.
-        existing = next((v['ticker'] for v in self._active.values() if v['contract'].conId == c.conId),None)
-        t = existing or self._ib.reqMktData(c,'',False,False)
-        try:
-            for _ in range(40):
-                if number(t.bid,True) is not None and number(t.ask,True) is not None:
-                    break
-                await asyncio.sleep(0.05)
-            return self._quote(t)
-        finally:
-            if existing is None:
-                self._ib.cancelMktData(c)
+        existing=next((v['ticker'] for v in self._active.values() if v['contract'].conId==c.conId),None)
+        if existing is not None:
+            q=self._quote(existing)
+            if self._screen_quote_complete(q,int(time.time()*1000)):
+                return q
+        return await self._snapshot_quote(c)
+
+    async def _guns_ib_quote(self,conid):
+        if not str(conid).isdigit() or not 0<int(conid)<2**53:
+            raise ValueError('Invalid quote contract ID')
+        from ib_async import Contract
+        cid=int(conid)
+        active=self._active.get(cid)
+        if active:
+            q=self._quote(active['ticker'])
+            if self._screen_quote_complete(q,int(time.time()*1000)):
+                return q
+        c=active['contract'] if active else Contract(conId=cid,secType='STK',exchange='SMART',currency='USD')
+        q=await self._snapshot_quote(c)
+        if not self._screen_quote_complete(q,int(time.time()*1000)):
+            raise ValueError('IBKR snapshot did not return current two-sided market and trade')
+        if q.get('brokerConid')!=cid:
+            raise ValueError('IBKR snapshot contract mismatch')
+        q['screeningOnly']=True
+        return q
 
     async def _chain(self,symbol,expiry=None):
         import ib_async as m

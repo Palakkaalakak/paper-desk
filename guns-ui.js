@@ -54,14 +54,20 @@
  function scan(){if(!a.usingTws()){errors.scan='Select IB Gateway data source';live();return;}if(jobs.has('scan'))return;
   const bid=bookId,st=screenState(),current=()=>a.state().bookId===bid;st.attemptedAt=a.now();st.retryAt=0;a.save();
   job('scan',async()=>{scanProgress='Checking scanner data sources…';scanDiagnostics=[];let sources={};const fallbackQuotes=new Map();
-   const readyForScan=(row,q)=>q===fallbackQuotes.get(row.conid)?q.symbol===row.symbol&&q.feed==='sip'&&q.status==='LIVE'&&a.now()-q.at>=0&&a.now()-q.at<15000:a.ready(row.conid);
+   const readyForScan=(row,q)=>!!q&&q===fallbackQuotes.get(row.conid)?(q.source==='IB Gateway'?Number(q.brokerConid)===Number(row.conid):q.symbol===row.symbol&&q.feed==='sip')&&q.status==='LIVE'&&a.now()-q.at>=0&&a.now()-q.at<15000:a.ready(row.conid);
    const check=(row,q,ev,cfg)=>W.candidate(row,q,ev,readyForScan(row,q),cfg,a.now());
    const pause=ms=>new Promise(resolve=>setTimeout(resolve,ms));
    const recover=async(kind,params)=>{let error;for(let attempt=0;attempt<3&&current();attempt++){try{return await request(kind,params);}catch(e){error=e;if(attempt<2)await pause(1000*(attempt+1));}}throw error||Error('Portfolio changed');};
    // History/fundamentals may take longer than quote freshness. Acquire again at
    // each decision, rather than turning an early/one-sided tick into a rejection.
-   const acquireQuote=async row=>{let why=[];for(let wait=0;wait<(sources.quoteFallbackConfigured?10:60)&&current();wait++){const q=a.quotes()[row.conid];why=W.quoteIssues(row,q,a.ready(row.conid));if(!why.length)return q;scanProgress=row.symbol+' · acquiring LIVE bid, ask and last trade…';live();await pause(200);}
-    if(current()&&sources.quoteFallbackConfigured){scanProgress=row.symbol+' · retrieving consolidated Alpaca SIP quote…';live();let q=fallbackQuotes.get(row.conid);if(!q||!readyForScan(row,q))q=await request('guns_quote',{symbol:row.symbol});if(!current())throw Error('Portfolio changed');fallbackQuotes.set(row.conid,q);why=W.quoteIssues(row,q,readyForScan(row,q));if(!why.length)return q;}
+   const acquireQuote=async row=>{let why=[];for(let wait=0;wait<10&&current();wait++){const q=a.quotes()[row.conid];why=W.quoteIssues(row,q,a.ready(row.conid));if(!why.length)return q;await pause(200);}
+    if(!current())throw Error('Portfolio changed');
+    const cached=fallbackQuotes.get(row.conid);if(cached&&readyForScan(row,cached)&&!W.quoteIssues(row,cached,true).length)return cached;
+    // IBKR remains primary: recover directly from the owner loop or an isolated
+    // IB snapshot before trying any external source. Never inject into fills.
+    scanProgress=row.symbol+' · retrieving IBKR bid/ask snapshot…';live();
+    try{const q=await request('guns_ib_quote',{conid:row.conid});if(!current())throw Error('Portfolio changed');fallbackQuotes.set(row.conid,q);why=W.quoteIssues(row,q,readyForScan(row,q));if(!why.length)return q;}catch(e){why=[e.message];}
+    if(current()&&sources.quoteFallbackConfigured){scanProgress=row.symbol+' · retrieving consolidated Alpaca SIP quote…';live();const q=await request('guns_quote',{symbol:row.symbol});if(!current())throw Error('Portfolio changed');fallbackQuotes.set(row.conid,q);why=W.quoteIssues(row,q,readyForScan(row,q));if(!why.length)return q;}
     throw Error(row.symbol+': '+(why.join('; ')||'Portfolio changed'));};
    try{
     sources=await recover('guns_data_status',{});if(!current())return;

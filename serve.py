@@ -296,6 +296,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 identity=hashlib.sha256(os.environ.get('PAPER_FMP_KEY','').encode()).digest()
                 # Cache successful sourced counts only; never wait for IB connectivity.
                 out=providers._cached((kind,ticker,identity),21600,lambda: guns_data.required_float(ticker))
+            elif kind == 'guns_ib_quote':
+                out=market.ENGINE.call(kind,one('conid',''),timeout=20)
             elif kind == 'guns_quote':
                 import guns_data
                 ticker=guns_data.symbol(one('symbol',''))
