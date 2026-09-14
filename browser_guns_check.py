@@ -69,7 +69,22 @@ def main():
         page.add_init_script('localStorage.setItem("paperAccount",'+json.dumps(json.dumps(state))+');')
         page.goto('http://paper.test/',wait_until='domcontentloaded')
         page.wait_for_function('window.__gunsTest && __gunsTest.desk')
-        page.evaluate('''() => {window.tick=(bid=10.48,ask=10.5,last=10.49,size=100)=>__gunsTest.feed({connected:true,feedHealthy:true,generation:0,quotes:{12345:{bid,ask,last,bidSize:size,askSize:size,status:'LIVE',at:Date.now(),receivedAt:Date.now()}}});tick();}''')
+        page.evaluate('''() => {
+          window.tick=(bid=10.48,ask=10.5,last=10.49,size=100)=>__gunsTest.feed({connected:true,feedHealthy:true,generation:0,quotes:{12345:{bid,ask,last,bidSize:size,askSize:size,status:'LIVE',at:Date.now(),receivedAt:Date.now()}}});
+          tick(0,10.5); // A zero bid must wait for real quotes, not become spread failure.
+          const fetchBeforeScan=window.fetch;
+          window.quoteRecoveryChecks=0;
+          window.fetch=async (...args)=>{
+            const response=await fetchBeforeScan(...args);
+            if(String(args[0]).includes('/data/guns_verify')&&quoteRecoveryChecks===0){
+              quoteRecoveryChecks++;setTimeout(()=>tick(),500);
+            }else if(String(args[0]).includes('/data/guns_float')&&quoteRecoveryChecks===1){
+              // Reproduce bid/ask disappearing while fundamentals were loading.
+              quoteRecoveryChecks++;tick(10.48,null);setTimeout(()=>tick(),500);
+            }
+            return response;
+          };
+        }''')
         page.locator('[data-tab="guns"]').click()
         page.locator('[data-guns="scan"]').click()
         page.locator('[data-guns-pick="12345"]').click()
@@ -77,6 +92,12 @@ def main():
         page.evaluate('__gunsTest.desk.pulse()')
         page.locator('.guns-stage-nav [data-guns-stage="scanner"]').click()
         page.wait_for_function("document.querySelector('#guns-scanner').textContent.includes('IBKR screened')")
+        assert page.evaluate('quoteRecoveryChecks')==2
+        card=page.locator('.guns-candidate').inner_text()
+        assert 'Bid $10.4800' in card and 'Ask $10.5000' in card and 'Spread $0.0200' in card,card
+        assert 'unknown' not in card.lower() and '—' not in card
+        assert 'Awaiting' not in page.locator('#guns-scan-diagnostics').inner_text()
+        assert requests.count('/data/guns_scan')==1, 'Quote recovery must not rediscover/re-rank'
         page.locator('.guns-stage-nav [data-guns-stage="news"]').click()
         page.locator('[data-guns-article="TEST:story1"]').click()
         page.wait_for_function("document.querySelector('#guns-article').textContent.includes('Fixture earnings article')")

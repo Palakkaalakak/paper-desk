@@ -36,7 +36,7 @@
   return {row,gap,spread,bid:q?.bid,ask:q?.ask,quoteAt:q?.at,price:q?.last,previousClose:e.previousClose,sessionDate:e.sessionDate,stockType:e.stockType,volume:e.premarketVolume,float:known?f:null,why,pending,score,eligible:why.length===0};
  }
  function rank(rows,quotes,evidence,ready,cfg,now){return rows.map(r=>candidate(r,quotes[r.conid],evidence.get(r.conid),ready(r.conid),cfg,now)).sort((a,b)=>Number(b.eligible)-Number(a.eligible)||(b.volume??-1)-(a.volume??-1)||(a.row.rank??999)-(b.row.rank??999));}
- function shortlist(rows,quotes,evidence,ready,cfg,now){return rank(rows,quotes,evidence,ready,cfg,now).filter(c=>c.eligible).slice(0,4).map(c=>screenSnapshot(c,now));}
+ function shortlist(rows,quotes,evidence,ready,cfg,now){return rank(rows,quotes,evidence,ready,cfg,now).filter(c=>c.eligible).map(c=>screenSnapshot(c,now)).filter(r=>completeScreen(r,cfg)).slice(0,4);}
  // Only successful publication consumes the scheduled scan.
  function scanDue(state,sessions,now){if(state?.retryAt>now)return null;if(state?.retryAt)return 'recovery';if(!state?.publishedAt)return 'initial';const s=(sessions||[]).find(s=>now>=s.start-1800000&&now<s.start);return s&&state.scheduledOpen!==s.start&&!(state.publishedAt>=s.start-1800000&&state.publishedAt<=now)?'scheduled':null;}
  function stableSlots(previous,next){const out=Array(next.length).fill(null),used=new Set();previous.forEach((r,i)=>{const match=next.find(x=>x.conid===r.conid);if(i<out.length&&match){out[i]=match;used.add(match.conid);}});const remaining=next.filter(r=>!used.has(r.conid));return out.map(r=>r||remaining.shift());}
