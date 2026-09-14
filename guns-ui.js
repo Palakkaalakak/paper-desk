@@ -11,7 +11,7 @@
  function desk(){const b=E.book();return b.desk||(b.desk={slots:[],active:0,grid:false});}
  function restoreCharts(){const d=desk();slots=Array.from({length:4},(_,i)=>({inst:d.slots?.[i]?.inst||null,frame:['1','5','15','d'].includes(d.slots?.[i]?.frame)?d.slots[i].frame:'1'}));activeSlot=Math.max(0,Math.min(3,d.active||0));grid=!!d.grid;layout=d.layout||'custom';selected=slots[activeSlot].inst;chartFrame=slots[activeSlot].frame;newsSelected=selected;hover=null;}
  function saveDesk(){const d=desk();Object.assign(d,{slots,active:activeSlot,grid,layout});d.layouts=d.layouts||{};d.layouts[layout]=JSON.parse(JSON.stringify({slots,active:activeSlot,grid}));a.save();}
- function restoreScreen(){const st=screenState();if(st.version!==C.VERSION){st.rows=(st.rows||[]).filter(r=>Number.isFinite(r.screen?.gap)&&Number.isFinite(r.screen?.volume)&&W.floatBelow(r.screen?.float,E.cfg().maxFloat,a.now()));if(!st.rows.length)st.publishedAt=null;st.version=C.VERSION;st.retryAt=0;E.g().config.floatMode='strict';a.save();}rows=st.rows||[];}
+ function restoreScreen(){const st=screenState(),old=st.rows||[];rows=old.filter(r=>W.completeScreen(r,E.cfg()));if(st.version!==C.VERSION||rows.length!==old.length){st.rows=rows;if(!rows.length)st.publishedAt=null;st.version=C.VERSION;st.retryAt=0;E.g().config.floatMode='strict';a.save();}}
  restoreCharts();restoreScreen();
  const esc=a.esc,px=x=>Number.isFinite(x)?a.px(x):'—',money=x=>Number.isFinite(x)?a.money(x):'—';
  function put(id,html){const el=document.getElementById(id);if(el&&el.innerHTML!==html)el.innerHTML=html;}
@@ -56,33 +56,35 @@
   job('scan',async()=>{scanProgress='IBKR scanner · collecting high-volume gappers…';scanDiagnostics=[];
    const pause=ms=>new Promise(resolve=>setTimeout(resolve,ms));
    const recover=async(kind,params)=>{let error;for(let attempt=0;attempt<3&&current();attempt++){try{return await request(kind,params);}catch(e){error=e;if(attempt<2)await pause(1000*(attempt+1));}}throw error||Error('Portfolio changed');};
+   // History/fundamentals may take longer than quote freshness. Acquire again at
+   // each decision, rather than turning an early/one-sided tick into a rejection.
+   const acquireQuote=async row=>{let why=[];for(let wait=0;wait<60&&current();wait++){const q=a.quotes()[row.conid];why=W.quoteIssues(row,q,a.ready(row.conid));if(!why.length)return q;scanProgress=row.symbol+' · acquiring LIVE bid, ask and last trade…';live();await pause(200);}throw Error(row.symbol+': '+(why.join('; ')||'Portfolio changed'));};
    try{
     const resume=st.acquisition&&C.day(st.acquisition.at)===C.day(a.now())&&a.now()-st.acquisition.at<1800000;
     const found=resume?st.acquisition.rows:(await recover('guns_scan',{})).rows||[];
-    if(!current())return;st.acquisition={at:resume?st.acquisition.at:a.now(),rows:found};a.save();discovery=found;a.sync();
+    if(!current())return;st.acquisition={at:resume?st.acquisition.at:a.now(),rows:found};a.save();discovery=found.slice(0,1);a.sync();
     const accepted=[];let unresolved=0;
     for(let i=0;i<found.length&&accepted.length<4;i++){
-     if(!current())return;const row=found[i];scanProgress='IBKR screening '+(i+1)+' / '+found.length+' · '+accepted.length+' ready';live();
-     for(let wait=0;wait<30&&!a.ready(row.conid)&&current();wait++)await pause(200);
-     if(!a.ready(row.conid)){unresolved++;scanDiagnostics.push(row.symbol+': waiting for LIVE IBKR subscription');continue;}
+     if(!current())return;const row=found[i];discovery=[row,...accepted];a.sync();scanProgress='IBKR screening '+(i+1)+' / '+found.length+' · '+accepted.length+' ready';live();
      try{
       let ev=await recover('guns_verify',{conid:row.conid});if(!current())return;if(Number(ev.conid)!==Number(row.conid))throw Error('Contract mismatch');
-      const preliminary=W.candidate(row,a.quotes()[row.conid],ev,a.ready(row.conid),{...E.cfg(),floatMode:'prefer'},a.now());
-      if(!preliminary.eligible){scanDiagnostics.push(row.symbol+': '+preliminary.why.join('; '));continue;}
+      const preliminary=W.candidate(row,await acquireQuote(row),ev,a.ready(row.conid),{...E.cfg(),floatMode:'prefer'},a.now());
+      if(!preliminary.eligible){if(preliminary.pending)unresolved++;scanDiagnostics.push(row.symbol+': '+preliminary.why.join('; '));continue;}
       const f=await recover('guns_float',{symbol:row.symbol});if(!current())return;
       if(f.conid!=null&&Number(f.conid)!==Number(row.conid))throw Error('Float contract mismatch');
       if(!W.floatKnown(f,a.now())){unresolved++;scanDiagnostics.push(row.symbol+': '+(f.warning||'IBKR float evidence pending'));continue;}
       if(a.now()-ev.at>60000)ev=await recover('guns_verify',{conid:row.conid});
       evidence.set(row.conid,{...ev,float:f});floatRefs.set(row.symbol,f);times['verify:'+row.conid]=a.now();
-      const checked=W.candidate(row,a.quotes()[row.conid],evidence.get(row.conid),a.ready(row.conid),{...E.cfg(),floatMode:'strict'},a.now());
-      if(checked.eligible)accepted.push(W.screenSnapshot(checked,a.now()));else scanDiagnostics.push(row.symbol+': '+checked.why.join('; '));
+      const checked=W.candidate(row,await acquireQuote(row),evidence.get(row.conid),a.ready(row.conid),{...E.cfg(),floatMode:'strict'},a.now());
+      if(checked.eligible)accepted.push(W.screenSnapshot(checked,a.now()));else {if(checked.pending)unresolved++;scanDiagnostics.push(row.symbol+': '+checked.why.join('; '));}
      }catch(e){unresolved++;scanDiagnostics.push(row.symbol+': '+e.message);}
     }
-    const final=[];
+    const final=[];discovery=accepted;a.sync();
     for(const row of accepted){if(!current())return;let ev=evidence.get(row.conid);
      if(a.now()-ev.at>45000){try{ev={...await recover('guns_verify',{conid:row.conid}),float:row.screen.float};evidence.set(row.conid,ev);}catch{unresolved++;continue;}}
-     const c=W.candidate(row,a.quotes()[row.conid],ev,a.ready(row.conid),{...E.cfg(),floatMode:'strict'},a.now());
-     if(c.eligible)final.push(W.screenSnapshot(c,a.now()));else scanDiagnostics.push(row.symbol+': '+c.why.join('; '));
+     try{const c=W.candidate(row,await acquireQuote(row),ev,a.ready(row.conid),{...E.cfg(),floatMode:'strict'},a.now());
+      const snapshot=W.screenSnapshot(c,a.now());if(c.eligible&&W.completeScreen(snapshot,E.cfg()))final.push(snapshot);else {if(c.pending||c.eligible)unresolved++;scanDiagnostics.push(row.symbol+': '+(c.why.join('; ')||'Awaiting complete screening snapshot'));}
+     }catch(e){unresolved++;scanDiagnostics.push(e.message);}
     }
     if(!current())return;if(!final.length&&unresolved)throw Error('IBKR acquisition continuing; '+unresolved+' responses pending');
     rows=W.stableSlots(rows,final);st.rows=rows;st.publishedAt=a.now();st.version=C.VERSION;st.retryAt=0;st.acquisition=null;st.recoveries=0;
@@ -99,7 +101,7 @@
  function slotChoices(slot){const seen=new Set();return [slot.inst,...rows,...slots.map(s=>s.inst)].filter(x=>x&&!seen.has(x.conid)&&seen.add(x.conid));}
  function choose(inst){if(!inst)return;const stock={...inst,secType:'STK',exch:'SMART',mult:1,brokerId:true};if(stage==='trade'){assignChart(stock);return;}
   ++newsEpoch;++articleEpoch;resetPDF();newsSelected=stock;if(!selected)assignChart(stock);stage='news';news=[];newsMeta={};articleText='';articleMeta={};newsFilter='';results=[];a.render();const sym=stock.symbol,bid=bookId;job('news:'+sym,()=>loadNews(sym,bid));live();}
- function instruments(){return [...slots.filter(s=>s.inst).map(s=>({...s.inst,priority:s.inst.conid===selected?.conid?3:2})),...E.book().active.map(b=>({...b.inst,priority:3})),...E.pending().map(o=>({...o,priority:3})),...(a.tab()==='guns'?[...rows,...discovery].map(x=>({...x,priority:1})):[])];}
+ function instruments(){return [...slots.filter(s=>s.inst).map(s=>({...s.inst,priority:s.inst.conid===selected?.conid?3:2})),...E.book().active.map(b=>({...b.inst,priority:3})),...E.pending().map(o=>({...o,priority:3})),...(a.tab()==='guns'?[...discovery.map(x=>({...x,priority:2})),...rows.map(x=>({...x,priority:1}))]:[])];}
  function confirmSetup(s){if(!selected||tutorial.isOpen()||a.now()-lastConfirm<500)return;lastConfirm=a.now();setup=Number(s);const n={...review(setup),chartReviewedAt:a.now()},p=analyze(cache.get(selected.symbol),a.quotes()[selected.conid],setup,n),r=E.arm(p,selected,n);errors.arm=r.errors.join(' · ');a.render();live();}
  function pulse(){if(bookId!==a.state().bookId){bookId=a.state().bookId;++newsEpoch;++articleEpoch;resetPDF();slotResults.clear();slotSearchVersion.clear();restoreCharts();restoreScreen();discovery=[];scanProgress='';cache.clear();news=[];newsMeta={};articleText='';articleMeta={};newsFilter='';depth=null;}
   if(a.usingTws()){const symbols=new Set(E.pending().map(o=>o.symbol));if(a.tab()==='guns'&&!tutorial.isOpen())slots.filter(s=>s.inst).forEach(s=>symbols.add(s.inst.symbol));symbols.forEach(bars);
@@ -151,10 +153,10 @@
   put('guns-clock',new Date(a.now()).toLocaleString('en-US',{timeZone:'America/New_York'})+' ET · Gateway quote receipt '+(q.receivedAt?Math.max(0,a.now()-q.receivedAt)+'ms ago':'unknown')+' · chart update '+(d?Math.max(0,Math.round((a.now()-d.updatedAt)/1000))+'s old':'unavailable')+' · receipt age is not exchange latency.');
   put('guns-scan-progress',esc(scanProgress||(screenState().publishedAt?'Saved shortlist · '+newsTime(screenState().publishedAt):'No published shortlist')));
   put('guns-scan-diagnostics',esc(scanDiagnostics.join('\n')||'No rejection diagnostics in this browser session.'));
-  put('guns-scanner',rows.length?rows.map((row,i)=>{const c=row.screen;return '<button class="guns-candidate" data-guns-pick="'+row.conid+'"><strong>'+(i+1)+' · '+esc(row.symbol)+'</strong><span>'+px(actualQuote(a.quotes()[row.conid]).last??c.price)+'</span><small>'+esc(row.name||'Stock candidate')+'</small><small>IBKR screened · '+esc(newsTime(c.at))+'</small><small>Gap '+c.gap.toFixed(2)+'% · PM '+c.volume.toLocaleString()+' shares</small><small>Float '+esc(W.floatLabel(c.float))+'</small><small>Slot locked · screening snapshot; quotes stream live</small></button>';}).join(''):'<p class="guns-muted">'+(jobs.has('scan')||screenState().retryAt?'Collecting and screening IBKR data…':'No stocks meet all configured numerical filters.')+'</p>');
+  put('guns-scanner',rows.length?rows.map((row,i)=>{const c=row.screen;return '<button class="guns-candidate" data-guns-pick="'+row.conid+'"><strong>'+(i+1)+' · '+esc(row.symbol)+'</strong><span>'+px(actualQuote(a.quotes()[row.conid]).last??c.price)+'</span><small>'+esc(row.name||'Stock candidate')+'</small><small>IBKR screened · '+esc(newsTime(c.at))+'</small><small>Gap '+c.gap.toFixed(2)+'% · PM '+c.volume.toLocaleString()+' shares</small><small>Bid $'+c.bid.toFixed(4)+' · Ask $'+c.ask.toFixed(4)+' · Spread $'+c.spread.toFixed(4)+'</small><small>Quote verified '+esc(newsTime(c.quoteAt))+'</small><small>Float '+esc(W.floatLabel(c.float))+'</small><small>Slot locked · screening snapshot; quotes stream live</small></button>';}).join(''):'<p class="guns-muted">'+(jobs.has('scan')||screenState().retryAt?'Collecting and screening IBKR data…':'No stocks meet all configured numerical filters.')+'</p>');
   slots.forEach((slot,i)=>put('guns-slot-results-'+i,(slotResults.get(i)||[]).map((r,j)=>'<button data-guns-slot-result="'+i+':'+j+'">'+esc(r.symbol)+' · '+esc(r.name)+'</button>').join('')));
   put('guns-quicklist','<small>Scanner quicklist:</small> '+rows.map(row=>'<button data-guns-pick="'+row.conid+'">'+esc(row.symbol)+'</button>').join(''));
-  const ev=evidence.get(selected?.conid);put('guns-evidence',ev?'<p>'+esc(ev.source)+' · '+esc(new Date(ev.at).toISOString())+'</p><p>Previous RTH close '+px(ev.previousClose)+' on '+esc(ev.previousCloseDate)+' · session '+esc(ev.sessionDate)+'</p><p>'+esc(ev.observedBars)+' observed PM bars · '+esc(ev.volumeUnit)+'</p><p>'+esc(ev.coverage)+'</p>':'Awaiting independent Gateway verification. Unknown is not a pass.');
+  const ev=evidence.get(selected?.conid);put('guns-evidence',ev?'<p>'+esc(ev.source)+' · '+esc(new Date(ev.at).toISOString())+'</p><p>Previous RTH close '+px(ev.previousClose)+' on '+esc(ev.previousCloseDate)+' · session '+esc(ev.sessionDate)+'</p><p>'+esc(ev.observedBars)+' observed PM bars · '+esc(ev.volumeUnit)+'</p><p>'+esc(ev.coverage)+'</p>':'Select a screened candidate to inspect its IBKR source coverage.');
   put('guns-search-results',results.map((x,i)=>'<button data-guns-search-pick="'+i+'">'+esc(x.symbol)+' · '+esc(x.name)+'</button>').join(''));
   put('guns-risk-live','<div class="guns-budget"><small>CURRENT EQUITY × '+esc(E.cfg().riskPct)+'%</small><strong>'+money(r.budget)+'</strong><span>Equity '+money(r.equity)+'</span></div><dl><dt>Whole shares</dt><dd>'+r.qty+'</dd><dt>Planned risk incl. fees</dt><dd>'+money(r.risk)+'</dd><dt>Unused budget</dt><dd>'+money(r.unused)+'</dd><dt>Entry / limit cap</dt><dd>'+px(p.entry)+' / '+px(p.limit)+'</dd><dt>Stop / target</dt><dd>'+px(p.stop)+' / '+px(p.target)+'</dd><dt>ATR / gap</dt><dd>'+px(p.atr)+' / '+(Number.isFinite(p.gap)?p.gap.toFixed(2)+'%':'—')+'</dd><dt>Premarket volume</dt><dd>'+(Number.isFinite(p.volume)?p.volume.toLocaleString():'UNKNOWN')+'</dd></dl><small>Re-sized while pending and before fill. Risk uses limit cap; target re-anchors to actual fill. Fees and whole shares leave budget unused.</small>');
   put('guns-checklist',p.checks.map(c=>c.label==='Chart and setup reviewed by user'?'<div>Your S button confirms chart/setup review.</div>':'<div class="'+(c.ok?'guns-pass':'guns-fail')+'">'+(c.ok?'PASS':'WAIT')+' · '+esc(c.label)+'</div>').join(''));
