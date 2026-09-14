@@ -149,7 +149,7 @@ test('five-key migration preserves custom bindings, including conflicts with def
 });
 test('shortlist is at most four qualifying rows, no padding or mutation after ranking',()=>{
  const now=Date.parse('2026-09-10T13:00Z'),rows=Array.from({length:8},(_,i)=>({conid:i+1,rank:i})),quotes={},ev=new Map();
- for(const r of rows){quotes[r.conid]={status:'LIVE',last:10,bid:9.99,ask:10.01};ev.set(r.conid,{conid:r.conid,at:now,sessionKnown:true,stockType:'COMMON',previousClose:9,premarketVolume:50000,float:referenceFloat(now)});}
+ for(const r of rows){quotes[r.conid]={status:'LIVE',last:10,bid:9.99,ask:10.01,at:now};ev.set(r.conid,{conid:r.conid,at:now,sessionDate:'2026-09-10',sessionKnown:true,stockType:'COMMON',previousClose:9,premarketVolume:50000,float:referenceFloat(now)});}
  ev.get(1).premarketVolume=null;ev.get(2).stockType='ETF';
  const list=W.shortlist(rows,quotes,ev,()=>true,C.defaults,now);assert.deepEqual(list.map(r=>r.conid),[3,4,5,6]);
  quotes[3].last=11;W.rank(rows,quotes,ev,()=>true,C.defaults,now);assert.deepEqual(list.map(r=>r.conid),[3,4,5,6]);
@@ -208,3 +208,32 @@ test('news recovery never substitutes a different catalyst, amount or trading da
 });
 
 test('matching news titles never ignores a material negation',()=>{assert.equal(W.sameStory({headline:'Company says FDA will approve the new therapy this month'},{headline:'Company says FDA will not approve the new therapy this month'}),false);});
+
+function scannerFixture(){const now=Date.parse('2026-09-10T13:00Z'),row={conid:123,symbol:'TEST'},q={status:'LIVE',bid:9.99,ask:10.01,last:10,at:now,brokerConid:123},ev={conid:123,at:now,sessionDate:'2026-09-10',sessionKnown:true,stockType:'COMMON',previousClose:9,premarketVolume:50000,float:referenceFloat(now)};return {now,row,q,ev};}
+test('scanner waits for both positive quote sides and actual trade, never a midpoint',()=>{
+ const {now,row,q,ev}=scannerFixture();
+ for(const patch of [{bid:null},{ask:undefined},{bid:0},{ask:0},{bid:NaN},{ask:Infinity},{last:Infinity},{last:null},{tradeLast:null},{ask:9.98},{halted:true},{status:'DELAYED'},{brokerConid:999}]){
+  const c=W.candidate(row,{...q,...patch},ev,true,C.defaults,now);assert.equal(c.eligible,false,JSON.stringify(patch));assert.equal(c.pending,true);assert.ok(W.quoteIssues(row,{...q,...patch},true).length);
+ }
+ assert.deepEqual(W.quoteIssues(row,q,true),[]);
+ assert.equal(W.candidate(row,q,ev,false,C.defaults,now).pending,true);
+});
+test('wide spread rejection reports the measured value, separate from pending acquisition',()=>{
+ const {now,row,q,ev}=scannerFixture();const c=W.candidate(row,{...q,ask:10.20},ev,true,C.defaults,now);
+ assert.equal(c.eligible,false);assert.equal(c.pending,false);assert.ok(c.why.includes('Spread $0.2100 exceeds $0.0500'));assert.ok(!c.why.join(' ').includes('unknown'));
+});
+test('scanner snapshots retain numeric spread, both sides and their quote timestamp',()=>{
+ const {now,row,q,ev}=scannerFixture();const c=W.candidate(row,q,ev,true,C.defaults,now),s=W.screenSnapshot(c,now);
+ assert.equal(W.completeScreen(s,C.defaults),true);assert.equal(s.screen.bid,9.99);assert.equal(s.screen.ask,10.01);assert.ok(Math.abs(s.screen.spread-.02)<1e-8);assert.equal(s.screen.quoteAt,now);
+ assert.equal(W.completeScreen(W.screenSnapshot(W.candidate(row,{...q,bid:10,ask:10},ev,true,C.defaults,now),now),C.defaults),true);
+ const list=W.shortlist([row],{123:q},new Map([[123,ev]]),()=>true,C.defaults,now);assert.deepEqual(list,[s]);
+});
+test('incomplete legacy or corrupt scanner snapshots cannot be restored as passing cards',()=>{
+ const {now,row,q,ev}=scannerFixture(),s=W.screenSnapshot(W.candidate(row,q,ev,true,C.defaults,now),now);
+ for(const key of ['price','gap','volume','bid','ask','spread','quoteAt','previousClose','sessionDate','stockType','float'])assert.equal(W.completeScreen({...s,screen:{...s.screen,[key]:null}},C.defaults),false,key);
+ for(const patch of [{spread:.001},{bid:0},{quoteAt:now-20000},{price:Infinity},{float:{...ev.float,source:''}}])assert.equal(W.completeScreen({...s,screen:{...s.screen,...patch}},C.defaults),false);
+});
+test('missing history metrics are acquisition pending, not completed numeric rejections',()=>{
+ const {now,row,q,ev}=scannerFixture();for(const patch of [{previousClose:null},{premarketVolume:null},{sessionKnown:false},{stockType:null}]){const c=W.candidate(row,q,{...ev,...patch},true,C.defaults,now);assert.equal(c.eligible,false);assert.equal(c.pending,true);}
+ const c=W.candidate(row,q,{...ev,premarketVolume:1000},true,C.defaults,now);assert.equal(c.eligible,false);assert.equal(c.pending,false);
+});
