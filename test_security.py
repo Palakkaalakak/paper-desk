@@ -400,5 +400,57 @@ class Guns15Tests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(out['contentStatus'],'pdf');self.assertEqual(out['pdfBase64'],encoded)
 
 
+class ScannerProviderTests(unittest.IsolatedAsyncioTestCase):
+    def test_sip_requests_are_explicit_and_credentials_stay_in_headers(self):
+        with patch.dict(guns_data.os.environ,{'PAPER_ALPACA_KEY':'test-key','PAPER_ALPACA_SECRET':'test-secret'},clear=True),patch.object(guns_data,'source_fetch',return_value=b'{}') as fetch:
+            guns_data.alpaca_data('/v2/stocks/snapshots',{'symbols':'TEST','feed':'iex'})
+            self.assertEqual(fetch.call_args.args[2]['feed'],'sip')
+            self.assertNotIn('test-secret',repr(fetch.call_args.args))
+            self.assertEqual(fetch.call_args.kwargs['headers']['APCA-API-SECRET-KEY'],'test-secret')
+            self.assertNotIn('test-secret',repr(guns_data.scanner_sources()))
+        with self.assertRaises(ValueError):guns_data.source_fetch('data.alpaca.markets','/v2/orders',{})
+
+    def test_sip_quotes_require_exact_symbol_two_sides_and_provider_timestamps(self):
+        now=int(dt.datetime(2026,9,10,13,30,tzinfo=dt.timezone.utc).timestamp()*1000)
+        quote=dict(bp=10,ap=10.02,bs=100,**{'as':100},t='2026-09-10T13:29:59Z')
+        trade=dict(p=10.01,t='2026-09-10T13:29:59Z')
+        with patch.object(guns_data,'alpaca_data',return_value={'TEST':dict(latestQuote=quote,latestTrade=trade)}):
+            result=guns_data.sip_quote('TEST',now)
+            self.assertEqual(result['bid'],10);self.assertEqual(result['source'],'Alpaca SIP consolidated NBBO')
+        for changes in [dict(bp=0),dict(ap=None),dict(ap=9),dict(t='2026-09-10T13:10:00Z')]:
+            with patch.object(guns_data,'alpaca_data',return_value={'TEST':dict(latestQuote={**quote,**changes},latestTrade=trade)}):
+                with self.assertRaises((ValueError,TypeError)):guns_data.sip_quote('TEST',now)
+        with patch.object(guns_data,'alpaca_data',return_value={'OTHER':dict(latestQuote=quote,latestTrade=trade)}):
+            with self.assertRaises(ValueError):guns_data.sip_quote('TEST',now)
+
+    def test_sip_history_consumes_all_pages_and_rejects_repeated_cursor(self):
+        with patch.object(guns_data,'alpaca_data',side_effect=[{'bars':{'TEST':[{'v':1}]},'next_page_token':'next'},{'bars':{'TEST':[{'v':2}]}}]) as get:
+            rows=guns_data.sip_bars('TEST','2026-09-09','2026-09-10','1Min')
+            self.assertEqual(len(rows),2);self.assertEqual(get.call_args.args[1]['page_token'],'next')
+        with patch.object(guns_data,'alpaca_data',return_value={'bars':{'TEST':[]},'next_page_token':'same'}):
+            with self.assertRaises(ValueError):guns_data.sip_bars('TEST','2026-09-09','2026-09-10','1Min')
+
+    async def test_float_never_calls_removed_ibkr_fundamentals(self):
+        result=dict(symbol='TEST',status='returned',floatShares=1000000)
+        engine=NS(_stock=AsyncMock(side_effect=AssertionError('IBKR must not be queried')))
+        with patch.object(guns_data,'float_reference',return_value=result):self.assertEqual(await guns_data.float_data(engine,'TEST'),result)
+        engine._stock.assert_not_called()
+
+    async def test_ibkr_history_failure_uses_optional_sip_without_changing_contract(self):
+        detail,minute,daily,opening=GunsDataTests().fixture()
+        detail.contract.symbol='TEST'
+        ib=NS(reqContractDetailsAsync=AsyncMock(return_value=[detail]),reqHistoricalDataAsync=AsyncMock(return_value=[]))
+        expected=guns_data.verification(detail,minute,daily,int(opening.timestamp()*1000))
+        with patch.object(guns_data,'scanner_sources',return_value={'quoteFallbackConfigured':True}),patch.object(guns_data,'sip_verification',return_value=expected) as fallback:
+            out=await guns_data.verify(NS(_ib=ib),'123')
+            self.assertEqual(out['conid'],123);fallback.assert_called_once()
+
+    def test_float_rejects_stale_dates_and_does_not_invent_them(self):
+        with patch.dict(guns_data.os.environ,{'PAPER_FMP_KEY':'fixture-key'},clear=True),patch.object(guns_data,'source_fetch',return_value=json.dumps([dict(symbol='TEST',floatShares=1000000,date='2000-01-01')]).encode()):
+            self.assertEqual(guns_data.float_reference('TEST')['status'],'unavailable')
+        with patch.dict(guns_data.os.environ,{},clear=True):
+            self.assertFalse(guns_data.scanner_sources()['floatConfigured'])
+
+
 if __name__ == '__main__':
     unittest.main()
