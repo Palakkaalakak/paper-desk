@@ -1,4 +1,16 @@
-# CURRENT CONTINUATION — GUNS 1.5, 2026-09-13
+# CURRENT CONTINUATION — IBKR scanner repair, 2026-09-14
+
+IBKR remains the primary source. A real application defect was reproduced against ib_async 2.1.0: _quote_symbol opened a temporary streaming subscription; a concurrent browser stream reused the conId-keyed ticker; temporary cleanup via cancelMktData(contract) cancelled the NEW browser request, leaving _active marked subscribed. Reproduction produced requested IDs [1,2], cancelled [2], active=True. This establishes a code defect, not the sole cause of every failure on the user's unobserved Gateway.
+
+Fixed in market.py: temporary reads use the distinct snapshot channel; cleanup cancels only the owned request ID, with generation guards and wrapper cleanup. Fresh existing streams are reused. Contract subscriptions retain secType. New authenticated /data/guns_ib_quote?conid=... reads the exact scanner contract on the owner loop, independently of SSE/browser subscription capacity. guns-ui.js tries streaming IB quotes, then direct IB snapshots, then optional Alpaca SIP. Screening-only responses never enter paper execution quotes. SnapshotOwnershipTests uses the REAL pinned wrapper callbacks and checks concurrency, continued streaming, cancellation, reconnect IDs, direct contract snapshots, reuse and missing/stale/delayed safeguards.
+
+Research correction: IBKR officially removed reqFundamentalData in API 10.47 (https://www.ibkrguides.com/releasenotes/prod-2026.htm). That explains retired float retrieval, NOT missing bid/ask. FMP shares-float now supplies dated exact counts via PAPER_FMP_KEY. Optional PAPER_ALPACA_KEY/PAPER_ALPACA_SECRET enables explicit SIP quote/history fallback; free IEX/delayed feeds are never relabeled consolidated live data. No alternative credentials existed in the sandbox; live provider acceptance is not claimed. README has current setup and source links; its old ReportSnapshot-first notes are superseded.
+
+Preservation: repeated interruptions reset the sandbox. When GitHub authorization briefly failed, the core fix was backed up, then restored and pushed as bf89014 after authorization recovered. Tests and browser changes survived via later checkpoints through 7b1763a. Current final suites are running again after another reset; record observed results, not a vanished shell's presumed outcome. No cloud deployment, broker orders, or changes to paper execution architecture.
+
+---
+
+# PREVIOUS CONTINUATION — GUNS 1.5, 2026-09-13
 
 Latest addition: strategy-aware live tooltips, implemented and checkpointed through f941497. Trading → Plan & risk shows a selected-company/S1–S5 context panel. Hover Setup or the summary for the native tooltip; expand Strategy tooltip & live levels for keyboard/touch access. S1 reports dollars and percent below/at/above actual PM high; S2 reports lower-pivot distance and room to PM resistance in R; S3/S4 add flag-high distance and heuristic retracement; S5 reports only the first opening candle's direction/range versus ATR and the entry-window countdown. Manual/hover references remain explicitly separate from actual PM high. Missing/non-live trades and stale/mismatched charts never yield a live proximity claim. No order logic, broker routes or storage architecture changed.
 
