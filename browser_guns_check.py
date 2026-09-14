@@ -45,6 +45,8 @@ def main():
             if path=='/data/subscriptions':return r.fulfill(json={'connected':True,'feedHealthy':True,'generation':0,'quotes':{}})
             if path=='/data/stream':return r.fulfill(content_type='text/event-stream',body=': fixture\n\n')
             if path in ('/data/twsstatus','/api/iserver/auth/status'):return r.fulfill(json={'connected':True,'authenticated':True})
+            if path=='/data/guns_data_status':return r.fulfill(json={'floatConfigured':True,'quoteFallbackConfigured':True})
+            if path=='/data/guns_ib_quote':return r.fulfill(json=dict(brokerConid=int(params['conid'][0]),bid=10.48,ask=10.50,last=10.49,source='IB Gateway',status='LIVE',at=int(r.request.headers['x-fixture-now']),screeningOnly=True))
             if path=='/data/guns_scan':return r.fulfill(json={'rows':[dict(conid=12345,symbol='TEST',name='Fixture stock',secType='STK',brokerId=True)]})
             if path=='/data/search':
                 sym=(params.get('q') or ['TEST'])[0].upper()
@@ -80,7 +82,7 @@ def main():
               quoteRecoveryChecks++;setTimeout(()=>tick(),500);
             }else if(String(args[0]).includes('/data/guns_float')&&quoteRecoveryChecks===1){
               // Reproduce bid/ask disappearing while fundamentals were loading.
-              quoteRecoveryChecks++;tick(10.48,null);setTimeout(()=>tick(),500);
+              quoteRecoveryChecks++;tick(10.48,null); // Only the owner-loop IB snapshot can recover this side.
             }
             return response;
           };
@@ -98,6 +100,10 @@ def main():
         assert 'unknown' not in card.lower() and '—' not in card
         assert 'Awaiting' not in page.locator('#guns-scan-diagnostics').inner_text()
         assert requests.count('/data/guns_scan')==1, 'Quote recovery must not rediscover/re-rank'
+        assert requests.count('/data/guns_ib_quote')>=1, 'Read IBKR directly when SSE quote is incomplete'
+        assert requests.count('/data/guns_quote')==0, 'Never replace a working IBKR quote with external data'
+        assert page.evaluate('__gunsTest.desk.execution.pending().length')==0
+        page.evaluate('tick()')
         page.locator('.guns-stage-nav [data-guns-stage="news"]').click()
         page.locator('[data-guns-article="TEST:story1"]').click()
         page.wait_for_function("document.querySelector('#guns-article').textContent.includes('Fixture earnings article')")
