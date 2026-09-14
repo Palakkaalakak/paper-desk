@@ -287,8 +287,20 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     lambda: providers.cascade('search', prov, key, q=one('q', '')))
             elif kind == 'twsstatus':
                 out = market.ENGINE.snapshot(one('client', ''))
+            elif kind == 'guns_data_status':
+                import guns_data
+                out = guns_data.scanner_sources()
             elif kind == 'guns_float':
-                out = market.ENGINE.call(kind, one('symbol', ''), timeout=35)
+                import guns_data
+                ticker=guns_data.symbol(one('symbol',''))
+                identity=hashlib.sha256(os.environ.get('PAPER_FMP_KEY','').encode()).digest()
+                # Cache successful sourced counts only; never wait for IB connectivity.
+                out=providers._cached((kind,ticker,identity),21600,lambda: guns_data.required_float(ticker))
+            elif kind == 'guns_quote':
+                import guns_data
+                ticker=guns_data.symbol(one('symbol',''))
+                # Scanner-only SIP data; no cascade to IEX/delayed quotes or broker orders.
+                out=guns_data.sip_quote(ticker)
             elif kind == 'guns_sources':
                 import guns_data
                 ticker=guns_data.symbol(one('symbol',''))

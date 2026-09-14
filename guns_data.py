@@ -485,8 +485,17 @@ async def verify(engine, conid):
         if not details or details[0].contract.conId!=int(conid) or details[0].contract.secType!='STK' or details[0].contract.currency!='USD':
             raise ValueError('US dollar stock definition unavailable')
         d = details[0]
+        fallback=scanner_sources()['quoteFallbackConfigured']
         async def get(duration, interval, rth):
-            return await ib.reqHistoricalDataAsync(d.contract,'',duration,interval,'TRADES',rth,formatDate=2,keepUpToDate=False,timeout=20)
-        minute,daily = await asyncio.gather(get('2 D','1 min',False),get('1 M','1 day',True))
-        if not minute or not daily: raise ValueError('Scanner verification history incomplete')
-        return verification(d,minute,daily,int(time.time()*1000))
+            return await ib.reqHistoricalDataAsync(d.contract,'',duration,interval,'TRADES',rth,formatDate=2,keepUpToDate=False,timeout=8 if fallback else 20)
+        try:
+            minute,daily = await asyncio.gather(get('2 D','1 min',False),get('1 M','1 day',True))
+            if not minute or not daily: raise ValueError('Scanner verification history incomplete')
+            result=verification(d,minute,daily,int(time.time()*1000))
+            if result['premarketVolume'] is None or result['previousClose'] is None:
+                raise ValueError('IBKR history lacks observed premarket volume/prior close')
+        except (ValueError,ConnectionError,asyncio.TimeoutError):
+            if not fallback: raise
+            result=await asyncio.to_thread(sip_verification,d,int(time.time()*1000))
+        if engine._ib is not ib: raise ValueError('Gateway connection changed during contract verification')
+        return result
