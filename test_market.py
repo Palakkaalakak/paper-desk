@@ -7,7 +7,7 @@ import threading
 import time
 import unittest
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import patch, Mock, AsyncMock
 import market
 import serve
 
@@ -39,6 +39,79 @@ class FakeEngine(market.MarketEngine):
     async def _slow(self):
         await asyncio.sleep(.3)
         return 'finished'
+
+
+class SnapshotOwnershipTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        import itertools
+        from ib_async import IB,Stock
+        self.ib=IB();self.e=market.MarketEngine();self.e._ib=self.ib
+        self.c=Stock('TEST','SMART','USD',conId=123)
+        self.e._stock=AsyncMock(return_value=self.c);self.e._contract=AsyncMock(return_value=self.c)
+        ids=itertools.count(1)
+        self.ib.client.getReqId=Mock(side_effect=lambda:next(ids))
+        self.ib.client.reqMktData=Mock();self.ib.client.cancelMktData=Mock()
+        self.ib.pendingTickersEvent+=self.e._ticks
+
+    def ticks(self,req_id,end=False):
+        w=self.ib.wrapper;w.tcpDataArrived()
+        w.priceSizeTick(req_id,1,10,100);w.priceSizeTick(req_id,2,10.02,100)
+        w.priceSizeTick(req_id,4,10.01,100);w.tcpDataProcessed()
+        if end:w.tickSnapshotEnd(req_id)
+
+    async def test_snapshot_cannot_cancel_new_browser_stream_for_same_conid(self):
+        task=asyncio.create_task(self.e._quote_symbol('TEST'));await asyncio.sleep(0)
+        snapshot_id=self.ib.client.reqMktData.call_args.args[0]
+        await self.e._subscribe_one(123,{'conid':123})
+        stream_id=self.ib.client.reqMktData.call_args.args[0]
+        self.assertNotEqual(snapshot_id,stream_id)
+        self.ticks(snapshot_id,True);q=await task
+        self.assertAlmostEqual(q['ask']-q['bid'],.02)
+        self.ib.client.cancelMktData.assert_called_once_with(snapshot_id)
+        ticker=self.e._active[123]['ticker']
+        self.assertEqual(self.ib.wrapper.ticker2ReqId['mktData'][ticker],stream_id)
+        self.ticks(stream_id)
+        self.assertEqual(self.e.quotes[123]['bid'],10)
+        self.assertEqual(self.e.quotes[123]['ask'],10.02)
+
+    async def test_cancelled_snapshot_cleans_only_its_request(self):
+        await self.e._subscribe_one(123,{'conid':123})
+        stream_id=self.ib.client.reqMktData.call_args.args[0]
+        task=asyncio.create_task(self.e._snapshot_quote(self.c));await asyncio.sleep(0)
+        snapshot_id=self.ib.client.reqMktData.call_args.args[0]
+        task.cancel()
+        with self.assertRaises(asyncio.CancelledError):await task
+        self.ib.client.cancelMktData.assert_called_once_with(snapshot_id)
+        self.assertIn(stream_id,self.ib.wrapper.reqId2Ticker)
+        self.assertNotIn(snapshot_id,self.ib.wrapper.reqId2Ticker)
+        self.assertNotIn(snapshot_id,self.ib.wrapper._futures)
+
+    async def test_old_generation_cannot_cancel_new_connections_reused_id(self):
+        task=asyncio.create_task(self.e._snapshot_quote(self.c));await asyncio.sleep(0)
+        self.e.info['generation']=1;task.cancel()
+        with self.assertRaises(asyncio.CancelledError):await task
+        self.ib.client.cancelMktData.assert_not_called()
+
+    async def test_scanner_reads_exact_ib_contract_without_browser_subscription(self):
+        task=asyncio.create_task(self.e._guns_ib_quote('123'));await asyncio.sleep(0)
+        call=self.ib.client.reqMktData.call_args
+        self.assertEqual(call.args[1].conId,123);self.assertEqual(call.args[1].secType,'STK')
+        self.assertEqual(call.args[3:5],(True,False))
+        self.ticks(call.args[0],True);q=await task
+        self.assertEqual(q['brokerConid'],123);self.assertEqual(q['source'],'IB Gateway')
+        self.assertEqual(q['status'],'LIVE');self.assertEqual(q['ask'],10.02)
+
+    async def test_live_stream_quote_is_reused_without_new_request(self):
+        await self.e._subscribe_one(123,{'conid':123})
+        self.ticks(self.ib.client.reqMktData.call_args.args[0])
+        q=await self.e._guns_ib_quote('123')
+        self.assertEqual(q['bid'],10);self.assertEqual(self.ib.client.reqMktData.call_count,1)
+        self.ib.client.cancelMktData.assert_not_called()
+
+    def test_delayed_crossed_missing_stale_or_halted_quote_cannot_screen(self):
+        now=int(time.time()*1000);q=dict(bid=10,ask=10.02,last=10.01,status='LIVE',at=now)
+        for change in [dict(bid=None),dict(ask=None),dict(bid=0),dict(ask=9),dict(at=now-20000),dict(status='DELAYED'),dict(halted=True)]:
+            self.assertFalse(self.e._screen_quote_complete({**q,**change},now))
 
 
 class StreamTests(unittest.TestCase):
