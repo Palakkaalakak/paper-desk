@@ -220,17 +220,22 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
         raise ValueError('Provider redirect refused')
 
 
-def source_fetch(host, path, params):
+def source_fetch(host, path, params, headers=None):
     """Fixed provider hosts only. No caller URLs, redirects, credential logs or scraping."""
-    if host not in ('feeds.finance.yahoo.com', 'news.google.com', 'api.benzinga.com', 'financialmodelingprep.com'):
+    if host not in ('feeds.finance.yahoo.com', 'news.google.com', 'api.benzinga.com', 'financialmodelingprep.com', 'data.alpaca.markets'):
         raise ValueError('Unsupported source')
+    if host == 'data.alpaca.markets' and path not in ('/v2/stocks/snapshots', '/v2/stocks/bars'):
+        raise ValueError('Unsupported Alpaca read-only data path')
     url = 'https://' + host + path + '?' + urllib.parse.urlencode(params)
-    req = urllib.request.Request(url, headers={'User-Agent':'PaperDesk/1.0', 'Accept':'application/json, application/rss+xml, application/xml'})
+    req = urllib.request.Request(url, headers={'User-Agent':'PaperDesk/1.0', 'Accept':'application/json, application/rss+xml, application/xml', **(headers or {})})
     try:
         with urllib.request.build_opener(NoRedirect()).open(req, timeout=8) as response:
             payload = response.read(2000001)
             if len(payload)>2000000: raise ValueError('Response too large')
             return payload
+    except urllib.error.HTTPError as error:
+        # Report status, never credential-bearing URLs or provider response bodies.
+        raise ValueError('Provider HTTP '+str(error.code)+': '+('credentials or data entitlement required' if error.code in (401,403) else 'rate limit' if error.code==429 else 'data request failed')) from None
     except Exception:
         # urllib errors can contain a URL with an API key. Never propagate those.
         raise ValueError('Source unavailable; check network, entitlement or provider limits') from None
@@ -290,15 +295,18 @@ def float_reference(ticker):
     ticker=symbol(ticker)
     key=os.environ.get('PAPER_FMP_KEY')
     if not key:
-        return dict(symbol=ticker,floatShares=None,source='Not configured',date=None,status='unavailable',warning='Free float requires a reference-data entitlement (PAPER_FMP_KEY); outstanding shares are not substituted.')
+        return dict(symbol=ticker,floatShares=None,source='Not configured',date=None,status='unavailable',setupRequired=True,warning='Connect FMP shares-float using PAPER_FMP_KEY. IBKR removed its fundamental-data API in 10.47; Gateway subscriptions cannot supply this field.')
     try:
         data=json.loads(source_fetch('financialmodelingprep.com','/stable/shares-float',dict(symbol=ticker,apikey=key)))
         row=next(x for x in data if str(x.get('symbol','')).upper()==ticker)
         value=row.get('floatShares')
         if isinstance(value,bool) or not isinstance(value,(float,int)) or not 0<value<1e15: raise ValueError('Missing float')
         date=str(row.get('date') or '')
-        dt.datetime.fromisoformat(date.replace('Z','+00:00'))
-        return dict(symbol=ticker,floatShares=value,date=date,source='Financial Modeling Prep / shares-float',status='returned',retrievedAt=int(time.time()*1000))
+        dated=dt.datetime.fromisoformat(date.replace('Z','+00:00'))
+        if dated.tzinfo is None: dated=dated.replace(tzinfo=dt.timezone.utc)
+        age=(dt.datetime.now(dt.timezone.utc)-dated).total_seconds()
+        if not 0<=age<45*86400: raise ValueError('Float as-of date outside freshness policy')
+        return dict(symbol=ticker,floatShares=value,date=date,basis='free-float',source='Financial Modeling Prep / shares-float',status='returned',retrievedAt=int(time.time()*1000))
     except Exception:
         return dict(symbol=ticker,floatShares=None,date=None,source='Financial Modeling Prep',status='unavailable',warning='Free float unavailable; check key, plan and symbol coverage.')
 
@@ -334,27 +342,102 @@ def broker_float(xml, ticker, conid, now):
 
 
 async def float_data(engine,ticker):
+    # IBKR 10.47 removed reqFundamentalData. Never wait on that retired service.
+    return await asyncio.to_thread(float_reference,ticker)
+
+
+def required_float(ticker):
+    result=float_reference(ticker)
+    if result.get('status')!='returned': raise ValueError(result['warning'])
+    return result
+
+
+def alpaca_headers():
+    key=os.environ.get('PAPER_ALPACA_KEY') or os.environ.get('APCA_API_KEY_ID')
+    secret=os.environ.get('PAPER_ALPACA_SECRET') or os.environ.get('APCA_API_SECRET_KEY')
+    if not key or not secret: raise ValueError('Connect Alpaca SIP using PAPER_ALPACA_KEY and PAPER_ALPACA_SECRET')
+    return {'APCA-API-KEY-ID':key,'APCA-API-SECRET-KEY':secret}
+
+
+def scanner_sources():
+    try: alpaca_headers(); alpaca=True
+    except ValueError: alpaca=False
+    return dict(floatConfigured=bool(os.environ.get('PAPER_FMP_KEY')),quoteFallbackConfigured=alpaca,
+                floatSource='FMP shares-float',quoteFallback='Alpaca SIP',
+                retired='IBKR fundamental data removed in API 10.47',
+                note='Configured keys are not proof of entitlement; SIP requests require consolidated real-time access.')
+
+
+def alpaca_data(path,params):
+    # Explicit SIP only. Never accept the API default (free, single-exchange IEX).
+    data=json.loads(source_fetch('data.alpaca.markets',path,{**params,'feed':'sip'},headers=alpaca_headers()))
+    if not isinstance(data,dict) or data.get('message') or data.get('error'):
+        raise ValueError('Alpaca SIP did not return market data')
+    return data
+
+
+def iso_stamp(value):
+    date=dt.datetime.fromisoformat(str(value).replace('Z','+00:00'))
+    if date.tzinfo is None: raise ValueError('Provider timestamp must include timezone')
+    return int(date.timestamp()*1000)
+
+
+def sip_quote(ticker,now=None):
+    from market import number
     ticker=symbol(ticker)
-    c=await engine._stock(ticker)
-    ib,generation=engine._ib,engine.info.get('generation',0)
-    try:
-        req_id=ib.client.getReqId()
-        future=ib.wrapper.startReq(req_id,c)
-        try:
-            ib.client.reqFundamentalData(req_id,c,'ReportSnapshot',[])
-            xml=await asyncio.wait_for(future,12)
-        finally:
-            if engine._ib is ib and engine.info.get('generation',0)==generation:
-                ib.client.cancelFundamentalData(req_id)
-        if engine._ib is not ib or engine.info.get('generation',0)!=generation:
-            raise ValueError('Gateway generation changed')
-        found=broker_float(xml,ticker,c.conId,int(time.time()*1000))
-        if found: return found
-    except (ValueError,TypeError,ET.ParseError,asyncio.TimeoutError): pass
-    fallback=await asyncio.to_thread(float_reference,ticker)
-    if fallback.get('floatShares'): return dict(fallback,conid=c.conId,basis='free-float')
-    return dict(symbol=ticker,conid=c.conId,status='unavailable',floatShares=None,source='IBKR ReportSnapshot',
-                warning='Gateway supplied no current float or share-count bound. Check IBKR fundamentals entitlement; stocks with missing evidence are excluded.')
+    data=alpaca_data('/v2/stocks/snapshots',{'symbols':ticker})
+    snap=data.get(ticker)
+    if not isinstance(snap,dict): raise ValueError('Alpaca SIP symbol not returned')
+    q,t=snap.get('latestQuote') or {},snap.get('latestTrade') or {}
+    bid,ask,last=(number(v,True) for v in (q.get('bp'),q.get('ap'),t.get('p')))
+    now=int(time.time()*1000) if now is None else now
+    quote_at,trade_at=iso_stamp(q.get('t')),iso_stamp(t.get('t'))
+    if bid is None or ask is None or last is None or bid<=0 or ask<bid or last<=0:
+        raise ValueError('Alpaca SIP returned no complete positive bid/ask/trade')
+    if not 0<=now-quote_at<15000 or not 0<=now-trade_at<15000:
+        raise ValueError('Alpaca SIP quote/trade is not real-time; delayed data cannot screen')
+    return dict(symbol=ticker,bid=bid,ask=ask,last=last,tradeLast=last,
+                bidSize=number(q.get('bs')),askSize=number(q.get('as')),status='LIVE',feed='sip',
+                at=quote_at,tradeAt=trade_at,receivedAt=now,source='Alpaca SIP consolidated NBBO',screeningOnly=True)
+
+
+def sip_bars(ticker,start,end,timeframe):
+    params=dict(symbols=symbol(ticker),start=start,end=end,timeframe=timeframe,limit=10000,adjustment='split',sort='asc')
+    result=[];seen=set()
+    for _ in range(4):
+        data=alpaca_data('/v2/stocks/bars',params)
+        batch=(data.get('bars') or {}).get(ticker)
+        if not isinstance(batch,list): raise ValueError('Alpaca SIP bars missing for requested symbol')
+        result.extend(batch)
+        token=data.get('next_page_token')
+        if not token: return result
+        if token in seen: raise ValueError('Alpaca repeated history page')
+        seen.add(token);params['page_token']=token
+    raise ValueError('Alpaca history pagination incomplete')
+
+
+def sip_verification(detail,now):
+    from types import SimpleNamespace
+    from market import number
+    ny=ZoneInfo('America/New_York');day=dt.datetime.fromtimestamp(now/1000,ny).date()
+    session=next((s for s in detail.liquidSessions() if s.start.astimezone(ny).date()==day),None)
+    if not session: raise ValueError('IBKR contract session required for SIP verification')
+    ticker=symbol(detail.contract.symbol)
+    start=dt.datetime.combine(day,dt.time(4),ny)
+    end=min(dt.datetime.fromtimestamp(now/1000,dt.timezone.utc),session.start)
+    if end<=start: raise ValueError('Premarket session has not started')
+    minute=sip_bars(ticker,start.isoformat(),end.isoformat(),'1Min')
+    daily=sip_bars(ticker,(day-dt.timedelta(days=14)).isoformat(),day.isoformat(),'1Day')
+    def bar(x,daily=False):
+        timestamp=iso_stamp(x.get('t'))
+        date=dt.datetime.fromtimestamp(timestamp/1000,ny)
+        return SimpleNamespace(date=date.date().isoformat() if daily else date,close=number(x.get('c'),True),volume=number(x.get('v'),True))
+    result=verification(detail,[bar(x) for x in minute],[bar(x,True) for x in daily],now)
+    if result['premarketVolume'] is None or result['previousClose'] is None:
+        raise ValueError('Alpaca SIP did not supply premarket volume and prior close')
+    result.update(source='Alpaca SIP TRADES / daily close; IBKR contract and session',
+                  volumeUnit='consolidated SIP shares',coverage='Completed 04:00 ET to regular-open SIP minute bars; all returned pages checked.')
+    return result
 
 
 async def schedule(engine):
