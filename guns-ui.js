@@ -71,30 +71,21 @@
     throw Error(row.symbol+': '+(why.join('; ')||'Portfolio changed'));};
    try{
     sources=await recover('guns_data_status',{});if(!current())return;
-    if(!sources.floatConfigured){st.retryAt=a.now()+60000;scanProgress='Connect FMP shares-float before scanning · PAPER_FMP_KEY';scanDiagnostics=['IBKR removed reqFundamentalData in API 10.47. Configure FMP in the Python server environment and restart. No stock requests were wasted on the retired API.'];a.save();return;}
+    if(!sources.floatConfigured)scanDiagnostics.push('Float source not configured; IBKR quote/history stages still run independently.');
     scanProgress='IBKR discovery · FMP float · '+(sources.quoteFallbackConfigured?'Alpaca SIP fallback connected':'Gateway quotes');
     const resume=st.acquisition&&C.day(st.acquisition.at)===C.day(a.now())&&a.now()-st.acquisition.at<1800000;
     const found=resume?st.acquisition.rows:(await recover('guns_scan',{})).rows||[];
-    if(!current())return;st.acquisition={at:resume?st.acquisition.at:a.now(),rows:found};a.save();discovery=found.slice(0,1);a.sync();
-    const accepted=[];let unresolved=0;
-    for(let i=0;i<found.length&&accepted.length<4;i++){
-     if(!current())return;const row=found[i];discovery=[row,...accepted];a.sync();scanProgress='IBKR screening '+(i+1)+' / '+found.length+' · '+accepted.length+' ready';live();
-     try{
-      let ev=await recover('guns_verify',{conid:row.conid});if(!current())return;if(Number(ev.conid)!==Number(row.conid))throw Error('Contract mismatch');
-      const preliminary=check(row,await acquireQuote(row),ev,{...E.cfg(),floatMode:'prefer'});
-      if(!preliminary.eligible){if(preliminary.pending)unresolved++;scanDiagnostics.push(row.symbol+': '+preliminary.why.join('; '));continue;}
-      const f=await recover('guns_float',{symbol:row.symbol});if(!current())return;
-      if(f.conid!=null&&Number(f.conid)!==Number(row.conid))throw Error('Float contract mismatch');
-      if(!W.floatKnown(f,a.now())){unresolved++;scanDiagnostics.push(row.symbol+': '+(f.warning||'FMP float evidence pending'));continue;}
-      if(a.now()-ev.at>60000)ev=await recover('guns_verify',{conid:row.conid});
-      evidence.set(row.conid,{...ev,float:f});floatRefs.set(row.symbol,f);times['verify:'+row.conid]=a.now();
-      const checked=check(row,await acquireQuote(row),evidence.get(row.conid),{...E.cfg(),floatMode:'strict'});
-      if(checked.eligible)accepted.push(W.screenSnapshot(checked,a.now()));else {if(checked.pending)unresolved++;scanDiagnostics.push(row.symbol+': '+checked.why.join('; '));}
-     }catch(e){unresolved++;scanDiagnostics.push(row.symbol+': '+e.message);}
-    }
-    const final=[];discovery=accepted;a.sync();
-    for(const row of accepted){if(!current())return;let ev=evidence.get(row.conid);
-     if(a.now()-ev.at>45000){try{ev={...await recover('guns_verify',{conid:row.conid}),float:row.screen.float};evidence.set(row.conid,ev);}catch{unresolved++;continue;}}
+    if(!current())return;st.acquisition={at:resume?st.acquisition.at:a.now(),rows:found};a.save();discovery=found;a.sync();
+    let unresolved=0;
+    const runPhase=async(label,items,limit,work)=>{let done=0;scanProgress=label+' · 0 / '+items.length;live();const results=await W.mapPool(items,limit,async(item,i)=>{if(!current())return null;try{return await work(item,i);}finally{done++;if(current()){scanProgress=label+' · '+done+' / '+items.length;live();}}});return results.flatMap((r,i)=>{if(r.error){unresolved++;scanDiagnostics.push((items[i].row||items[i]).symbol+': '+r.error.message);return [];}return r.value?[r.value]:[];});};
+    let pool=await runPhase('1 / IBKR quotes in parallel',found,6,async row=>{const q=a.quotes()[row.conid],last=actualQuote(q).last;return {row,q:q?.status==='LIVE'&&Number.isFinite(last)&&a.now()-q.at>=0&&a.now()-q.at<15000?q:await acquireQuote(row)};});
+    for(const [id,label] of [['gap','Gap ≥ 5%'],['price','Price ≥ $1.50'],['spread','Spread within limit'],['volume','Traded volume minimum']]){const before=pool.length;pool=W.cheapFilter(pool,id,E.cfg());scanDiagnostics.push(label+': '+pool.length+' / '+before+' survive preliminary quote filter');scanProgress=label+' · '+pool.length+' survivors';live();}
+    if(!current())return;discovery=pool.map(x=>x.row);a.sync();
+    pool=await runPhase('2 / PM volume, gap, session & stock verification',pool,3,async item=>{const {row}=item,ev=await recover('guns_verify',{conid:row.conid});if(!current())return null;if(Number(ev.conid)!==Number(row.conid))throw Error('Contract mismatch');const q=await acquireQuote(row),c=check(row,q,ev,{...E.cfg(),floatMode:'prefer'});if(!c.eligible){if(c.pending)unresolved++;scanDiagnostics.push(row.symbol+': '+c.why.join('; '));return null;}return {row,q,ev};});
+    pool=await runPhase('3 / Float for verified survivors only',pool,3,async item=>{const f=await recover('guns_float',{symbol:item.row.symbol});if(!current())return null;if(f.conid!=null&&Number(f.conid)!==Number(item.row.conid))throw Error('Float contract mismatch');if(!W.floatKnown(f,a.now()))throw Error(f.warning||'Dated float evidence unavailable');if(!W.floatBelow(f,E.cfg().maxFloat,a.now())){scanDiagnostics.push(item.row.symbol+': float reaches cap');return null;}evidence.set(item.row.conid,{...item.ev,float:f});floatRefs.set(item.row.symbol,f);times['verify:'+item.row.conid]=a.now();return item.row;});
+    if(!current())return;const accepted=pool,final=[];discovery=accepted;a.sync();
+    for(const row of accepted){if(!current())return;if(final.length>=4)break;let ev=evidence.get(row.conid);
+     if(a.now()-ev.at>45000){try{ev={...await recover('guns_verify',{conid:row.conid}),float:ev.float};evidence.set(row.conid,ev);}catch{unresolved++;continue;}}
      try{const c=check(row,await acquireQuote(row),ev,{...E.cfg(),floatMode:'strict'});
       const snapshot=W.screenSnapshot(c,a.now());if(c.eligible&&W.completeScreen(snapshot,E.cfg()))final.push(snapshot);else {if(c.pending||c.eligible)unresolved++;scanDiagnostics.push(row.symbol+': '+(c.why.join('; ')||'Awaiting complete screening snapshot'));}
      }catch(e){unresolved++;scanDiagnostics.push(e.message);}
