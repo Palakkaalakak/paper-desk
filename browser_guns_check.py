@@ -28,6 +28,7 @@ def main():
     errors=[]
     requests=[]
     credential_requests=[]
+    depth_fixture={'mode':'missing','revision':0}
     with sync_playwright() as pw:
         browser=pw.chromium.launch(args=['--no-sandbox'])
         page=browser.new_page(viewport={'width':1440,'height':1000})
@@ -67,7 +68,14 @@ def main():
             if path=='/data/guns_news':return r.fulfill(json={'source':'Fixture API news','at':OPEN+10000,'providers':[dict(code='TEST',name='Fixture provider')],'rows':[dict(time='2026-09-10',provider='TEST',articleId='story1',headline='Fixture earnings beat'),dict(time='2026-09-10',provider='TEST',articleId='footer',headline='Footer-only fixture')]})
             if path=='/data/guns_article' and params.get('articleId')==['footer']:return r.fulfill(json={'text':'','rawText':'(END) Copyright fixture','contentStatus':'incomplete'})
             if path=='/data/guns_article':return r.fulfill(json={'text':'Fixture earnings article <img src=x onerror=alert(1)>','provider':'TEST','articleId':'story1','contentStatus':'body_returned','rawText':'Fixture earnings article <img src=x onerror=alert(1)>'})
-            if path=='/data/depth':return r.fulfill(json={'bids':[dict(price=10.48,size=100)],'asks':[dict(price=10.50,size=100)]})
+            if path=='/data/depth':
+                if depth_fixture['mode']=='missing':return r.fulfill(json={'bids':[],'asks':[]})
+                # Each fixture response explicitly represents a new broker update.
+                depth_fixture['revision']+=1
+                return r.fulfill(json=dict(symbol='TEST',conid=12345,source='IB Gateway SMART depth',status='LIVE',
+                    updatedAt=int(r.request.headers['x-fixture-now']),revision=depth_fixture['revision'],stream='fixture:1',
+                    bids=[dict(price=10.19-i*.01,size=100) for i in range(3)],
+                    asks=[dict(price=10.21+i*.01,size=500 if depth_fixture['mode']=='flag' else 100) for i in range(3)]))
             if path.startswith('/api/'):return r.fulfill(json={})
             return r.fulfill(status=404,body='Unexpected fixture request')
         page.route('**/*',route)
@@ -307,7 +315,42 @@ def main():
             assert button.is_enabled(),button.get_attribute('title')
             button.click()
             assert page.evaluate('__gunsTest.desk.execution.pending()[0]?.guns.setup')==setup,page.locator('#guns-error').inner_text()
-            page.locator('[data-guns-cancel]').click()
+            if setup==4:
+                page.evaluate('__gunsTest.desk.execution.pulse();__gunsTest.desk.live()')
+                assert page.evaluate('__gunsTest.desk.execution.pending()[0].guns.l2.mode')=='waiting'
+                depth_fixture['mode']='flag'
+                # Application tab changes must not stop S4/S5 monitoring.
+                page.locator('[data-tab="trade"]').first.click()
+                before_depth=requests.count('/data/depth')
+                page.clock.run_for(1100)
+                page.evaluate('__gunsTest.desk.pulse()')
+                page.wait_for_function("__gunsTest.desk.execution.pending()[0]?.guns.l2.mode==='checking'")
+                page.clock.run_for(1100)
+                page.evaluate('__gunsTest.desk.pulse()')
+                page.wait_for_function("__gunsTest.desk.execution.pending()[0]?.guns.l2.mode==='review'")
+                assert requests.count('/data/depth')>=before_depth+2
+                page.locator('[data-tab="guns"]').click()
+                page.locator('#guns-depth-alerts [data-guns-depth-decision="resume"]').click()
+                assert page.evaluate('__gunsTest.desk.execution.pending()[0].guns.l2.mode')=='clear'
+                # Acceptance is temporary, not a permanent override.
+                page.clock.run_for(5100)
+                page.evaluate('__gunsTest.desk.pulse()')
+                page.wait_for_function("__gunsTest.desk.execution.pending()[0]?.guns.l2.mode==='review'")
+                page.locator('#guns-depth-alerts [data-guns-depth-decision="cancel"]').click()
+                assert page.evaluate('__gunsTest.desk.execution.pending().length')==0
+                page.locator('#guns-depth-settings').evaluate('(e)=>e.open=true')
+                page.locator('#guns-l2-cancel').check()
+                page.evaluate('tick(10.19,10.21,10.20,100)')
+                page.locator('[data-guns-confirm="4"]').click()
+                page.clock.run_for(2200)
+                page.evaluate('__gunsTest.desk.pulse()')
+                page.wait_for_function("__gunsTest.desk.execution.pending().length===0")
+                assert page.evaluate("__paper.S.orders.at(-1).guns.l2.mode")=='cancelled'
+                assert 'Level II:' in page.evaluate('__paper.S.orders.at(-1).note')
+                page.locator('#guns-l2-cancel').uncheck()
+                depth_fixture['mode']='missing'
+            else:
+                page.locator('[data-guns-cancel]').click()
         page.wait_for_timeout(250)
         before=page.evaluate('JSON.stringify(__paper.S)')
         account_storage=page.evaluate('localStorage.paperAccount')
@@ -368,7 +411,7 @@ def main():
         assert page.evaluate('__gunsTest.desk.execution.pending()[0]?.guns.setup')==5,page.locator('#guns-error').inner_text()
         page.locator('[data-guns-cancel]').click()
         assert not errors,errors
-        print(json.dumps({'guns':'verified scanner, escaped articles, S1-S5 controls, four charts, hover capture, news fallback, focus guards, four-stock tutorial isolation, dynamic risk, paper lifecycle, persistence/mobile','browser_errors':errors}))
+        print(json.dumps({'guns':'verified scanner, local key form, visible blockers, S1-S5, charts/hover/news, off-tab Level II hold/resume/auto-cancel, tutorial isolation, dynamic risk, paper lifecycle, persistence/mobile','browser_errors':errors}))
         page.unroute_all(behavior='ignoreErrors')
         browser.close()
 
