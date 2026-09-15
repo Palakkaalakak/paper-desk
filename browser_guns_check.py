@@ -316,6 +316,7 @@ def main():
             button.click()
             assert page.evaluate('__gunsTest.desk.execution.pending()[0]?.guns.setup')==setup,page.locator('#guns-error').inner_text()
             if setup==4:
+                print('Checking Level II off-tab hold/resume/cancel',flush=True)
                 page.evaluate('__gunsTest.desk.execution.pulse();__gunsTest.desk.live()')
                 assert page.evaluate('__gunsTest.desk.execution.pending()[0].guns.l2.mode')=='waiting'
                 depth_fixture['mode']='flag'
@@ -324,10 +325,10 @@ def main():
                 before_depth=requests.count('/data/depth')
                 page.clock.run_for(1100)
                 page.evaluate('__gunsTest.desk.pulse()')
-                page.wait_for_function("__gunsTest.desk.execution.pending()[0]?.guns.l2.mode==='checking'")
+                page.wait_for_function("__gunsTest.desk.execution.pending()[0]?.guns.l2.mode==='checking'",timeout=10000)
                 page.clock.run_for(1100)
                 page.evaluate('__gunsTest.desk.pulse()')
-                page.wait_for_function("__gunsTest.desk.execution.pending()[0]?.guns.l2.mode==='review'")
+                page.wait_for_function("__gunsTest.desk.execution.pending()[0]?.guns.l2.mode==='review'",timeout=10000)
                 assert requests.count('/data/depth')>=before_depth+2
                 page.locator('[data-tab="guns"]').click()
                 page.locator('#guns-depth-alerts [data-guns-depth-decision="resume"]').click()
@@ -335,7 +336,7 @@ def main():
                 # Acceptance is temporary, not a permanent override.
                 page.clock.run_for(5100)
                 page.evaluate('__gunsTest.desk.pulse()')
-                page.wait_for_function("__gunsTest.desk.execution.pending()[0]?.guns.l2.mode==='review'")
+                page.wait_for_function("__gunsTest.desk.execution.pending()[0]?.guns.l2.mode==='review'",timeout=10000)
                 page.locator('#guns-depth-alerts [data-guns-depth-decision="cancel"]').click()
                 assert page.evaluate('__gunsTest.desk.execution.pending().length')==0
                 page.locator('#guns-depth-settings').evaluate('(e)=>e.open=true')
@@ -344,7 +345,8 @@ def main():
                 page.locator('[data-guns-confirm="4"]').click()
                 page.clock.run_for(2200)
                 page.evaluate('__gunsTest.desk.pulse()')
-                page.wait_for_function("__gunsTest.desk.execution.pending().length===0")
+                page.wait_for_function("__gunsTest.desk.execution.pending().length===0",timeout=10000)
+                print('Level II browser decisions passed',flush=True)
                 assert page.evaluate("__paper.S.orders.at(-1).guns.l2.mode")=='cancelled'
                 assert 'Level II:' in page.evaluate('__paper.S.orders.at(-1).note')
                 page.locator('#guns-l2-cancel').uncheck()
