@@ -27,6 +27,7 @@ def main():
         history['daily'].append(dict(t=day.isoformat(),o=8,h=9.1,l=7.9,c=9,v=100000))
     errors=[]
     requests=[]
+    credential_requests=[]
     with sync_playwright() as pw:
         browser=pw.chromium.launch(args=['--no-sandbox'])
         page=browser.new_page(viewport={'width':1440,'height':1000})
@@ -45,6 +46,11 @@ def main():
             if path=='/data/subscriptions':return r.fulfill(json={'connected':True,'feedHealthy':True,'generation':0,'quotes':{}})
             if path=='/data/stream':return r.fulfill(content_type='text/event-stream',body=': fixture\n\n')
             if path in ('/data/twsstatus','/api/iserver/auth/status'):return r.fulfill(json={'connected':True,'authenticated':True})
+            if path=='/data/guns_credentials':
+                assert r.request.method=='POST'
+                assert r.request.headers.get('x-paper-desk-settings')=='1'
+                credential_requests.append(r.request.post_data_json)
+                return r.fulfill(json={'configured':True})
             if path=='/data/guns_data_status':return r.fulfill(json={'floatConfigured':True,'quoteFallbackConfigured':True})
             if path=='/data/guns_ib_quote':return r.fulfill(json=dict(brokerConid=int(params['conid'][0]),bid=10.48,ask=10.50,last=10.49,source='IB Gateway',status='LIVE',at=int(r.request.headers['x-fixture-now']),screeningOnly=True))
             if path=='/data/guns_scan':return r.fulfill(json={'rows':[dict(conid=12345,symbol='TEST',name='Fixture stock',secType='STK',brokerId=True)]})
@@ -94,6 +100,14 @@ def main():
         page.evaluate('__gunsTest.desk.pulse()')
         page.locator('.guns-stage-nav [data-guns-stage="scanner"]').click()
         page.wait_for_function("document.querySelector('#guns-scanner').textContent.includes('IBKR screened')")
+        page.locator('#guns-source-settings summary').click()
+        page.locator('#guns-fmp-key').fill('fixture_key_not_real')
+        page.locator('#guns-source-save').click()
+        page.wait_for_function("document.querySelector('#guns-source-notice').textContent.includes('Saved on this Paper Desk server')")
+        assert credential_requests==[{'key':'fixture_key_not_real'}]
+        assert page.locator('#guns-fmp-key').input_value()==''
+        assert 'fixture_key_not_real' not in page.evaluate('JSON.stringify(localStorage)')
+        assert 'fixture_key_not_real' not in page.locator('body').inner_text()
         assert page.evaluate('quoteRecoveryChecks')==2
         card=page.locator('.guns-candidate').inner_text()
         assert 'Bid $10.4800' in card and 'Ask $10.5000' in card and 'Spread $0.0200' in card,card
@@ -153,6 +167,9 @@ def main():
         page.locator('#guns-setup').select_option('1')
         page.evaluate('tick(10.68,10.7,10.69);__gunsTest.desk.live()')
         assert 'above premarket high' in page.locator('#guns-strategy-summary').inner_text()
+        assert page.locator('[data-guns-confirm="1"]').is_disabled()
+        assert 'No chase' in page.locator('#guns-entry-blockers').inner_text()
+        assert 'Blocked:' in page.locator('[data-guns-confirm="1"]').inner_text()
         page.evaluate("__gunsTest.feed({connected:false,feedHealthy:false,quotes:{}});__gunsTest.desk.live()")
         assert 'distance unavailable' in page.locator('#guns-strategy-summary').inner_text()
         page.evaluate('tick();__gunsTest.desk.live()')
