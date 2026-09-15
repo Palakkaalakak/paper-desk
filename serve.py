@@ -44,6 +44,26 @@ import market
 
 PAGE_CACHE = {'mtime': None, 'raw': b'', 'gzip': b''}
 PAGE_LOCK = threading.Lock()
+SETTINGS_LOCK = threading.Lock()
+
+def save_fmp_key(key, path=None):
+    if not isinstance(key,str) or not re.fullmatch(r'[A-Za-z0-9_-]{10,128}',key):
+        raise ValueError('Enter a valid FMP API key')
+    import tempfile
+    path=path or os.path.join(os.path.dirname(os.path.abspath(__file__)),'.env')
+    with SETTINGS_LOCK:
+        try:
+            with open(path,encoding='utf-8') as source: old=source.read(65537)
+        except FileNotFoundError: old=''
+        if len(old)>65536: raise ValueError('Local settings file too large')
+        lines=[line for line in old.splitlines() if line.split('=',1)[0].strip()!='PAPER_FMP_KEY']
+        fd,tmp=tempfile.mkstemp(prefix='.env.',dir=os.path.dirname(path))
+        try:
+            with os.fdopen(fd,'w',encoding='utf-8') as out: out.write('\n'.join(lines+['PAPER_FMP_KEY='+key])+'\n')
+            os.replace(tmp,path)
+        finally:
+            if os.path.exists(tmp): os.unlink(tmp)
+        os.environ['PAPER_FMP_KEY']=key
 
 
 def _make_icon():
