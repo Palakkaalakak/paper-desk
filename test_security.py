@@ -60,6 +60,38 @@ class ServerSecurityTests(unittest.TestCase):
     def authed(self, **extra):
         return {'Cookie': 'pd_token=test-access-token', **extra}
 
+    def test_fmp_settings_requires_auth_and_local_form_headers(self):
+        headers=self.authed(**{'Content-Type':'application/json','X-Paper-Desk-Settings':'1'})
+        body=json.dumps({'key':'fixture_key_not_real'})
+        with patch.object(serve,'save_fmp_key') as save:
+            for hs in [{},self.authed(),{**headers,'Origin':'https://untrusted.example'}]:
+                status,_,_=self.request('POST','/data/guns_credentials',hs,body)
+                self.assertEqual(status,403)
+            save.assert_not_called()
+            status,_,out=self.request('POST','/data/guns_credentials',headers,body)
+            self.assertEqual(status,200);save.assert_called_once_with('fixture_key_not_real')
+            self.assertNotIn(b'fixture_key_not_real',out)
+        with patch.object(serve,'save_fmp_key',side_effect=ValueError('do not expose details')):
+            status,_,out=self.request('POST','/data/guns_credentials',headers,body)
+            self.assertEqual(status,400);self.assertNotIn(b'do not expose details',out)
+        # Simulate a network client even when authenticated: loopback only.
+        handler=object.__new__(serve.Handler)
+        handler.client_address=('192.0.2.10',1234);handler._reject=Mock()
+        handler._configure_fmp();handler._reject.assert_called_once()
+        self.assertEqual(handler._reject.call_args.args[0],403)
+
+    def test_fmp_file_save_is_private_and_preserves_other_settings(self):
+        import os, tempfile, pathlib
+        with tempfile.TemporaryDirectory() as directory,patch.dict(os.environ):
+            path=pathlib.Path(directory)/'.env'
+            path.write_text('PAPER_TWS_PORT=4002\nPAPER_FMP_KEY=old_fixture_key\n')
+            serve.save_fmp_key('fixture_key_not_real',str(path))
+            self.assertEqual(path.read_text(),'PAPER_TWS_PORT=4002\nPAPER_FMP_KEY=fixture_key_not_real\n')
+            self.assertEqual(os.environ['PAPER_FMP_KEY'],'fixture_key_not_real')
+            self.assertEqual(path.stat().st_mode & 0o777,0o600)
+            with self.assertRaises(ValueError):serve.save_fmp_key('invalid\nPAPER_PORT=9999',str(path))
+            self.assertNotIn('9999',path.read_text())
+
     def test_every_private_route_requires_authentication(self):
         for method, path in [
             ('GET', '/'), ('GET', '/data/providers'), ('GET', '/ws'),
