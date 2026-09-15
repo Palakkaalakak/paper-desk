@@ -368,6 +368,22 @@ class Handler(http.server.BaseHTTPRequestHandler):
             out = {'error': providers._friendly(e, providers.PROVIDERS.get(prov, {}).get('name', prov))}
         self._send(json.dumps(out), 'application/json')
 
+    def _configure_fmp(self):
+        import ipaddress
+        if not ipaddress.ip_address(self.client_address[0]).is_loopback:
+            return self._reject(403,'Save credentials from the computer running Paper Desk')
+        if self.headers.get('X-Paper-Desk-Settings')!='1' or self.headers.get('Content-Type','').split(';')[0]!='application/json':
+            return self._reject(403,'Use the local Paper Desk settings form')
+        lengths=self.headers.get_all('Content-Length') or []
+        if self.headers.get('Transfer-Encoding') or len(lengths)!=1 or not lengths[0].isdigit() or not 0<int(lengths[0])<=1024:
+            return self._reject(400,'Invalid settings request size')
+        try:
+            data=json.loads(self.rfile.read(int(lengths[0])))
+            save_fmp_key(data.get('key') if isinstance(data,dict) else None)
+        except (ValueError,UnicodeError): return self._reject(400,'Enter a valid FMP API key')
+        except OSError: return self._reject(500,'Cannot write local .env settings; check folder permissions')
+        return self._send(json.dumps({'configured':True,'message':'Saved on this Paper Desk server; active immediately. Provider coverage still applies.'}),'application/json')
+
     def _subscriptions(self):
         if self.headers.get('Transfer-Encoding'):
             return self._reject(400, 'Chunked bodies are not supported')
@@ -532,6 +548,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def do_POST(self):
         if not self._authorize():
             return
+        if self.path.split('?')[0] == '/data/guns_credentials':
+            return self._configure_fmp()
         if self.path.split('?')[0] == '/data/subscriptions':
             return self._subscriptions()
         if self.path.startswith('/api/'):
