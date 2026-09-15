@@ -174,10 +174,16 @@ class MarketEngine:
             if code == 1101:
                 self._clear_active()
             self._status(problem=None if code in (1101,1102) else str(text), feedHealthy=code != 1100)
+        elif code == 317:
+            for entry in getattr(self,'_depth_streams',{}).values():
+                if contract is None or entry['contract'].conId==contract.conId:
+                    entry['at']=0;entry['revision']+=1
+                    entry['ticker'].domBids.clear();entry['ticker'].domAsks.clear()
         elif code in (100,101,354,10167,10168,10197,200):
             self._status(problem='%s: %s' % (code,text))
 
     def _clear_active(self):
+        for sym in list(getattr(self,'_depth_streams',{})): self._close_depth(sym)
         for task in list(self._loading.values()):
             task.cancel()
         self._loading.clear()
@@ -264,6 +270,8 @@ class MarketEngine:
             if self._ib and self._ib.isConnected() and getattr(self, '_guns_streams', None):
                 from guns_data import close_idle
                 close_idle(self)
+            for sym,entry in list(getattr(self,'_depth_streams',{}).items()):
+                if now-entry['used']>20: self._close_depth(sym)
             wanted = dict(sorted(desired.items(), key=lambda x: -x[1]['priority'])[:self.capacity])
             for cid in list(self._active):
                 if cid not in wanted:
@@ -523,18 +531,49 @@ class MarketEngine:
         from guns_data import article
         return await article(self, provider, article_id)
 
+    def _close_depth(self,symbol):
+        entry=getattr(self,'_depth_streams',{}).pop(symbol,None)
+        if not entry: return
+        entry['ticker'].updateEvent-=entry['handler']
+        if self._ib is entry['ib'] and self.info.get('generation',0)==entry['generation']:
+            try: self._ib.cancelMktDepth(entry['contract'],isSmartDepth=True)
+            except Exception: pass
+
     async def _depth(self,symbol):
-        c = await self._stock(symbol)
-        t = self._ib.reqMktDepth(c,numRows=5,isSmartDepth=True)
-        try:
+        from guns_data import symbol as validate_symbol
+        symbol=validate_symbol(symbol)
+        if not hasattr(self,'_depth_streams'): self._depth_streams={}
+        entry=self._depth_streams.get(symbol)
+        if entry and (entry['ib'] is not self._ib or entry['generation']!=self.info.get('generation',0)):
+            self._close_depth(symbol);entry=None
+        if entry is None:
+            c=await self._stock(symbol)
+            # Stock qualification yields; another task may have acquired depth.
+            entry=self._depth_streams.get(symbol)
+            if entry is None:
+                if len(self._depth_streams)>=3:
+                    oldest=min(self._depth_streams,key=lambda s:self._depth_streams[s]['used'])
+                    self._close_depth(oldest)
+                t=self._ib.reqMktDepth(c,numRows=5,isSmartDepth=True)
+                t.domBids.clear();t.domAsks.clear()
+                self._depth_serial=getattr(self,'_depth_serial',0)+1
+                entry=dict(ib=self._ib,generation=self.info.get('generation',0),contract=c,ticker=t,used=time.monotonic(),at=0,revision=0,stream=self._depth_serial)
+                def update(ticker):
+                    if getattr(ticker,'domTicks',None):
+                        entry['at']=int(time.time()*1000);entry['revision']+=1
+                entry['handler']=update;t.updateEvent+=update;self._depth_streams[symbol]=entry
+        entry['used']=time.monotonic();t=entry['ticker']
+        if not entry['at']:
             for _ in range(20):
-                if t.domBids or t.domAsks:
-                    break
-                await asyncio.sleep(0.05)
-            return dict(bids=[dict(price=x.price,size=number(x.size)) for x in t.domBids],
-                        asks=[dict(price=x.price,size=number(x.size)) for x in t.domAsks])
-        finally:
-            self._ib.cancelMktDepth(c,isSmartDepth=True)
+                if entry['at']: break
+                await asyncio.sleep(.05)
+        if self._depth_streams.get(symbol) is not entry: raise ValueError('Depth subscription replaced')
+        live=(self._ib is entry['ib'] and self._ib.isConnected() and self.info.get('feedHealthy') is not False and getattr(t,'marketDataType',1)==1 and os.environ.get('PAPER_TWS_DATA')!='delayed')
+        return dict(symbol=symbol,conid=entry['contract'].conId,source='IB Gateway SMART depth',status='LIVE' if live else 'UNAVAILABLE',
+                    updatedAt=entry['at'],revision=entry['revision'],stream=str(entry['generation'])+':'+str(entry['stream']),
+                    bids=[dict(price=number(x.price,True),size=number(x.size,True)) for x in t.domBids],
+                    asks=[dict(price=number(x.price,True),size=number(x.size,True)) for x in t.domAsks],
+                    coverage='Displayed entitled SMART depth only; not the complete market or hidden liquidity')
 
 
 ENGINE = MarketEngine()
