@@ -1,176 +1,146 @@
-# Paper Desk — how to run it
+# Paper Desk — local startup and GUNS user guide
 
-## The short version
+Updated 2026-09-15. This guide describes the current Python / vanilla-JavaScript workstation, not a cloud service. Repository: https://github.com/Palakkaalakak/paper-desk (branch `main`).
 
-**Current default: IB Gateway streaming.** First run `python3 -m pip install -r
-requirements.txt` (Windows: `python -m pip install -r requirements.txt`), then open
-IB Gateway with its Read-Only API enabled. Start Paper Desk below. The app connects
-and streams quotes automatically; you do not need to press Refresh or enable Auto.
-The server and browser tab must remain running for paper order processing.
+## 1. Start safely
 
-The ticket has quantity presets, Bid/Mid/Ask limit shortcuts and opt-in Alt+B/Alt+S
-paper-order hotkeys. Stale, frozen, delayed or disconnected Gateway quotes cannot
-fill orders. The status line explains pending prices or data-line limits.
+1. Update your local checkout with `git pull --ff-only origin main`. Do not discard your local changes if Git reports a conflict.
+2. Install the pinned adapter: `python3 -m pip install -r requirements.txt` (Windows: use `python`).
+3. Start TWS or IB Gateway and log in. Enable socket API connections where required and keep **Read-Only API** enabled.
+4. In the Paper Desk folder, run `python3 serve.py`. On Windows, `start.bat` is an alternative; on Mac, right-click `start.command` → Open.
+5. Open **http://localhost:8765**, not the HTML file. Select **Your own TWS or IB Gateway** as the market-data provider in Account if it is not already selected.
+6. After an update, restart the Python server and reload the browser so backend and frontend match.
 
-**On your phone:** open the URL of your running, hosted Paper Desk instance. This
-repository does not include a hosted artifact URL; see `DEPLOY.md` for Python-host
-options. The server must remain running. A phone's browser has its own separate
-paper account; GitHub does not back up browser storage.
+Automatic port discovery covers Gateway 4001/4002 and TWS 7496/7497. A live-account Gateway login supplies data only: Paper Desk does not send real broker orders. The adapter retains `readonly=True` and order-method seals; the server blocks broker-write routes.
 
-**On a Mac:** unzip the folder, then **right-click `start.command` → Open** (right-click
-the first time, not a double-click — macOS blocks anything downloaded from the internet
-until you approve it once). A Terminal window opens and your browser follows.
+**Keep the browser, server and Gateway running.** Stops, targets and fills are browser-local simulations, not broker-held orders. Sleeping or closing the browser suspends that protection. Fresh LIVE IB quotes and displayed liquidity are required for execution; delayed, frozen or unavailable quotes cannot substitute. Gaps and simulated slippage can exceed the planned risk budget.
 
-If macOS says "cannot be opened because it is from an unidentified developer", that is
-the same thing: right-click → Open → Open. Or open Terminal in the folder and run
-`chmod +x start.command && ./start.command`.
+Paper accounts live in this browser's `paperAccount` localStorage. Another device/browser has a separate account. GitHub source checkpoints do not back up paper balances, orders, keys or journals. No hosted URL or cloud collector was created.
 
-**On Windows:** unzip, then double-click `start.bat`.
+## 2. Configure scanner reference data
 
-**Any system, from a terminal:** `python3 serve.py` in the folder.
+Open **GUNS → Scanner data setup / FMP key** on the computer running Paper Desk:
 
-Either way the app is at <http://localhost:8765>. Leave the Terminal window open while
-you use it — closing it stops the server.
+- Paste your FMP key into the password field and choose **Save on this Paper Desk server**.
+- The field clears after submission. The key is sent in a same-origin POST body, not a URL, and saved in the server's ignored `.env` file. It is active immediately and is not stored in the browser account or committed to GitHub.
+- Saving confirms local storage, **not provider validity or subscription coverage**. Use **Scan now** or reselect your company to request float again.
+- Saving from another computer is rejected even if that browser can access the application. Open `localhost:8765` on the server computer instead.
+- You can alternatively set `PAPER_FMP_KEY` in the Python process environment or local `.env`, then restart the server.
 
-### If the Mac says Python is missing
+The float endpoint requires an actual matching-symbol free-float count and a provider date less than 45 days old. It does not manufacture float from volume or market capitalization. IBKR's retired fundamental request is not used as the current acquisition path. Earlier probes returned dated float for AAPL and SOFI, but SOUN returned HTTP 402 under the supplied subscription. **Universal float coverage remains unresolved.** A missing/unsupported float prevents publication; it does not become an “unknown” passing card.
 
-`start.command` will tell you. Fix it with one line in Terminal:
+Optional quote/history fallback: configure `PAPER_ALPACA_KEY` and `PAPER_ALPACA_SECRET` (or `APCA_API_KEY_ID` / `APCA_API_SECRET_KEY`) on the Python server. The GUNS fallback explicitly requires entitled, real-time **SIP**, not free IEX or delayed SIP. IBKR remains first. External quotes are screening-only and never replace the IB execution feed. These keys are not configured through the FMP form.
 
-```
-xcode-select --install
-```
+## 3. Scanner workflow
 
-That installs Apple's developer tools, which include Python 3. Or download it from
-<https://www.python.org/downloads/>. Then install the IB Gateway adapter with
-`python3 -m pip install -r requirements.txt`. The base HTTP server uses the standard
-library; live Gateway streaming needs the pinned `ib_async` dependency.
+1. Open **GUNS → 01 / Scanner**. Initial acquisition starts when eligible; **Scan now** requests a manual scan.
+2. IBKR discovers up to 50 US-major-exchange stocks. Quote acquisition runs in a bounded parallel pool of six.
+3. Cheap stages remove known failures in order: gap below 5%, price below $1.50, excessive measured spread, then insufficient total traded volume. Missing measurements wait for verification; they do not count as a pass.
+4. Survivors get contract/session/history verification, up to three jobs at once, with three-second IB verification start pacing. This checks previous regular-session close and observed premarket volume separately from total volume.
+5. Only verified survivors request dated float, three at once. Finalists receive fresh quotes before publication.
+6. Up to four complete passing snapshots are published. No padding and no fabricated metrics. Cards show price, gap, premarket volume, bid, ask, spread, timestamp and float evidence.
 
----
+Default thresholds include price ≥$1.50, gap ≥5%, premarket volume ≥30,000 shares, spread ≤$0.05 and float <100M. Consult your current settings; entry checks are repeated independently.
 
-## No, you cannot just open the HTML file
+Membership and screening evidence are saved per paper book. Live quotes do not continuously reorder results. Surviving candidates retain their slots on refresh. Automatic scheduling uses the exchange's T−30/open window; manual scan is available otherwise. Recovery attempts are not successful publications. The browser/server/Gateway must be running for scheduled work.
 
-Double-clicking `paper_local.html` will show you the page, but it will have no data
-and nothing will work. Here's why, because it matters:
+If no cards appear, open **Screening diagnostics / rejections**. Numeric rejection, incomplete acquisition and provider coverage are different problems. A complete scanner pass is not catalyst approval or permission to enter a trade.
 
-The page calls same-origin `/api` and `/data` endpoints that do not exist when it
-is opened from disk. Browser cross-origin restrictions also prevent many direct
-provider requests. `serve.py` supplies those endpoints, serves the page from
-`localhost`, and forwards allowed data requests. The base server uses only
-Python's standard library; the optional TWS adapter needs `ib_async`.
+## 4. News and human review
 
-So: **always start `serve.py`, never open the HTML directly.**
+- Choose a scanner company or use independent ticker/company search in **02 / News & research**. Research search is not limited to scanner results and does not silently replace the active execution company.
+- Open the actual article. IB bodies, short wire flashes, excerpts and PDFs are distinguished. Footer-only responses are not presented as full articles; exact-story source links remain available.
+- Recovery must match the selected story; unrelated company news is never substituted. Full bodies depend on source availability/entitlement.
+- Check **Favorable catalyst reviewed; NOT fixed-price buyout** only after your own review.
+- Inspect the Daily chart and check **Daily overhead resistance / room reviewed** only when you have assessed it.
+- Use **Open this company in trading** to assign it explicitly. In Trading, **Review confirmations & optional overrides** contains the same company/day reviews.
 
----
+The strategy button itself confirms your chart/setup review. Reading a headline or checking one box does not bypass missing prices, float, history, spread, window or risk constraints.
 
-## Which data do you want?
+## 5. Charts and controls
 
-You have four choices, and you can switch between them any time on the Account tab.
+Four saved layout presets:
 
-### 1. Free, no signup, no key — unofficial
+| Preset | Use |
+|---|---|
+| Four companies / 1m | Compare execution action |
+| Four companies / 5m | Compare premarket structure |
+| Four companies / Daily | Inspect overhead resistance |
+| One company / Execution | Same company across 1m, 5m, Daily and 15m |
 
-Just run `python3 serve.py`, open the page, go to **Account → Market data source**,
-set *Free data only*, kind *No key, unofficial scraping*.
+Each panel has company search/dropdown, timeframe and reset-view controls. Switch focus or 2×2 view; the active chart determines execution selection. Charts show observed IB bars, volume, EMA9/20 and SMA50/200. Missing indicator warmup is not fabricated. These are local canvas charts, not an embedded TWS window; live parity with TWS remains to be checked.
 
-Works immediately for quotes. The app does everything it can to keep this path alive —
-browser-style cookie and crumb, retries, failover between Yahoo's two hosts, rate-limit
-backoff, and a cache so it asks less often.
+- **1–5:** confirm/place that numbered strategy's calculated paper stop-limit entry, stop and target. The dropdown is not a second transmit step. Shortcuts are blocked while editing fields or in other app tabs/dialogs.
+- **H:** toggle hovered-candle entry selection. The actual candle column supplies its high/low, independent of cursor Y-price. Outside the chart → AUTO. Strategy timeframe/session rules still apply; S5 cannot use a later candle.
+- **Q:** show/hide quick settings. Risk presets, target R, S1/S2 stop mode and breakeven are also available directly.
+- Shortcut bindings can be changed to unique supported Alt+letter/digit combinations.
+- Use the strategy summary/expanded tooltip for distance to PM high or pivot, planned entry, remaining cap headroom and applicable formation rules.
 
-**But the option chain will fail sometimes**, with a 401 from Yahoo, and there is no
-client-side fix for that. If you mostly want option chains, skip to option 2 — a free
-Tradier token avoids Yahoo's cookie/crumb problem, though any provider can still fail.
+Use Daily for resistance, 5m for S1–S3 structure and 1m for execution/S4–S5. Extension is a judgment about distance from the base/support and room to resistance, not a guaranteed indicator signal. Above the stop-limit cap means no chase.
 
-### 2. Free, official, with a key — recommended
+## 6. Strategies, windows and initial stops
 
-**Alpaca** is the best free option: real-time IEX quotes with a genuine bid and ask,
-option chains with greeks, 200 calls a minute, and it's a documented API you hold a
-key for.
+Times below are for a normal 09:30 ET regular open; execution uses the reported exchange session. Numeric timing/ATR cutoffs are application guardrails, not claims of an optimal strategy.
 
-1. Sign up free at <https://alpaca.markets>
-2. Home → **API Keys** → generate a key. You get a Key ID and a Secret.
-3. In the app: Account → Market data source → *Free data only*, kind *Official API*,
-   provider **Alpaca**, and paste the key as `KEYID:SECRET` (both parts, one colon
-   between them).
-
-**Tradier** is the one to use for options — 15 minutes delayed, but real chains with
-greeks across every listed expiry. Free sandbox account at
-<https://developer.tradier.com>, then paste the access token on its own.
-
-**You can mix them**, and for most people that is the right answer: quotes from Alpaca
-(live), chains from Tradier (complete). Account tab → *Option chains from* → Tradier.
-
-Two things to know about Alpaca's free tier: quotes are **IEX only**, a few percent of
-US volume, so real-time but not the national best bid and offer; and its options feed
-is **indicative** rather than full OPRA, which is why Tradier is better for chains.
-
-### 3. Your own TWS or IB Gateway — the best data here
-
-If you already run TWS, this is the one to use. Real-time ticks, IBKR's own greeks and
-implied volatility on every strike, every listed expiry, and Level 2 depth.
-
-1. `pip install ib_async`
-2. In TWS: **Edit → Global Configuration → API → Settings** → tick **Enable ActiveX and
-   Socket Clients**. Leave **Read-Only API** ticked. IB Gateway allows API connections
-   already.
-3. Leave TWS or Gateway running. There is no headless mode.
-4. In the app: Account → Market data source → *Free data only*, kind **Your own TWS or
-   IB Gateway**.
-
-Ports are found automatically: TWS live 7496, TWS paper 7497, Gateway live 4001,
-Gateway paper 4002.
-
-**It is designed for paper trading only.** The adapter connects with `readonly=True`,
-constructs no order objects, and replaces order-sending methods on its IB instance
-with a function that raises. Keep **Read-Only API** enabled in TWS as the broker-side
-safeguard; a library flag alone is not an order-transmission guarantee. The diagnostics
-line reports `TWS: read-only, sealed` for the wrapper protections.
-
-**No market data subscription?** Doesn't matter here. If the live feed comes back empty
-the adapter switches to IBKR's delayed feed, which needs no entitlement, and labels the
-data delayed. That is the simplest fix for a paper login with nothing shared to it.
-
-### 4. Your IBKR account via the Client Portal gateway
-
-Everything the free sources can't do: streaming tick data, futures, weekly and daily
-option expirations, and IBKR's own margin engine via what-if previews.
-
-1. Download the **Client Portal API Gateway** from
-   <https://www.interactivebrokers.com/en/trading/ib-api.php> and unzip it.
-2. Start it: `bin/run.sh root/conf.yaml` (Windows: `bin\run.bat root\conf.yaml`)
-3. Open <https://localhost:5000> and log in. Your browser will complain about the
-   certificate — that's expected, it's your own machine.
-4. Start `python3 serve.py` as usual. It finds the gateway by itself.
-
-Leave the data source on *IBKR gateway, fall back if it is down* and you get the good
-data when the gateway is running and the free data when it isn't, with no
-intervention.
-
----
-
-## What differs between them
-
-| | No key (scrape) | Alpaca (free key) | IBKR gateway |
+| Strategy | Automatic entry reference | Initial stop | App window |
 |---|---|---|---|
-| Quotes | ~15 min delayed | real time (IEX) | real time, streaming |
-| Real bid/ask | sometimes | yes | yes, with depth |
-| Option chains | yes | yes, with greeks | yes, with weeklies |
-| Futures | no | no | yes |
-| IBKR's own margin numbers | no | no | yes |
-| Signup needed | none | free account | IBKR account + gateway running |
+| S1: Premarket high breakout | Actual PM high +$0.01 | Completed 1m ATR distance by default | Arm from 09:28; fills wait for open; expires 09:35 |
+| S2: Premarket pivot | Most recent completed lower 5m pivot +$0.01 | Completed 1m ATR distance by default | 09:28–09:35; fills wait for open |
+| S3: Premarket bull flag | Final completed 5m flag candle high +$0.01 | Same candle low −$0.01 | 09:28–09:35; fills wait for open |
+| S4: First opening bull flag | Completed opening 1m flag candle high +$0.01 | Same candle low −$0.01 | First hour after open; needs a valid completed reference |
+| S5: First bullish minute | First 09:30–09:31 candle high +$0.01 | That first candle low −$0.01 | After first close and strictly before 09:32 |
 
-Everything else — the account, fills, margin engine, history — is identical.
+Prices round to the verified tick. S1/S2 allow explicit PRICE or FIXED stop presets instead of ATR; missing ATR never silently selects another stop. S5 additionally requires a bullish first candle and range ≤2× premarket ATR. S2 requires at least 1R to PM high; other non-S1 strategies apply the app's PM-resistance guard. Human Daily-room review remains separate.
 
----
+For all strategies, the latest completed basis candle must close above EMA9, EMA20, SMA50 and SMA200: **5m for S1–S3, 1m for S4/S5**, with at least 200 basis bars. A current last trade above an MA is not the same as that completed-candle check. Formation/retracement hints remain advisory; you judge chart quality.
 
-## Troubleshooting
+Entry cap: entry +$0.03 when entry is below $20, otherwise +$0.05, tick-rounded. No fills above the cap. A changed pending entry/stop requires review and re-arm. At most two pending/open GUNS trades are allowed in the paper book.
 
-Look at the small grey line under "Paper Desk" at the top of the page. It names the
-data source, whether the stream is live, and the last thing that failed. Almost every
-problem is visible there.
+## 7. Risk, automatic breakeven and exits
 
-- *"python3: command not found"* — install Python 3 from <https://python.org>, or on
-  a Mac use `python3` from the Xcode command line tools.
-- *Page loads but no prices* — check the grey line. If it says a provider error, the
-  key is wrong or missing. Alpaca needs **both** parts: `KEYID:SECRET`.
-- *"gateway unreachable"* — the IBKR gateway isn't running or you haven't logged into
-  <https://localhost:5000> yet.
-- *Port already in use* — `PAPER_PORT=9000 python3 serve.py`.
+- Risk budget = **current marked equity × risk %**. At 1%: $90,000 → $900; $100,100 → $1,001.
+- Pending quantity is recalculated, including fees, whole shares, buying power and the limit-cap risk. Missing marks on held positions block new entries.
+- Targets re-anchor to actual entry fill and chosen R. Changes to risk/R settings do not rewrite existing filled brackets.
+- With **Breakeven at +1R** enabled at fill, the stop moves to actual entry when executable bid reaches entry + initial R. It never loosens, but “entry” is **before fees**, so this is not guaranteed net-zero P&L.
+- **No continuous ATR trailing stop is implemented.** ATR is used for the initial S1/S2 stop when selected.
+- Stops can fill in parts, stay triggered until the remaining quantity exits, and may slip. Targets, manual flatten and the session-close exit also require executable IB quotes.
+- **Journal** and **Export research** retain/export browser-local trade lifecycle and screening evidence. Back up your account separately before clearing browser storage.
+
+## 8. S4/S5 Level II protection
+
+Open **S4 / S5 Level II protection**:
+
+- **Monitor Level II** defaults on for pending and open S4/S5 trades in the current paper book. Monitoring continues when another application tab is selected, provided the browser keeps running.
+- **Auto-cancel** defaults off. Off means a confirmed red flag holds an unfilled entry for your decision. On cancels an unfilled entry after confirmation. Neither mode undoes a fill or cancels protective exits.
+- Defaults flag displayed spread beyond the configured limit (monitoring cap $0.05), aggregate top-five ask size ≥3× bid size, or an ask wall from entry through +0.5R sized ≥4× the median bid level.
+- The same flag signature must occur on two distinct depth updates at least one second apart. HTTP polling does not create fresh depth timestamps.
+- At least three positive levels per side and depth no older than five seconds are required. Missing/stale/mismatched depth holds new fills. Open-position stops/targets remain independent.
+- **Accept current finding / resume (5s)** accepts that same finding/stream for five seconds, subject to every other fill guard. A new finding or expired acceptance can hold the entry again. **Cancel entry** cancels only the pending entry. **Acknowledge (5s)** records an open-position decision; it does not change its stop.
+
+The engine reuses up to three SMART depth streams and expires idle streams after 20 seconds. Displayed depth depends on IBKR entitlements; it is not all market liquidity, does not expose hidden orders and cannot prove spoofing. Shared capacity or missing entitlements can hold entries; the app does not fabricate replacement books.
+
+## 9. Greyed-out buttons: resolve the actual blockers
+
+Trading now shows the selected strategy's full blocker list, and each S button lists its own reasons.
+
+| Blocker | What to check |
+|---|---|
+| FMP not configured | Save on your local server, not this development sandbox; then retry |
+| Float unavailable / HTTP 402 | Symbol coverage, subscription and dated provider response; a saved key alone cannot fix this |
+| Gap/volume/price | Current trade, previous RTH close and observed PM bars; genuine threshold failures must remain blocked |
+| Catalyst / Daily room review | Read source news and Daily chart, then explicitly confirm your review |
+| Quote / spread | Gateway connection, live entitlements, both positive quote sides and measured spread; scanner recovery does not replace fill-feed requirements |
+| Chart current / completed minute | Current matching-symbol IB history stream and latest completed minute; reload/reconnect if transport is stale |
+| Above MAs | Completed strategy candle and enough history, not cursor price or current last |
+| No chase | Ask exceeded the cap; wait for a valid setup rather than bypassing it |
+| Window | S1–S3 expire five minutes after open, S4 after first hour, S5 at the second minute |
+| Level II waiting/review | Fresh entitled SMART depth; inspect and decide on a confirmed flag |
+| Sizing/exposure | Equity, buying power, fresh marks, duplicate symbol and two-trade limit |
+
+## 10. Readiness and next validation
+
+Automated tests use isolated fixtures and the pinned IB wrapper. They can establish request ownership, safety guards, UI behavior and simulated lifecycle behavior; they cannot certify your live Gateway connection or entitlements.
+
+Before relying on a live-data paper session, compare bid/ask, spread, bar times/OHLC/volume, indicator warmup, session schedule, actual news bodies and depth revisions with your read-only Gateway. Test an S4/S5 hold, resume, auto-cancel and protective paper exit with small simulated size. Confirm recovery after disconnect/reconnect and browser sleep.
+
+Outstanding limitations: universal float coverage, live Gateway/Alpaca entitlement validation and TWS chart parity are not established. No continuous ATR trailing, native TWS embedding, cloud collector, broker-held protection or real broker orders were added.
