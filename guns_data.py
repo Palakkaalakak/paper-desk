@@ -30,6 +30,21 @@ def stamp(value):
     return str(value)
 
 
+async def scanner_capabilities(engine):
+    """Inspect the running Gateway's advertised fields; never invent float tags."""
+    xml=await asyncio.wait_for(engine._ib.reqScannerParametersAsync(),15)
+    if not isinstance(xml,str) or len(xml)>5000000 or '<!DOCTYPE' in xml.upper() or '<!ENTITY' in xml.upper():
+        raise ValueError('Invalid scanner parameter XML')
+    root=ET.fromstring(xml);fields=[];seen=set()
+    for node in root.iter():
+        values={c.tag.split('}')[-1]:c.text.strip() for c in node if c.text and c.text.strip() and len(c.text.strip())<240}
+        code=values.get('code') or values.get('filterCode') or values.get('tag')
+        if code and code not in seen and re.search(r'float|shares.?out|outstanding',json.dumps(values),re.I):
+            seen.add(code);fields.append(values)
+    return dict(source='IBKR reqScannerParameters',at=int(time.time()*1000),shareFields=fields[:40],
+                note='Advertised fields only. Counts, units and as-of dates are not established by this capability response; no inferred float is published.')
+
+
 async def scan(engine):
     from ib_async import ScannerSubscription, TagValue
     sub = ScannerSubscription(numberOfRows=50, instrument='STK', locationCode='STK.US.MAJOR',
@@ -474,12 +489,15 @@ async def verify(engine, conid):
     from ib_async import Contract
     if not str(conid).isdigit() or not 0<int(conid)<2**53:
         raise ValueError('Invalid contract ID')
-    # Shared lock paces separate browser requests, not the quote/event loop.
+    # Bound history concurrency independently from start pacing. The old lock
+    # serialized the entire network response, defeating parallel screening.
     if not hasattr(engine, '_guns_verify_lock'): engine._guns_verify_lock = asyncio.Lock()
-    async with engine._guns_verify_lock:
-        wait = getattr(engine, '_guns_verify_next', 0)-time.monotonic()
-        if wait>0: await asyncio.sleep(wait)
-        engine._guns_verify_next = time.monotonic()+3
+    if not hasattr(engine, '_guns_verify_slots'): engine._guns_verify_slots = asyncio.Semaphore(3)
+    async with engine._guns_verify_slots:
+        async with engine._guns_verify_lock:
+            wait = getattr(engine, '_guns_verify_next', 0)-time.monotonic()
+            if wait>0: await asyncio.sleep(wait)
+            engine._guns_verify_next = time.monotonic()+3
         ib = engine._ib
         details = await asyncio.wait_for(ib.reqContractDetailsAsync(Contract(conId=int(conid),exchange='SMART')),12)
         if not details or details[0].contract.conId!=int(conid) or details[0].contract.secType!='STK' or details[0].contract.currency!='USD':
