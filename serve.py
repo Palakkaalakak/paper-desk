@@ -326,8 +326,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 envkey=os.environ.get('PAPER_BENZINGA_KEY','')
                 identity=hashlib.sha256(envkey.encode()).digest()
                 out=providers._cached((kind,ticker,identity),120,lambda: guns_data.source_news(ticker))
-            elif kind in ('guns_scan', 'guns_bars', 'guns_news', 'guns_schedule'):
-                args = () if kind in ('guns_scan','guns_schedule') else (one('symbol', ''),)
+            elif kind in ('guns_scan', 'guns_bars', 'guns_news', 'guns_schedule','guns_capabilities'):
+                args = () if kind in ('guns_scan','guns_schedule','guns_capabilities') else (one('symbol', ''),)
                 out = market.ENGINE.call(kind, *args, timeout=40)
             elif kind == 'guns_verify':
                 out = market.ENGINE.call(kind, one('conid', ''), timeout=40)
