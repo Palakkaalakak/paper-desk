@@ -392,7 +392,7 @@ def main():
         assert page.locator('#guns-journal').count()==1
         # Outside the T-30/open window neither pulse nor quote changes rediscover.
         scans=requests.count('/data/guns_scan')
-        page.clock.run_for(31000)
+        page.clock.fast_forward(31000)  # Advance the inactive-window check without a real 31-second wait.
         page.evaluate('__gunsTest.desk.pulse()')
         assert requests.count('/data/guns_scan')==scans
         # Fresh desktop context verifies that key 5 actually places S5, not a selector.
