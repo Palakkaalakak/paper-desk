@@ -20,6 +20,23 @@ import http.server, socketserver, urllib.request, urllib.error, urllib.parse, ss
 import threading, webbrowser, time, hashlib, hmac, re
 from http.cookies import SimpleCookie, CookieError
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+def load_local_env(path=None):
+    """Local ignored credentials; no evaluation, logging or environment override."""
+    path=path or os.path.join(os.path.dirname(os.path.abspath(__file__)),'.env')
+    try:
+        with open(path,encoding='utf-8') as source: text=source.read(65537)
+    except FileNotFoundError: return
+    if len(text)>65536: raise ValueError('Local .env exceeds size limit')
+    for line in text.splitlines():
+        line=line.strip()
+        if not line or line.startswith('#') or '=' not in line: continue
+        key,value=line.split('=',1);key=key.strip();value=value.strip()
+        if not re.fullmatch(r'(?:PAPER_|APCA_)[A-Z0-9_]+',key): continue
+        if len(value)>=2 and value[0]==value[-1] and value[0] in ('\"',"'"): value=value[1:-1]
+        os.environ.setdefault(key,value)
+
+load_local_env()
 import ws as wsproto
 import providers
 import base64, zlib, struct, socket, gzip
