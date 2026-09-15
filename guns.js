@@ -1,6 +1,6 @@
 /* Pure GUNS rules and risk calculations; no broker order APIs. */
 (function(root,f){if(typeof module==='object'&&module.exports)module.exports=f();else root.Guns=f();})(globalThis,function(){'use strict';
-const VERSION='guns-1.5',defaults={riskPct:1,rewardR:2,maxSpread:.05,minVolume:30000,breakeven:true,atrPeriod:14,stopMode:'ATR',fixedStop:.2,hoverCandle:false,autoFrame:true,floatMode:'strict',maxFloat:100000000,openFrame:false,autoCharts:true};
+const VERSION='guns-1.5',defaults={riskPct:1,rewardR:2,maxSpread:.05,minVolume:30000,breakeven:true,atrPeriod:14,stopMode:'ATR',fixedStop:.2,hoverCandle:false,autoFrame:true,floatMode:'strict',maxFloat:100000000,openFrame:false,autoCharts:true,l2Enabled:true,l2AutoCancel:false,l2AskRatio:3,l2WallRatio:4};
 const names={1:'Premarket high breakout',2:'Premarket pivot',3:'Premarket bull flag',4:'First opening bull flag',5:'First bullish minute'};
 // Reviewed against the preserved Adam course notes; qualitative decisions remain human.
 const rules=[
@@ -113,7 +113,23 @@ function strategyHint(p,q,quoteReady,now){
  details.push(rule?.entry||'',rule?.stop||'','Informational only. All existing reviews, live-data guards and paper-only controls still apply.');
  return {title,summary,details:details.filter(Boolean)};
 }
+function depthRisk(d,inst,p,cfg,now){
+ const invalid=reason=>({valid:false,reason,flags:[],key:''});
+ if(!d||d.status!=='LIVE'||d.source!=='IB Gateway SMART depth'||Number(d.conid)!==Number(inst.conid))return invalid('Awaiting matching LIVE IBKR Level II');
+ if(!finite(d.updatedAt)||now-d.updatedAt<0||now-d.updatedAt>5000||!Number.isInteger(d.revision)||d.revision<1)return invalid('Level II stale or awaiting depth update');
+ const good=x=>x&&finite(x.price)&&x.price>0&&finite(x.size)&&x.size>0;
+ if(!Array.isArray(d.bids)||!Array.isArray(d.asks)||d.bids.length<3||d.asks.length<3||!d.bids.every(good)||!d.asks.every(good))return invalid('Need three valid displayed levels on each side');
+ const bids=[...d.bids].sort((a,b)=>b.price-a.price).slice(0,5),asks=[...d.asks].sort((a,b)=>a.price-b.price).slice(0,5);
+ if(bids[0].price>asks[0].price)return invalid('Depth book crossed/resetting');
+ const bidSize=bids.reduce((s,x)=>s+x.size,0),askSize=asks.reduce((s,x)=>s+x.size,0),ratio=askSize/bidSize,spread=asks[0].price-bids[0].price,flags=[];
+ if(spread>Math.min(.05,Number(cfg.maxSpread)||.05)+1e-8)flags.push({code:'spread',text:'Displayed spread $'+spread.toFixed(4)+' exceeds limit'});
+ if(ratio>=Math.max(1.5,Number(cfg.l2AskRatio)||3))flags.push({code:'imbalance',text:'Top-five ask size is '+ratio.toFixed(2)+'× bid size'});
+ const sizes=bids.map(x=>x.size).sort((a,b)=>a-b),median=sizes[Math.floor(sizes.length/2)],risk=p.entry-p.stop;
+ const wall=asks.find(x=>risk>0&&x.price>=p.entry&&x.price<=p.entry+.5*risk&&x.size>=median*Math.max(2,Number(cfg.l2WallRatio)||4));
+ if(wall)flags.push({code:'wall',text:'Nearby ask wall at $'+wall.price.toFixed(4)+' · '+(wall.size/median).toFixed(2)+'× median bid level'});
+ return {valid:true,flags,key:flags.map(f=>f.code).sort().join('|'),at:d.updatedAt,revision:d.revision,stream:d.stream,metrics:{bidSize,askSize,ratio,spread},reason:flags.length?'Adverse displayed depth':'No configured depth flag'};
+}
 function size(equity,pct,entry,stop,bp,fees){const budget=equity*pct/100,d=entry-stop;const zero={equity,budget:finite(budget)?budget:0,qty:0,risk:0,fees:0,unused:finite(budget)?budget:0};if(![equity,pct,entry,stop,bp].every(finite)||equity<=0||pct<=0||pct>100||entry<=0||stop<=0||d<=0||bp<=0)return zero;fees=fees||(()=>0);let lo=0,hi=Math.floor(Math.min(budget/d,bp/entry));while(lo<hi){const n=Math.ceil((lo+hi)/2),f=fees(n);if(finite(f)&&f>=0&&n*d+f<=budget+1e-8&&n*entry+f<=bp+1e-8)lo=n;else hi=n-1;}const f=lo?fees(lo):0;return {equity,budget,qty:lo,risk:lo*d+f,fees:f,unused:budget-lo*d-f};}
 function exit(b,q,now){if(b.forceExit||b.stopTriggered||q.bid<=b.stop)return {reason:b.forceExit?'MANUAL FLATTEN':'STOP',stop:b.stop};if(now>=b.sessionEnd-60000)return {reason:'SESSION CLOSE',stop:b.stop};if(q.bid>=b.target)return {reason:'TARGET',stop:b.stop};return {reason:null,stop:b.breakeven&&q.bid>=b.entry+b.initialR?Math.max(b.stop,b.entry):b.stop};}
-return {VERSION,defaults,names,rules,validBar,day,round,average,studies,atr,aggregate,flag,placement,analyze,strategyHint,size,exit};
+return {VERSION,defaults,names,rules,validBar,day,round,average,studies,atr,aggregate,flag,placement,analyze,strategyHint,depthRisk,size,exit};
 });
