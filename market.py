@@ -547,7 +547,10 @@ class MarketEngine:
         if entry and (entry['ib'] is not self._ib or entry['generation']!=self.info.get('generation',0)):
             self._close_depth(symbol);entry=None
         if entry is None:
+            ib,generation=self._ib,self.info.get('generation',0)
             c=await self._stock(symbol)
+            if self._ib is not ib or self.info.get('generation',0)!=generation:
+                raise ConnectionError('Gateway changed during depth qualification')
             # Stock qualification yields; another task may have acquired depth.
             entry=self._depth_streams.get(symbol)
             if entry is None:
@@ -559,7 +562,8 @@ class MarketEngine:
                 self._depth_serial=getattr(self,'_depth_serial',0)+1
                 entry=dict(ib=self._ib,generation=self.info.get('generation',0),contract=c,ticker=t,used=time.monotonic(),at=0,revision=0,stream=self._depth_serial)
                 def update(ticker):
-                    if getattr(ticker,'domTicks',None):
+                    if (self._depth_streams.get(symbol) is entry and self._ib is entry['ib'] and
+                            self.info.get('generation',0)==entry['generation'] and getattr(ticker,'domTicks',None)):
                         entry['at']=int(time.time()*1000);entry['revision']+=1
                 entry['handler']=update;t.updateEvent+=update;self._depth_streams[symbol]=entry
         entry['used']=time.monotonic();t=entry['ticker']
@@ -568,7 +572,7 @@ class MarketEngine:
                 if entry['at']: break
                 await asyncio.sleep(.05)
         if self._depth_streams.get(symbol) is not entry: raise ValueError('Depth subscription replaced')
-        live=(self._ib is entry['ib'] and self._ib.isConnected() and self.info.get('feedHealthy') is not False and getattr(t,'marketDataType',1)==1 and os.environ.get('PAPER_TWS_DATA')!='delayed')
+        live=(self._ib is entry['ib'] and self.info.get('generation',0)==entry['generation'] and self._ib.isConnected() and self.info.get('feedHealthy') is not False and getattr(t,'marketDataType',1)==1 and os.environ.get('PAPER_TWS_DATA')!='delayed')
         return dict(symbol=symbol,conid=entry['contract'].conId,source='IB Gateway SMART depth',status='LIVE' if live else 'UNAVAILABLE',
                     updatedAt=entry['at'],revision=entry['revision'],stream=str(entry['generation'])+':'+str(entry['stream']),
                     bids=[dict(price=number(x.price,True),size=number(x.size,True)) for x in t.domBids],
