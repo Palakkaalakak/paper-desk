@@ -114,6 +114,79 @@ class SnapshotOwnershipTests(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(self.e._screen_quote_complete({**q,**change},now))
 
 
+class DepthStreamTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        from ib_async import IB, Stock
+        import itertools
+        self.e=market.MarketEngine();self.ib=IB();self.e._ib=self.ib
+        self.ib.isConnected=Mock(return_value=True)
+        ids=itertools.count(1)
+        self.ib.client.getReqId=Mock(side_effect=lambda:next(ids))
+        self.ib.client.reqMktDepth=Mock();self.ib.client.cancelMktDepth=Mock()
+        self.e._stock=AsyncMock(side_effect=lambda symbol:Stock(symbol,'SMART','USD',conId=sum(map(ord,symbol))))
+
+    async def acquire(self,symbol='TEST'):
+        task=asyncio.create_task(self.e._depth(symbol));await asyncio.sleep(0)
+        self.update(symbol)
+        return await task
+
+    def update(self,symbol='TEST'):
+        entry=self.e._depth_streams[symbol];t=entry['ticker']
+        from ib_async.objects import DOMLevel
+        t.domBids[:]=[DOMLevel(10-i*.01,100,'') for i in range(3)]
+        t.domAsks[:]=[DOMLevel(10.02+i*.01,100,'') for i in range(3)]
+        t.domTicks[:]=[object()];t.updateEvent.emit(t);t.domTicks.clear()
+
+    async def test_polling_reuses_subscription_without_refreshing_timestamp(self):
+        first=await self.acquire()
+        second=await self.e._depth('TEST')
+        self.assertEqual(first,second)
+        self.assertEqual(self.ib.client.reqMktDepth.call_count,1)
+        t=self.e._depth_streams['TEST']['ticker'];t.updateEvent.emit(t)
+        self.assertEqual((await self.e._depth('TEST'))['revision'],1)
+        self.update()
+        self.assertEqual((await self.e._depth('TEST'))['revision'],2)
+        self.ib.client.cancelMktDepth.assert_not_called()
+
+    async def test_capacity_eviction_detaches_handler_and_cancels_owned_stream(self):
+        await self.acquire('ONE');old=self.e._depth_streams['ONE']
+        await self.acquire('TWO');await self.acquire('THREE');await self.acquire('FOUR')
+        self.assertEqual(len(self.e._depth_streams),3)
+        self.assertNotIn('ONE',self.e._depth_streams)
+        self.assertEqual(self.ib.client.cancelMktDepth.call_count,1)
+        revision=old['revision'];old['ticker'].domTicks[:]=[object()]
+        old['handler'](old['ticker'])
+        self.assertEqual(old['revision'],revision)
+
+    async def test_evicted_waiter_cannot_return_replaced_depth(self):
+        task=asyncio.create_task(self.e._depth('ONE'));await asyncio.sleep(0)
+        await self.acquire('TWO');await self.acquire('THREE');await self.acquire('FOUR')
+        with self.assertRaisesRegex(ValueError,'replaced'):await task
+
+    async def test_generation_change_during_qualification_never_subscribes(self):
+        async def qualify(symbol):
+            self.e.info['generation']=1
+            return SimpleNamespace(conId=123)
+        self.e._stock=qualify
+        with self.assertRaises(ConnectionError):await self.e._depth('TEST')
+        self.ib.client.reqMktDepth.assert_not_called()
+
+    async def test_old_generation_handler_cannot_refresh_or_cancel_new_connection(self):
+        await self.acquire();old=self.e._depth_streams['TEST'];revision=old['revision']
+        self.e.info['generation']=1;self.update()
+        self.assertEqual(old['revision'],revision)
+        self.e._close_depth('TEST')
+        self.ib.client.cancelMktDepth.assert_not_called()
+
+    async def test_broker_depth_reset_invalidates_old_book(self):
+        await self.acquire();entry=self.e._depth_streams['TEST']
+        req_id=self.ib.client.reqMktDepth.call_args.args[0]
+        self.e._error(req_id,317,'Reset',entry['contract'])
+        self.assertEqual(entry['at'],0)
+        self.assertEqual(entry['ticker'].domBids,[])
+        self.assertEqual(entry['ticker'].domAsks,[])
+
+
 class StreamTests(unittest.TestCase):
     def setUp(self):
         self.e=FakeEngine(capacity=500);self.addCleanup(self.e.close)
