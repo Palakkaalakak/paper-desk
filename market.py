@@ -364,7 +364,7 @@ class MarketEngine:
             async def work():
                 try:
                     result = await getattr(self,'_'+name)(*args)
-                    ttl = 21600 if name == 'guns_float' and result.get('status')=='returned' else 30 if name == 'guns_float' else 3600 if name == 'guns_schedule' else .25 if name == 'guns_bars' else 20 if name == 'guns_scan' else 10 if name == 'guns_verify' else 30 if name == 'guns_news' else 300 if name in ('search','chain') or name == 'guns_article' and result.get('contentStatus') in ('body_returned','brief','pdf') else 1
+                    ttl = 21600 if name == 'guns_float' and result.get('status')=='returned' else 30 if name == 'guns_float' else 3600 if name in ('guns_schedule','guns_capabilities') else .25 if name == 'guns_bars' else 20 if name == 'guns_scan' else 10 if name == 'guns_verify' else 30 if name == 'guns_news' else 300 if name in ('search','chain') or name == 'guns_article' and result.get('contentStatus') in ('body_returned','brief','pdf') else 1
                     self._cache[key] = (time.monotonic()+ttl,result)
                     if len(self._cache)>1000:
                         self._cache.pop(next(iter(self._cache)))
@@ -506,6 +506,10 @@ class MarketEngine:
     async def _guns_bars(self, symbol):
         from guns_data import bars
         return await bars(self, symbol)
+
+    async def _guns_capabilities(self):
+        from guns_data import scanner_capabilities
+        return await scanner_capabilities(self)
 
     async def _guns_news(self, symbol):
         from guns_data import news
