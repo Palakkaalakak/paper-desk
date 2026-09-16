@@ -366,7 +366,7 @@ class GunsSourceAndStreamTests(unittest.IsolatedAsyncioTestCase):
         data=[dict(id=1,title='Report',body=body,stocks=[dict(name='TEST')]),dict(id=2,title='Other',body=body,stocks=[dict(name='OTHER')])]
         with patch.dict(guns_data.os.environ,{'PAPER_BENZINGA_KEY':'fixture-secret'},clear=True),patch.object(guns_data,'source_fetch',side_effect=[json.dumps(data).encode(),b'<rss/>']):out=guns_data.source_news('TEST')
         self.assertEqual(len(out['rows']),1);self.assertEqual(out['rows'][0]['contentStatus'],'body_returned');self.assertNotIn('fixture-secret',repr(out))
-        with patch.dict(guns_data.os.environ,{},clear=True):self.assertIsNone(guns_data.float_reference('TEST')['floatShares'])
+        with patch.dict(guns_data.os.environ,{},clear=True),patch.object(guns_data,'source_fetch',return_value=b'{}'):self.assertIsNone(guns_data.float_reference('TEST')['floatShares'])
         for field,expected in [('outstandingShares',None),('floatShares',15000000)]:
             with patch.dict(guns_data.os.environ,{'PAPER_FMP_KEY':'fixture-secret'},clear=True),patch.object(guns_data,'source_fetch',return_value=json.dumps([dict(symbol='TEST',date='2026-09-10',**{field:15000000})]).encode()):self.assertEqual(guns_data.float_reference('TEST')['floatShares'],expected)
 
