@@ -235,13 +235,22 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
         raise ValueError('Provider redirect refused')
 
 
+class SourceError(ValueError):
+    """Safe provider failure category; never contains credentials or response bodies."""
+    def __init__(self, code, message, http_status=None):
+        super().__init__(message)
+        self.code, self.http_status = code, http_status
+
+
 def source_fetch(host, path, params, headers=None):
-    """Fixed provider hosts only. No caller URLs, redirects, credential logs or scraping."""
-    if host not in ('feeds.finance.yahoo.com', 'news.google.com', 'api.benzinga.com', 'financialmodelingprep.com', 'data.alpaca.markets'):
+    """Fixed data hosts only; bounded public responses, no redirects or remote code."""
+    if host not in ('feeds.finance.yahoo.com', 'news.google.com', 'api.benzinga.com', 'financialmodelingprep.com', 'data.alpaca.markets', 'stockanalysis.com'):
         raise ValueError('Unsupported source')
     if host == 'data.alpaca.markets' and path not in ('/v2/stocks/snapshots', '/v2/stocks/bars'):
         raise ValueError('Unsupported Alpaca read-only data path')
-    url = 'https://' + host + path + '?' + urllib.parse.urlencode(params)
+    if host == 'stockanalysis.com' and (not re.fullmatch(r'/stocks/[a-z0-9.-]{1,24}/statistics/',path) or params):
+        raise ValueError('Unsupported public statistics path')
+    url = 'https://' + host + path + ('?' + urllib.parse.urlencode(params) if params else '')
     req = urllib.request.Request(url, headers={'User-Agent':'PaperDesk/1.0', 'Accept':'application/json, application/rss+xml, application/xml', **(headers or {})})
     try:
         with urllib.request.build_opener(NoRedirect()).open(req, timeout=8) as response:
@@ -250,10 +259,11 @@ def source_fetch(host, path, params, headers=None):
             return payload
     except urllib.error.HTTPError as error:
         # Report status, never credential-bearing URLs or provider response bodies.
-        raise ValueError('Provider HTTP '+str(error.code)+': '+('credentials or data entitlement required' if error.code in (401,403) else 'rate limit' if error.code==429 else 'data request failed')) from None
+        category={401:'authentication',402:'subscription_coverage',403:'access_denied',404:'symbol_unavailable',429:'rate_limited'}.get(error.code,'provider_http')
+        raise SourceError(category,'Provider HTTP '+str(error.code)+': '+category.replace('_',' '),error.code) from None
     except Exception:
         # urllib errors can contain a URL with an API key. Never propagate those.
-        raise ValueError('Source unavailable; check network, entitlement or provider limits') from None
+        raise SourceError('transport','Source unavailable or response invalid; retry later') from None
 
 
 def public_link(value):
@@ -306,24 +316,90 @@ def source_news(ticker):
     return dict(symbol=ticker,rows=unique[:40],source='Independent company news sources',at=int(time.time()*1000),diagnostics=diagnostics)
 
 
-def float_reference(ticker):
+def public_float_reference(ticker, now=None):
+    """Read published statistics, not price-derived estimates. No API key needed.
+
+    The date is the provider's statistics-snapshot update, NOT a claimed issuer
+    float-effective date. Never substitute quote time or retrieval time for it.
+    Fail closed if the public page/schema/identity/freshness cannot be verified.
+    """
     ticker=symbol(ticker)
-    key=os.environ.get('PAPER_FMP_KEY')
-    if not key:
-        return dict(symbol=ticker,floatShares=None,source='Not configured',date=None,status='unavailable',setupRequired=True,warning='Connect FMP shares-float using PAPER_FMP_KEY. IBKR removed its fundamental-data API in 10.47; Gateway subscriptions cannot supply this field.')
+    if not re.fullmatch(r'[A-Z0-9.-]{1,24}',ticker):
+        raise SourceError('symbol_unavailable','Public statistics symbol format unsupported')
+    path='/stocks/'+ticker.lower()+'/statistics/'
+    text=source_fetch('stockanalysis.com',path,{}).decode('utf-8')
+    trusts=re.findall(r'data:\{trust:\{(.{1,5000}?)\},valuation:',text,re.S)
+    if len(trusts)!=1: raise SourceError('schema','Public statistics metadata missing or ambiguous')
+    trust=trusts[0]
+    def field(name):
+        values=re.findall(r'\b'+name+r':"([^"\\]*)"',trust)
+        return values[0] if len(values)==1 else None
+    if field('ticker')!=ticker or field('topic')!='statistics':
+        raise SourceError('identity','Public statistics symbol/topic mismatch')
+    if not re.search(r'info:\{type:"stocks",subtype:"stock",symbol:"'+re.escape(ticker.lower())+r'",ticker:"'+re.escape(ticker)+r'"',text):
+        raise SourceError('identity','Public stock identity missing')
+    timestamps=re.findall(r'\blastUpdated:(\d{13})(?=[,}])',trust)
+    now=int(time.time()*1000) if now is None else now
+    if len(timestamps)!=1 or not 0<=now-int(timestamps[0])<45*86400000:
+        raise SourceError('stale','Public statistics update date missing, future or older than 45 days')
+    sections=re.findall(r'shares:\{text:"(?:[^"\\]|\\.)*",data:\[(.*?)\]\}',text,re.S)
+    if len(sections)!=1: raise SourceError('schema','Public share statistics missing or ambiguous')
+    def count(name,title):
+        pattern=r'\{id:"'+name+r'",title:"'+title+r'",value:"(?:[^"\\]|\\.)*",hover:"([^"\\]*)"\}'
+        values=re.findall(pattern,sections[0])
+        if len(values)!=1: raise SourceError('schema','Public share-count field missing or ambiguous')
+        value=values[0]
+        if value in ('n/a','N/A','—','-'):return None
+        if not re.fullmatch(r'(?:[1-9]\d*|[1-9]\d{0,2}(?:,\d{3})+)',value):
+            raise SourceError('units','Public share count has invalid or rounded units')
+        number=int(value.replace(',',''))
+        if not 0<number<1e15:raise SourceError('units','Public share count outside valid range')
+        return number
+    floated=count('float','Float');outstanding=count('sharesout','Shares Outstanding')
+    if floated is not None and outstanding is not None and floated>outstanding:
+        raise SourceError('inconsistent','Published float exceeds total outstanding shares')
+    if floated is None and outstanding is None:
+        raise SourceError('missing_count','Public source has neither float nor outstanding shares')
+    date=dt.datetime.fromtimestamp(int(timestamps[0])/1000,dt.timezone.utc).isoformat()
+    out=dict(symbol=ticker,status='returned',floatShares=floated,date=date,
+             source='Stock Analysis / published statistics',sourceUrl='https://stockanalysis.com'+path,
+             basis='free-float' if floated is not None else 'outstanding-upper-bound',
+             dateBasis='provider-statistics-update',effectiveDate=None,retrievedAt=now,
+             coverage='Provider statistics snapshot date, not issuer float-effective date. Public page availability and schema can change.')
+    if floated is None:out['upperBoundShares']=outstanding
+    return out
+
+
+def float_reference(ticker):
+    ticker=symbol(ticker);key=os.environ.get('PAPER_FMP_KEY');diagnostics=[]
+    def failure(source,error):
+        diagnostics.append(dict(source=source,code=getattr(error,'code','invalid_response'),
+                                httpStatus=getattr(error,'http_status',None)))
+    if key:
+        try:
+            data=json.loads(source_fetch('financialmodelingprep.com','/stable/shares-float',dict(symbol=ticker,apikey=key)))
+            if not isinstance(data,list):raise SourceError('schema','Invalid FMP response')
+            rows=[x for x in data if isinstance(x,dict) and str(x.get('symbol','')).upper()==ticker]
+            if len(rows)!=1:raise SourceError('symbol_unavailable','FMP matching symbol unavailable')
+            row=rows[0];value=row.get('floatShares')
+            if isinstance(value,bool) or not isinstance(value,(float,int)) or not 0<value<1e15:
+                raise SourceError('missing_count','FMP actual float missing')
+            date=str(row.get('date') or '')
+            try:dated=dt.datetime.fromisoformat(date.replace('Z','+00:00'))
+            except ValueError:raise SourceError('missing_date','FMP provider date missing') from None
+            if dated.tzinfo is None:dated=dated.replace(tzinfo=dt.timezone.utc)
+            age=(dt.datetime.now(dt.timezone.utc)-dated).total_seconds()
+            if not 0<=age<45*86400:raise SourceError('stale','FMP provider date outside freshness policy')
+            return dict(symbol=ticker,floatShares=value,date=date,basis='free-float',source='Financial Modeling Prep / shares-float',status='returned',retrievedAt=int(time.time()*1000))
+        except Exception as error:failure('FMP',error)
+    else:diagnostics.append(dict(source='FMP',code='not_configured',httpStatus=None))
     try:
-        data=json.loads(source_fetch('financialmodelingprep.com','/stable/shares-float',dict(symbol=ticker,apikey=key)))
-        row=next(x for x in data if str(x.get('symbol','')).upper()==ticker)
-        value=row.get('floatShares')
-        if isinstance(value,bool) or not isinstance(value,(float,int)) or not 0<value<1e15: raise ValueError('Missing float')
-        date=str(row.get('date') or '')
-        dated=dt.datetime.fromisoformat(date.replace('Z','+00:00'))
-        if dated.tzinfo is None: dated=dated.replace(tzinfo=dt.timezone.utc)
-        age=(dt.datetime.now(dt.timezone.utc)-dated).total_seconds()
-        if not 0<=age<45*86400: raise ValueError('Float as-of date outside freshness policy')
-        return dict(symbol=ticker,floatShares=value,date=date,basis='free-float',source='Financial Modeling Prep / shares-float',status='returned',retrievedAt=int(time.time()*1000))
-    except Exception:
-        return dict(symbol=ticker,floatShares=None,date=None,source='Financial Modeling Prep',status='unavailable',warning='Free float unavailable; check key, plan and symbol coverage.')
+        result=public_float_reference(ticker)
+        return dict(result,diagnostics=diagnostics)
+    except Exception as error:failure('Stock Analysis',error)
+    why='; '.join(x['source']+': '+('HTTP '+str(x['httpStatus'])+' ' if x['httpStatus'] else '')+x['code'].replace('_',' ') for x in diagnostics)
+    return dict(symbol=ticker,floatShares=None,date=None,source='Float reference sources',status='unavailable',
+                diagnostics=diagnostics,warning='Share-count evidence unavailable — '+why+'. No float pass published.')
 
 
 def broker_float(xml, ticker, conid, now):
@@ -378,7 +454,7 @@ def scanner_sources():
     try: alpaca_headers(); alpaca=True
     except ValueError: alpaca=False
     return dict(floatConfigured=bool(os.environ.get('PAPER_FMP_KEY')),quoteFallbackConfigured=alpaca,
-                floatSource='FMP shares-float',quoteFallback='Alpaca SIP',
+                floatSource='FMP when configured, then public Stock Analysis statistics',publicFloatAvailable=True,quoteFallback='Alpaca SIP',
                 retired='IBKR fundamental data removed in API 10.47',
                 note='Configured keys are not proof of entitlement; SIP requests require consolidated real-time access.')
 
