@@ -7,7 +7,7 @@
  function setBinding(current,index,value){if(!Number.isInteger(index)||index<0||index>4||!valid(value||'')||current.some((x,i)=>i!==index&&x===value))return null;const next=bindings({shortcuts:current});next[index]=value;return next;}
  function floatKnown(f,now){const count=f?.basis==='outstanding-upper-bound'?f.upperBoundShares:f?.floatShares;return !!(f&&Number.isFinite(count)&&count>0&&typeof f.source==='string'&&f.source.trim().length>0&&Number.isFinite(Date.parse(f.date))&&Date.parse(f.date)<=now&&now-Date.parse(f.date)<45*86400000);}
  function floatBelow(f,cap,now){return floatKnown(f,now)&&(f.basis==='outstanding-upper-bound'?f.upperBoundShares:f.floatShares)<cap;}
- function floatLabel(f){return f?.basis==='outstanding-upper-bound'?'≤ '+(f.upperBoundShares/1e6).toFixed(2)+'M · IBKR outstanding-share bound':(f.floatShares/1e6).toFixed(2)+'M · '+f.source;}
+ function floatLabel(f){const value=f?.basis==='outstanding-upper-bound'?'≤ '+(f.upperBoundShares/1e6).toFixed(2)+'M · outstanding-share bound (not exact float)':(f.floatShares/1e6).toFixed(2)+'M';return value+' · '+f.source+(f.dateBasis==='provider-statistics-update'?' · provider snapshot '+f.date.slice(0,10)+'; issuer effective date not supplied':'');}
  function quoteIssues(row,q,ready){const why=[],finite=Number.isFinite,last=q&&(Object.hasOwn(q,'tradeLast')?q.tradeLast:q.last);
   if(!ready||q?.status!=='LIVE'||q?.error||q?.halted)why.push('Awaiting fresh LIVE IBKR quote');
   if(q?.brokerConid!=null&&Number(q.brokerConid)!==Number(row.conid))why.push('Awaiting matching IBKR quote contract');
