@@ -49,54 +49,55 @@
    if(readable(j)){notes(newsSelected).newsEvidence={symbol:sym,provider:j.provider,articleId:j.articleId,headline:n.headline,time:j.time,url:j.url,openedAt:a.now(),contentStatus:j.contentStatus};a.save();}
   });
  }
- async function request(kind,params={}){const ctl=new AbortController(),timer=setTimeout(()=>ctl.abort(),40000);try{const r=await fetch('/data/'+kind+'?'+new URLSearchParams({provider:'tws',...params}),{signal:ctl.signal});if(!r.ok)throw Error('HTTP '+r.status);const j=await r.json();if(j.error)throw Error(j.error);return j;}finally{clearTimeout(timer);}}
+ async function request(kind,params={},options={}){const ctl=new AbortController(),abort=()=>ctl.abort(),timer=setTimeout(abort,Math.max(1,options.timeoutMs??40000));options.signal?.addEventListener('abort',abort,{once:true});if(options.signal?.aborted)abort();try{const r=await fetch('/data/'+kind+'?'+new URLSearchParams({provider:'tws',...params}),{signal:ctl.signal});if(!r.ok)throw Error('HTTP '+r.status);const j=await r.json();if(j.error)throw Error(j.error);return j;}finally{clearTimeout(timer);options.signal?.removeEventListener('abort',abort);}}
  function job(key,fn){if(jobs.has(key))return;jobs.add(key);times[key]=a.now();Promise.resolve().then(fn).then(()=>{delete errors[key];}).catch(e=>{errors[key]=e.message||'Request failed';}).finally(()=>{jobs.delete(key);live();});}
  function scan(){if(!a.usingTws()){errors.scan='Select IB Gateway data source';live();return;}if(jobs.has('scan'))return;
-  const bid=bookId,st=screenState(),current=()=>a.state().bookId===bid;st.attemptedAt=a.now();st.retryAt=0;a.save();
-  job('scan',async()=>{scanProgress='Checking scanner data sources…';scanDiagnostics=[];let sources={};const fallbackQuotes=new Map();
+  const bid=bookId,st=screenState(),current=()=>a.state().bookId===bid;st.attemptedAt=a.now();st.retryAt=0;st.manualRetry=false;a.save();
+  job('scan',async()=>{const started=performance.now(),budget=110000,remaining=()=>Math.max(0,budget-(performance.now()-started)),whole=new AbortController(),deadline=setTimeout(()=>whole.abort(),budget),fallbackQuotes=new Map();let sources={},unresolved=0,unfinished=0;scanDiagnostics=[];
+   const usable=signal=>current()&&!whole.signal.aborted&&!signal?.aborted;
+   const read=(kind,params,signal=whole.signal,max=40000)=>request(kind,params,{signal,timeoutMs:Math.min(max,remaining())});
    const readyForScan=(row,q)=>!!q&&q===fallbackQuotes.get(row.conid)?(q.source==='IB Gateway'?Number(q.brokerConid)===Number(row.conid):q.symbol===row.symbol&&q.feed==='sip')&&q.status==='LIVE'&&a.now()-q.at>=0&&a.now()-q.at<15000:a.ready(row.conid);
    const check=(row,q,ev,cfg)=>W.candidate(row,q,ev,readyForScan(row,q),cfg,a.now());
-   const pause=ms=>new Promise(resolve=>setTimeout(resolve,ms));
-   const recover=async(kind,params)=>{let error;for(let attempt=0;attempt<3&&current();attempt++){try{return await request(kind,params);}catch(e){error=e;if(attempt<2)await pause(1000*(attempt+1));}}throw error||Error('Portfolio changed');};
-   // History/fundamentals may take longer than quote freshness. Acquire again at
-   // each decision, rather than turning an early/one-sided tick into a rejection.
-   const acquireQuote=async row=>{let why=[];for(let wait=0;wait<10&&current();wait++){const q=a.quotes()[row.conid];why=W.quoteIssues(row,q,a.ready(row.conid));if(!why.length)return q;await pause(200);}
-    if(!current())throw Error('Portfolio changed');
-    const cached=fallbackQuotes.get(row.conid);if(cached&&readyForScan(row,cached)&&!W.quoteIssues(row,cached,true).length)return cached;
-    // IBKR remains primary: recover directly from the owner loop or an isolated
-    // IB snapshot before trying any external source. Never inject into fills.
-    scanProgress=row.symbol+' · retrieving IBKR bid/ask snapshot…';live();
-    try{const q=await request('guns_ib_quote',{conid:row.conid});if(!current())throw Error('Portfolio changed');fallbackQuotes.set(row.conid,q);why=W.quoteIssues(row,q,readyForScan(row,q));if(!why.length)return q;}catch(e){why=[e.message];}
-    if(current()&&sources.quoteFallbackConfigured){scanProgress=row.symbol+' · retrieving consolidated Alpaca SIP quote…';live();const q=await request('guns_quote',{symbol:row.symbol});if(!current())throw Error('Portfolio changed');fallbackQuotes.set(row.conid,q);why=W.quoteIssues(row,q,readyForScan(row,q));if(!why.length)return q;}
-    throw Error(row.symbol+': '+(why.join('; ')||'Portfolio changed'));};
+   const acquireQuote=async(row,signal)=>{let q=a.quotes()[row.conid];if(!W.quoteIssues(row,q,a.ready(row.conid)).length)return q;
+    q=fallbackQuotes.get(row.conid);if(q&&readyForScan(row,q)&&!W.quoteIssues(row,q,true).length)return q;
+    let why=[];try{q=await read('guns_ib_quote',{conid:row.conid},signal,13000);if(!usable(signal))return null;fallbackQuotes.set(row.conid,q);why=W.quoteIssues(row,q,readyForScan(row,q));if(!why.length)return q;}catch(e){why=[e.message];}
+    if(usable(signal)&&sources.quoteFallbackConfigured){q=await read('guns_quote',{symbol:row.symbol},signal,9000);if(!usable(signal))return null;fallbackQuotes.set(row.conid,q);why=W.quoteIssues(row,q,readyForScan(row,q));if(!why.length)return q;}
+    throw Error(why.join('; ')||'Quote acquisition unfinished');};
+   const runPhase=async(label,items,limit,timeoutMs,work)=>{const results=await W.mapPool(items,limit,work,{signal:whole.signal,timeoutMs:Math.max(0,Math.min(timeoutMs,remaining())),onProgress:({active,done,total})=>{if(current()){scanProgress=label+' · '+done+'/'+total+' complete · '+active+' in flight · '+Math.ceil(remaining()/1000)+'s left';live();}}});return results.flatMap((r,i)=>{if(r.error){if(r.error.code==='deadline'){unfinished++;scanDiagnostics.push((items[i].row||items[i]).symbol+': not verified before phase deadline');}else{unresolved++;scanDiagnostics.push((items[i].row||items[i]).symbol+': '+r.error.message);}return [];}return r.value?[r.value]:[];});};
+   const cheap=(items,label)=>{for(const [id,name] of [['volume','Available traded volume'],['price','Price'],['spread','Measured spread'],['gap','Gap using available close']]){const before=items.length;items=W.cheapFilter(items,id,E.cfg());scanDiagnostics.push(label+' / '+name+': '+items.length+'/'+before+' survive; missing values remain unverified');}return items;};
    try{
-    sources=await recover('guns_data_status',{});if(!current())return;
-    if(!sources.floatConfigured)scanDiagnostics.push(sources.publicFloatAvailable?'No FMP key: public Stock Analysis share statistics will be used automatically.':'No configured float source advertised by this server; update the backend.');
-    scanProgress='IBKR discovery · verified share-count sources · '+(sources.quoteFallbackConfigured?'Alpaca SIP fallback connected':'Gateway quotes');
+    scanProgress='Discovery + source status in parallel · 110-second scan budget';live();
     const resume=st.acquisition&&C.day(st.acquisition.at)===C.day(a.now())&&a.now()-st.acquisition.at<1800000;
-    const found=resume?st.acquisition.rows:(await recover('guns_scan',{})).rows||[];
-    if(!current())return;st.acquisition={at:resume?st.acquisition.at:a.now(),rows:found};a.save();discovery=found;a.sync();
-    let unresolved=0;
-    const runPhase=async(label,items,limit,work)=>{let done=0;scanProgress=label+' · 0 / '+items.length;live();const results=await W.mapPool(items,limit,async(item,i)=>{if(!current())return null;try{return await work(item,i);}finally{done++;if(current()){scanProgress=label+' · '+done+' / '+items.length;live();}}});return results.flatMap((r,i)=>{if(r.error){unresolved++;scanDiagnostics.push((items[i].row||items[i]).symbol+': '+r.error.message);return [];}return r.value?[r.value]:[];});};
-    let pool=await runPhase('1 / IBKR quotes in parallel',found,6,async row=>{const q=a.quotes()[row.conid],last=actualQuote(q).last;return {row,q:q?.status==='LIVE'&&Number.isFinite(last)&&a.now()-q.at>=0&&a.now()-q.at<15000?q:await acquireQuote(row)};});
-    for(const [id,label] of [['gap','Gap ≥ 5%'],['price','Price ≥ $1.50'],['spread','Spread within limit'],['volume','Traded volume minimum']]){const before=pool.length;pool=W.cheapFilter(pool,id,E.cfg());scanDiagnostics.push(label+': '+pool.length+' / '+before+' survive preliminary quote filter');scanProgress=label+' · '+pool.length+' survivors';live();}
-    if(!current())return;discovery=pool.map(x=>x.row);a.sync();
-    pool=await runPhase('2 / PM volume, gap, session & stock verification',pool,3,async item=>{const {row}=item,ev=await recover('guns_verify',{conid:row.conid});if(!current())return null;if(Number(ev.conid)!==Number(row.conid))throw Error('Contract mismatch');const q=await acquireQuote(row),c=check(row,q,ev,{...E.cfg(),floatMode:'prefer'});if(!c.eligible){if(c.pending)unresolved++;scanDiagnostics.push(row.symbol+': '+c.why.join('; '));return null;}return {row,q,ev};});
-    pool=await runPhase('3 / Float for verified survivors only',pool,3,async item=>{const f=await recover('guns_float',{symbol:item.row.symbol});if(!current())return null;if(f.conid!=null&&Number(f.conid)!==Number(item.row.conid))throw Error('Float contract mismatch');if(!W.floatKnown(f,a.now()))throw Error(f.warning||'Dated float evidence unavailable');if(!W.floatBelow(f,E.cfg().maxFloat,a.now())){scanDiagnostics.push(item.row.symbol+': '+(f.basis==='outstanding-upper-bound'?'Outstanding-share bound cannot establish float below cap':'Float reaches cap'));return null;}if(f.diagnostics?.length)scanDiagnostics.push(item.row.symbol+': '+f.diagnostics.map(x=>x.source+' '+(x.httpStatus?'HTTP '+x.httpStatus+' ':'')+x.code).join('; ')+' → '+W.floatLabel(f));evidence.set(item.row.conid,{...item.ev,float:f});floatRefs.set(item.row.symbol,f);times['verify:'+item.row.conid]=a.now();return item.row;});
-    if(!current())return;const accepted=pool,final=[];discovery=accepted;a.sync();
-    for(const row of accepted){if(!current())return;if(final.length>=4)break;let ev=evidence.get(row.conid);
-     if(a.now()-ev.at>45000){try{ev={...await recover('guns_verify',{conid:row.conid}),float:ev.float};evidence.set(row.conid,ev);}catch{unresolved++;continue;}}
-     try{const c=check(row,await acquireQuote(row),ev,{...E.cfg(),floatMode:'strict'});
-      const snapshot=W.screenSnapshot(c,a.now());if(c.eligible&&W.completeScreen(snapshot,E.cfg()))final.push(snapshot);else {if(c.pending||c.eligible)unresolved++;scanDiagnostics.push(row.symbol+': '+(c.why.join('; ')||'Awaiting complete screening snapshot'));}
-     }catch(e){unresolved++;scanDiagnostics.push(e.message);}
-    }
-    if(!current())return;if(!final.length&&unresolved)throw Error('IBKR acquisition continuing; '+unresolved+' responses pending');
-    rows=W.stableSlots(rows,final);st.rows=rows;st.publishedAt=a.now();st.version=C.VERSION;st.retryAt=0;st.acquisition=null;st.recoveries=0;
+    const response=await Promise.all([read('guns_data_status',{},whole.signal,5000).catch(()=>({publicFloatAvailable:true})),resume?Promise.resolve({rows:st.acquisition.rows}):read('guns_scan',{},whole.signal,20000)]);
+    sources=response[0];const found=response[1].rows||[];if(!current())return;
+    st.acquisition={at:resume?st.acquisition.at:a.now(),rows:found};a.save();
+    // Zero-network checks go first, across the entire cached candidate set.
+    let pool=cheap(found.map(row=>{const q=a.quotes()[row.conid];return {row,q:q?.status==='LIVE'&&a.now()-q.at>=0&&a.now()-q.at<15000?q:null};}),'Cached / no network');
+    discovery=pool.map(x=>x.row);a.sync();
+    pool=await runPhase('1 / Concurrent quote acquisition',pool,6,Math.min(25000,remaining()-50000),async({row},i,signal)=>{const q=await acquireQuote(row,signal);return usable(signal)&&q?{row,q}:null;});
+    pool=cheap(pool,'Acquired quotes');if(!current())return;discovery=pool.map(x=>x.row);a.sync();
+    pool=await runPhase('2 / Concurrent history + identity/session verification',pool,3,Math.min(50000,remaining()-25000),async({row},i,signal)=>{
+     const cached=evidence.get(row.conid),ev=cached&&a.now()-cached.at>=0&&a.now()-cached.at<60000?cached:await read('guns_verify',{conid:row.conid},signal,35000);
+     if(!usable(signal))return null;if(Number(ev.conid)!==Number(row.conid))throw Error('Contract mismatch');
+     const q=await acquireQuote(row,signal);if(!usable(signal)||!q)return null;const c=check(row,q,ev,{...E.cfg(),floatMode:'prefer'});
+     if(!c.eligible){if(c.pending)unresolved++;scanDiagnostics.push(row.symbol+': '+c.why.join('; '));return null;}
+     evidence.set(row.conid,ev);return {row,ev};});
+    pool=await runPhase('3 / Float last, verified survivors only',pool,3,Math.min(20000,remaining()-8000),async({row,ev},i,signal)=>{
+     const f=await read('guns_float',{symbol:row.symbol},signal,18000);if(!usable(signal))return null;
+     if(f.symbol&&f.symbol!==row.symbol||f.conid!=null&&Number(f.conid)!==Number(row.conid))throw Error('Float identity mismatch');
+     if(!W.floatKnown(f,a.now()))throw Error(f.warning||'Dated share-count evidence unavailable');
+     if(!W.floatBelow(f,E.cfg().maxFloat,a.now())){scanDiagnostics.push(row.symbol+': '+(f.basis==='outstanding-upper-bound'?'Outstanding-share bound cannot establish float below cap':'Float reaches cap'));return null;}
+     if(f.diagnostics?.length)scanDiagnostics.push(row.symbol+': '+f.diagnostics.map(x=>x.source+' '+(x.httpStatus?'HTTP '+x.httpStatus+' ':'')+x.code).join('; ')+' → '+W.floatLabel(f));
+     evidence.set(row.conid,{...ev,float:f});floatRefs.set(row.symbol,f);times['verify:'+row.conid]=a.now();return row;});
+    const candidates=await runPhase('4 / Concurrent finalist quote refresh',pool,6,remaining(),async(row,i,signal)=>{const q=await acquireQuote(row,signal);if(!usable(signal)||!q)return null;const c=check(row,q,evidence.get(row.conid),{...E.cfg(),floatMode:'strict'}),snapshot=W.screenSnapshot(c,a.now());if(c.eligible&&W.completeScreen(snapshot,E.cfg()))return snapshot;unresolved++;scanDiagnostics.push(row.symbol+': '+c.why.join('; '));return null;});
+    if(!current())return;const final=candidates.slice(0,4);st.lastRun={elapsedMs:Math.round(performance.now()-started),unfinished,unresolved,discovered:found.length,published:final.length};st.retryAt=0;st.recoveries=0;
+    if(!final.length&&(unfinished||unresolved)){st.manualRetry=true;scanProgress='Scan finished in '+Math.ceil(st.lastRun.elapsedMs/1000)+'s · no new complete candidates · '+unfinished+' deadline / '+unresolved+' acquisition issues · prior shortlist retained. Scan now to retry.';a.save();return;}
+    rows=W.stableSlots(rows,final);st.rows=rows;st.publishedAt=a.now();st.version=C.VERSION;st.acquisition=null;st.manualRetry=false;
     const sess=sessions.find(s=>st.attemptedAt>=s.start-1800000&&st.attemptedAt<s.start);if(sess)st.scheduledOpen=sess.start;
-    scanProgress=rows.length+' screened candidates · sourced market data · positions locked';a.save();
+    scanProgress=rows.length+' screened candidates in '+Math.ceil(st.lastRun.elapsedMs/1000)+'s · positions locked'+(unfinished||unresolved?' · '+unfinished+' deadline / '+unresolved+' acquisition issues (not numeric rejections)':'');a.save();
     if(E.cfg().autoCharts&&!slots.some(s=>s.inst)&&rows.length){rows.forEach((r,i)=>{slots[i].inst={...r,secType:'STK',exch:'SMART',mult:1,brokerId:true};});selected=slots[activeSlot].inst;saveDesk();}
-   }catch(e){if(current()){st.recoveries=(st.recoveries||0)+1;st.retryAt=a.now()+Math.min(60000,5000*st.recoveries);scanProgress='IBKR acquisition reconnecting · existing shortlist retained';scanDiagnostics.push(e.message);a.save();}}
-   finally{if(current()){discovery=[];a.sync();}}
+   }catch(e){if(current()){st.retryAt=0;st.manualRetry=true;st.lastRun={elapsedMs:Math.round(performance.now()-started),unfinished,unresolved};scanProgress='Scan stopped after '+Math.ceil(st.lastRun.elapsedMs/1000)+'s · prior shortlist retained · Scan now to retry';scanDiagnostics.push(whole.signal.aborted?'110-second acquisition deadline reached; no unverified stocks published':e.message);a.save();}}
+   finally{clearTimeout(deadline);whole.abort();if(current()){discovery=[];a.sync();}}
   });}
  function bars(sym){if(a.now()-(times['float:'+sym]||0)>(W.floatKnown(floatRefs.get(sym),a.now())?21600000:30000))job('float:'+sym,async()=>{floatRefs.set(sym,await request('guns_float',{symbol:sym}));if(floatRefs.size>60)floatRefs.delete(floatRefs.keys().next().value);});if(a.now()-(times['bars:'+sym]||0)>900)job('bars:'+sym,async()=>{cache.set(sym,await request('guns_bars',{symbol:sym}));if(cache.size>8)cache.delete(cache.keys().next().value);});}
  function activateSlot(index){activeSlot=index;selected=slots[index].inst;chartFrame=slots[index].frame;hover=null;depth=null;results=[];delete errors.arm;saveDesk();a.render();a.sync();if(selected)bars(selected.symbol);live();}
