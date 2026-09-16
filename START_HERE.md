@@ -1,6 +1,6 @@
 # Paper Desk — local startup and GUNS user guide
 
-Updated 2026-09-15. This guide describes the current Python / vanilla-JavaScript workstation, not a cloud service. Repository: https://github.com/Palakkaalakak/paper-desk (branch `main`).
+Updated 2026-09-16. This guide describes the current Python / vanilla-JavaScript workstation, not a cloud service. Repository: https://github.com/Palakkaalakak/paper-desk (branch `main`).
 
 ## 1. Start safely
 
@@ -19,7 +19,9 @@ Paper accounts live in this browser's `paperAccount` localStorage. Another devic
 
 ## 2. Configure scanner reference data
 
-Open **GUNS → Scanner data setup / FMP key** on the computer running Paper Desk:
+**No key is required for the default share-reference source.** Paper Desk first reads the public Stock Analysis statistics page. It verifies the exact symbol, integer counts, and provider statistics update timestamp. This is a provider snapshot date, not a claimed issuer float-effective date; the UI labels that distinction. If exact float is absent, total outstanding shares may establish a conservative upper bound below the configured cap, explicitly labeled **not exact float**. Neither count is guessed from price, volume or percentages.
+
+FMP is now an **optional fallback**, used only if the public source cannot return usable evidence. To configure it, open **GUNS → Scanner data setup / FMP key** on the computer running Paper Desk:
 
 - Paste your FMP key into the password field and choose **Save on this Paper Desk server**.
 - The field clears after submission. The key is sent in a same-origin POST body, not a URL, and saved in the server's ignored `.env` file. It is active immediately and is not stored in the browser account or committed to GitHub.
@@ -27,18 +29,20 @@ Open **GUNS → Scanner data setup / FMP key** on the computer running Paper Des
 - Saving from another computer is rejected even if that browser can access the application. Open `localhost:8765` on the server computer instead.
 - You can alternatively set `PAPER_FMP_KEY` in the Python process environment or local `.env`, then restart the server.
 
-The float endpoint requires an actual matching-symbol free-float count and a provider date less than 45 days old. It does not manufacture float from volume or market capitalization. IBKR's retired fundamental request is not used as the current acquisition path. Earlier probes returned dated float for AAPL and SOFI, but SOUN returned HTTP 402 under the supplied subscription. **Universal float coverage remains unresolved.** A missing/unsupported float prevents publication; it does not become an “unknown” passing card.
+The share-reference endpoint requires matching-symbol count evidence and a provider update date less than 45 days old. IBKR's retired fundamental request is not used. Live probes on 2026-09-16 returned public float for MEDS, ZTG, RETO, WAFU, CYPH and FTFT; YFOR returned a total-outstanding-share upper bound. All seven had returned FMP HTTP 402 with the supplied subscription, while AAPL succeeded. The default public source avoids that subscription dependency. **Universal coverage is not guaranteed:** public page access/schema can change, and missing, stale or ambiguous evidence still cannot pass. Changing the key alone does not fix subscription coverage.
 
 Optional quote/history fallback: configure `PAPER_ALPACA_KEY` and `PAPER_ALPACA_SECRET` (or `APCA_API_KEY_ID` / `APCA_API_SECRET_KEY`) on the Python server. The GUNS fallback explicitly requires entitled, real-time **SIP**, not free IEX or delayed SIP. IBKR remains first. External quotes are screening-only and never replace the IB execution feed. These keys are not configured through the FMP form.
 
 ## 3. Scanner workflow
 
 1. Open **GUNS → 01 / Scanner**. Initial acquisition starts when eligible; **Scan now** requests a manual scan.
-2. IBKR discovers up to 50 US-major-exchange stocks. Quote acquisition runs in a bounded parallel pool of six.
-3. Cheap stages remove known failures in order: gap below 5%, price below $1.50, excessive measured spread, then insufficient total traded volume. Missing measurements wait for verification; they do not count as a pass.
-4. Survivors get contract/session/history verification, up to three jobs at once, with three-second IB verification start pacing. This checks previous regular-session close and observed premarket volume separately from total volume.
-5. Only verified survivors request dated float, three at once. Finalists receive fresh quotes before publication.
+2. IBKR discovery and source-status checks run concurrently. Up to 50 discovered stocks first receive zero-network checks from fresh cached data: available traded volume, price, measured spread and gap. Missing fields remain unverified.
+3. Quote acquisition uses six concurrent workers, not one stock at a time. Cached checks are repeated on acquired data. Snapshot reads return as soon as complete fresh bid/ask/trade fields arrive, rather than waiting for IB's roughly 11-second snapshot-end notification. Browser quote waiting and repeated per-symbol retry sleeps have been removed.
+4. Survivors get contract/session/history verification: three concurrent jobs, two parallel history requests per job, and 350ms start spacing rather than three seconds. Scan history is one day of minute bars plus one month of daily bars. This checks observed PM volume and the previous RTH close separately from total volume. The pinned adapter's throttling and IB's soft history limits remain.
+5. Float is requested last for verified survivors, three at once. Finalists receive concurrent quote refresh; old verification evidence is refreshed if needed before publication.
 6. Up to four complete passing snapshots are published. No padding and no fabricated metrics. Cards show price, gap, premarket volume, bid, ask, spread, timestamp and float evidence.
+
+**Speed target: 1–2 minutes, not a hard cutoff.** There is no total-scan or phase deadline. Normal per-request timeouts still handle hung connections. Progress shows complete/total, actual in-flight jobs and elapsed time. A run with acquisition failures and no new complete candidates retains the prior shortlist and offers manual retry instead of automatically restarting indefinitely. No candidate is rejected merely because two minutes elapsed. End-to-end Gateway performance still requires measurement on your connection.
 
 Default thresholds include price ≥$1.50, gap ≥5%, premarket volume ≥30,000 shares, spread ≤$0.05 and float <100M. Consult your current settings; entry checks are repeated independently.
 
