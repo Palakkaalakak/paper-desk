@@ -478,6 +478,20 @@ class PublicFloatTests(unittest.TestCase):
 
 
 class ScannerProviderTests(unittest.IsolatedAsyncioTestCase):
+    async def test_three_history_jobs_overlap_without_serial_response_lock(self):
+        active=peak=0
+        async def history(*args,**kwargs):
+            nonlocal active,peak
+            active+=1;peak=max(peak,active)
+            await asyncio.sleep(.9)
+            active-=1
+            return [object()]
+        ib=NS(reqContractDetailsAsync=AsyncMock(side_effect=lambda c:[NS(contract=NS(conId=c.conId,secType='STK',currency='USD',symbol='TEST'))]),reqHistoricalDataAsync=history)
+        engine=NS(_ib=ib)
+        with patch.object(guns_data,'verification',return_value={'premarketVolume':30000,'previousClose':9}),patch.object(guns_data,'scanner_sources',return_value={'quoteFallbackConfigured':False}):
+            result=await asyncio.gather(*(guns_data.verify(engine,str(i)) for i in [1,2,3]))
+        self.assertEqual(len(result),3);self.assertEqual(peak,6)
+
     def test_sip_requests_are_explicit_and_credentials_stay_in_headers(self):
         with patch.dict(guns_data.os.environ,{'PAPER_ALPACA_KEY':'test-key','PAPER_ALPACA_SECRET':'test-secret'},clear=True),patch.object(guns_data,'source_fetch',return_value=b'{}') as fetch:
             guns_data.alpaca_data('/v2/stocks/snapshots',{'symbols':'TEST','feed':'iex'})
