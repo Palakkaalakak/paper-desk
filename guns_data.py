@@ -375,6 +375,10 @@ def float_reference(ticker):
     def failure(source,error):
         diagnostics.append(dict(source=source,code=getattr(error,'code','invalid_response'),
                                 httpStatus=getattr(error,'http_status',None)))
+    # No-key public reference first: do not spend every scan on known FMP 402s.
+    try:
+        return public_float_reference(ticker)
+    except Exception as error:failure('Stock Analysis',error)
     if key:
         try:
             data=json.loads(source_fetch('financialmodelingprep.com','/stable/shares-float',dict(symbol=ticker,apikey=key)))
@@ -390,13 +394,9 @@ def float_reference(ticker):
             if dated.tzinfo is None:dated=dated.replace(tzinfo=dt.timezone.utc)
             age=(dt.datetime.now(dt.timezone.utc)-dated).total_seconds()
             if not 0<=age<45*86400:raise SourceError('stale','FMP provider date outside freshness policy')
-            return dict(symbol=ticker,floatShares=value,date=date,basis='free-float',source='Financial Modeling Prep / shares-float',status='returned',retrievedAt=int(time.time()*1000))
+            return dict(symbol=ticker,floatShares=value,date=date,basis='free-float',source='Financial Modeling Prep / shares-float',status='returned',retrievedAt=int(time.time()*1000),diagnostics=diagnostics)
         except Exception as error:failure('FMP',error)
     else:diagnostics.append(dict(source='FMP',code='not_configured',httpStatus=None))
-    try:
-        result=public_float_reference(ticker)
-        return dict(result,diagnostics=diagnostics)
-    except Exception as error:failure('Stock Analysis',error)
     why='; '.join(x['source']+': '+('HTTP '+str(x['httpStatus'])+' ' if x['httpStatus'] else '')+x['code'].replace('_',' ') for x in diagnostics)
     return dict(symbol=ticker,floatShares=None,date=None,source='Float reference sources',status='unavailable',
                 diagnostics=diagnostics,warning='Share-count evidence unavailable — '+why+'. No float pass published.')
@@ -454,7 +454,7 @@ def scanner_sources():
     try: alpaca_headers(); alpaca=True
     except ValueError: alpaca=False
     return dict(floatConfigured=bool(os.environ.get('PAPER_FMP_KEY')),quoteFallbackConfigured=alpaca,
-                floatSource='FMP when configured, then public Stock Analysis statistics',publicFloatAvailable=True,quoteFallback='Alpaca SIP',
+                floatSource='Public Stock Analysis statistics by default; optional FMP fallback',publicFloatAvailable=True,quoteFallback='Alpaca SIP',
                 retired='IBKR fundamental data removed in API 10.47',
                 note='Configured keys are not proof of entitlement; SIP requests require consolidated real-time access.')
 
@@ -573,7 +573,10 @@ async def verify(engine, conid):
         async with engine._guns_verify_lock:
             wait = getattr(engine, '_guns_verify_next', 0)-time.monotonic()
             if wait>0: await asyncio.sleep(wait)
-            engine._guns_verify_next = time.monotonic()+3
+            # Minute/daily bars are not subject to IB's <=30-second-bar pacing
+            # rules. Keep three jobs / six history requests bounded, with modest
+            # start spacing for message load and IB's remaining soft throttling.
+            engine._guns_verify_next = time.monotonic()+.35
         ib = engine._ib
         details = await asyncio.wait_for(ib.reqContractDetailsAsync(Contract(conId=int(conid),exchange='SMART')),12)
         if not details or details[0].contract.conId!=int(conid) or details[0].contract.secType!='STK' or details[0].contract.currency!='USD':
@@ -583,7 +586,7 @@ async def verify(engine, conid):
         async def get(duration, interval, rth):
             return await ib.reqHistoricalDataAsync(d.contract,'',duration,interval,'TRADES',rth,formatDate=2,keepUpToDate=False,timeout=8 if fallback else 20)
         try:
-            minute,daily = await asyncio.gather(get('2 D','1 min',False),get('1 M','1 day',True))
+            minute,daily = await asyncio.gather(get('1 D','1 min',False),get('1 M','1 day',True))
             if not minute or not daily: raise ValueError('Scanner verification history incomplete')
             result=verification(d,minute,daily,int(time.time()*1000))
             if result['premarketVolume'] is None or result['previousClose'] is None:
