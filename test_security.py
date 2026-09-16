@@ -432,6 +432,51 @@ class Guns15Tests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(out['contentStatus'],'pdf');self.assertEqual(out['pdfBase64'],encoded)
 
 
+class PublicFloatTests(unittest.TestCase):
+    def fixture(self, floated='1,484,043', outstanding='3,061,919', ticker='MEDS', age=0):
+        import time
+        now=int(time.time()*1000)
+        page=('data:{info:{type:"stocks",subtype:"stock",symbol:"'+ticker.lower()+'",ticker:"'+ticker+'"}},'
+              'data:{trust:{sources:[],lastUpdated:'+str(now-age)+',topic:"statistics",ticker:"'+ticker+'"},valuation:{},'
+              'shares:{text:"Published counts",data:[{id:"float",title:"Float",value:"1.48M",hover:"'+floated+'"},'
+              '{id:"sharesout",title:"Shares Outstanding",value:"3.06M",hover:"'+outstanding+'"}]}}')
+        return page.encode(),now
+
+    def test_public_default_never_sends_or_waits_for_fmp_key(self):
+        payload,now=self.fixture()
+        for env in [{},{'PAPER_FMP_KEY':'fixture-secret'}]:
+            with patch.dict(guns_data.os.environ,env,clear=True),patch.object(guns_data,'source_fetch',return_value=payload) as fetch:
+                out=guns_data.float_reference('MEDS')
+            self.assertEqual(out['floatShares'],1484043);self.assertEqual(out['dateBasis'],'provider-statistics-update')
+            self.assertIsNone(out['effectiveDate']);self.assertNotIn('fixture-secret',repr(out))
+            self.assertEqual(fetch.call_count,1);self.assertEqual(fetch.call_args.args,('stockanalysis.com','/stocks/meds/statistics/',{}))
+
+    def test_missing_float_is_labeled_outstanding_bound(self):
+        payload,now=self.fixture('n/a','3,201,764','YFOR')
+        with patch.object(guns_data,'source_fetch',return_value=payload):out=guns_data.public_float_reference('YFOR',now)
+        self.assertIsNone(out['floatShares']);self.assertEqual(out['upperBoundShares'],3201764)
+        self.assertEqual(out['basis'],'outstanding-upper-bound')
+
+    def test_invalid_counts_identity_schema_and_dates_fail_closed(self):
+        examples=[self.fixture(*args) for args in [('0','300'),('1.4M','300'),('42%','300'),('301','300'),('n/a','n/a'),('100','300','OTHER')]]
+        examples += [self.fixture(age=46*86400000),self.fixture(age=-10000)]
+        payload,now=self.fixture();examples += [(payload+payload,now),(payload.replace(b'lastUpdated:',b'quoteUpdated:'),now),(b'<html>Float 1.4M</html>',now)]
+        for payload,now in examples:
+            with patch.object(guns_data,'source_fetch',return_value=payload),self.assertRaises(guns_data.SourceError):guns_data.public_float_reference('MEDS',now)
+
+    def test_optional_fmp_fallback_and_safe_failure_categories(self):
+        good=json.dumps([dict(symbol='MEDS',floatShares=1234567,date=dt.datetime.now(dt.timezone.utc).isoformat())]).encode()
+        with patch.dict(guns_data.os.environ,{'PAPER_FMP_KEY':'fixture-secret'},clear=True),patch.object(guns_data,'source_fetch',side_effect=[guns_data.SourceError('schema','changed public page'),good]):
+            out=guns_data.float_reference('MEDS')
+        self.assertEqual(out['floatShares'],1234567);self.assertEqual(out['diagnostics'][0]['source'],'Stock Analysis')
+        with patch.dict(guns_data.os.environ,{'PAPER_FMP_KEY':'fixture-secret'},clear=True),patch.object(guns_data,'source_fetch',side_effect=[guns_data.SourceError('rate_limited','detail',429),guns_data.SourceError('subscription_coverage','fixture-secret',402)]):
+            out=guns_data.float_reference('MEDS')
+        self.assertEqual(out['status'],'unavailable');self.assertIn('HTTP 402',out['warning']);self.assertIn('HTTP 429',out['warning'])
+        self.assertNotIn('fixture-secret',repr(out))
+        with self.assertRaises(ValueError):guns_data.source_fetch('stockanalysis.com','/account/',{})
+        with self.assertRaises(ValueError):guns_data.source_fetch('stockanalysis.com','/stocks/meds/statistics/',{'apikey':'secret'})
+
+
 class ScannerProviderTests(unittest.IsolatedAsyncioTestCase):
     def test_sip_requests_are_explicit_and_credentials_stay_in_headers(self):
         with patch.dict(guns_data.os.environ,{'PAPER_ALPACA_KEY':'test-key','PAPER_ALPACA_SECRET':'test-secret'},clear=True),patch.object(guns_data,'source_fetch',return_value=b'{}') as fetch:
