@@ -74,6 +74,15 @@ class SnapshotOwnershipTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.e.quotes[123]['bid'],10)
         self.assertEqual(self.e.quotes[123]['ask'],10.02)
 
+    async def test_complete_snapshot_returns_before_snapshot_end_notification(self):
+        task=asyncio.create_task(self.e._guns_ib_quote('123'));await asyncio.sleep(0)
+        req_id=self.ib.client.reqMktData.call_args.args[0]
+        self.ticks(req_id,end=False)
+        q=await asyncio.wait_for(task,.5)
+        self.assertEqual(q['bid'],10);self.assertEqual(q['ask'],10.02)
+        self.ib.client.cancelMktData.assert_called_once_with(req_id)
+        self.assertNotIn(req_id,self.ib.wrapper._futures)
+
     async def test_cancelled_snapshot_cleans_only_its_request(self):
         await self.e._subscribe_one(123,{'conid':123})
         stream_id=self.ib.client.reqMktData.call_args.args[0]
