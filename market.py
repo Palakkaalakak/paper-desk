@@ -416,11 +416,20 @@ class MarketEngine:
         future=ib.wrapper.startReq(req_id,c)
         ticker=ib.wrapper.startTicker(req_id,c,'snapshot')
         try:
+            requested_at=int(time.time()*1000);expires=time.monotonic()+12
             ib.client.reqMktData(req_id,c,'',True,False,[])
-            await asyncio.wait_for(future,12)
-            if self._ib is not ib or self.info.get('generation',0)!=generation:
-                raise ConnectionError('Gateway changed during quote snapshot')
-            return self._quote(ticker)
+            while True:
+                if self._ib is not ib or self.info.get('generation',0)!=generation:
+                    raise ConnectionError('Gateway changed during quote snapshot')
+                q=self._quote(ticker)
+                if self._screen_quote_complete(q,int(time.time()*1000)) and q['at']>=requested_at:
+                    return q  # Do not wait ~11s for tickSnapshotEnd after the fields arrive.
+                if future.done():
+                    future.result()  # Propagate request errors rather than returning fabricated data.
+                    return q
+                left=expires-time.monotonic()
+                if left<=0:raise TimeoutError('IBKR quote acquisition deadline')
+                await asyncio.wait([future],timeout=min(.05,left))
         finally:
             if self._ib is ib and self.info.get('generation',0)==generation:
                 try: ib.client.cancelMktData(req_id)
