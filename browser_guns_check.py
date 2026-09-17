@@ -57,7 +57,7 @@ def main():
                 return r.fulfill(json={'configured':True})
             if path=='/data/guns_data_status':return r.fulfill(json={'floatConfigured':True,'quoteFallbackConfigured':True})
             if path=='/data/guns_ib_quote':return r.fulfill(json=dict(brokerConid=int(params['conid'][0]),bid=10.48,ask=10.50,last=10.49,source='IB Gateway',status='LIVE',at=int(r.request.headers['x-fixture-now']),tradeAt=int(r.request.headers['x-fixture-now']),screeningOnly=True))
-            if path=='/data/guns_scan':return r.fulfill(json={'rows':[dict(conid=cid,symbol=sym,name='Fixture stock',secType='STK',brokerId=True) for sym,cid in scanner_symbols]})
+            if path=='/data/guns_scan':return r.fulfill(json={'rows':[dict(conid=cid,symbol=sym,name='Fixture stock',secType='STK',brokerId=True,rank=rank,scannerCode='TOP_PERC_GAIN',scannerSource='IBKR Top % Gainers',scannerAt=int(r.request.headers['x-fixture-now'])) for rank,(sym,cid) in enumerate(scanner_symbols)]})
             if path=='/data/search':
                 sym=(params.get('q') or ['TEST'])[0].upper()
                 return r.fulfill(json={'results':[dict(conid=12345 if sym=='TEST' else 23456,symbol=sym,name='Fixture '+sym,type='STK')]})
@@ -67,7 +67,7 @@ def main():
             if path=='/data/guns_schedule':return r.fulfill(json={'sessions':[dict(start=OPEN,end=OPEN+23400000)]})
             if path=='/data/guns_float':return r.fulfill(json={'floatShares':15000000,'date':'2026-09-09','source':'Fixture float'})
             if path=='/data/guns_sources':return r.fulfill(json={'rows':[dict(headline='Fixture linked company release',provider='Fixture RSS',time='2026-09-10',articleId='',url='https://example.com/release',contentStatus='excerpt',text='Fixture source excerpt')],'diagnostics':[]})
-            if path=='/data/guns_verify':return r.fulfill(json=dict(conid=int(params['conid'][0]),at=int(r.request.headers['x-fixture-now']),**close_evidence(int(r.request.headers['x-fixture-now'])),sessionKnown=True,stockType='COMMON',usListed=True,currency='USD',primaryExchange='NASDAQ',premarketVolume=330000,observedBars=330,source='Fixture IB TRADES',volumeUnit='shares',coverage='Observed bars only'))
+            if path=='/data/guns_verify':return r.fulfill(json=dict(conid=int(params['conid'][0]),at=int(r.request.headers['x-fixture-now']),**(close_evidence(int(r.request.headers['x-fixture-now'])) if params.get('comparison')!=['false'] else dict(previousClose=None,previousCloseVerified=False,sessionDate='2026-09-10')),sessionKnown=True,stockType='COMMON',usListed=True,currency='USD',primaryExchange='NASDAQ',premarketVolume=330000,observedBars=330,source='Fixture IB TRADES',volumeUnit='shares',coverage='Observed bars only'))
             if path=='/data/guns_news':return r.fulfill(json={'source':'Fixture API news','at':OPEN+10000,'providers':[dict(code='TEST',name='Fixture provider')],'rows':[dict(time='2026-09-10',provider='TEST',articleId='story1',headline='Fixture earnings beat'),dict(time='2026-09-10',provider='TEST',articleId='footer',headline='Footer-only fixture')]})
             if path=='/data/guns_article' and params.get('articleId')==['footer']:return r.fulfill(json={'text':'','rawText':'(END) Copyright fixture','contentStatus':'incomplete'})
             if path=='/data/guns_article':return r.fulfill(json={'text':'Fixture earnings article <img src=x onerror=alert(1)>','provider':'TEST','articleId':'story1','contentStatus':'body_returned','rawText':'Fixture earnings article <img src=x onerror=alert(1)>'})
@@ -122,7 +122,8 @@ def main():
         assert page.evaluate('quoteRecoveryChecks')==2
         card=page.locator('.guns-candidate').inner_text()
         assert 'Bid $10.4800' in card and 'Ask $10.5000' in card and 'Spread $0.0200' in card,card
-        assert 'unknown' not in card.lower() and '—' not in card
+        assert 'IBKR Top % Gainers' in card and 'provider rank #1' in card
+        assert 'Local comparison only:' in card and 'not a selection filter' in card
         assert 'Awaiting' not in page.locator('#guns-scan-diagnostics').inner_text()
         assert requests.count('/data/guns_scan')==1, 'Quote recovery must not rediscover/re-rank'
         assert requests.count('/data/guns_ib_quote')>=1, 'Read IBKR directly when SSE quote is incomplete'

@@ -319,6 +319,11 @@ class GunsDataTests(unittest.IsolatedAsyncioTestCase):
         out=await guns_data.scan(NS(_ib=ib))
         self.assertEqual([r['conid'] for r in out['rows']],[1,2]);self.assertFalse(out['rows'][1]['usListed'])
         self.assertEqual(ib.reqScannerDataAsync.call_args.args[0].locationCode,'STK.US.MAJOR')
+        self.assertEqual(ib.reqScannerDataAsync.call_args.args[0].scanCode,'TOP_PERC_GAIN')
+        tags=ib.reqScannerDataAsync.call_args.kwargs['scannerSubscriptionFilterOptions']
+        self.assertEqual([(t.tag,t.value) for t in tags],[('changePercAbove','5')])
+        self.assertEqual([r['rank'] for r in out['rows']],[0,1])
+        self.assertTrue(all(r['scannerCode']=='TOP_PERC_GAIN' and r['scannerAt']==out['at'] for r in out['rows']))
 
     def test_footer_only_news_is_incomplete_not_a_story(self):
         footer='(END) Dow Jones Newswires\nSeptember 09, 2026 15:34 ET (19:34 GMT)\nCopyright (c) 2026 Dow Jones & Company, Inc.\nThe statements in this document shall not be considered as an objective or independent explanation.'
@@ -528,6 +533,16 @@ class PublicFloatTests(unittest.TestCase):
 
 
 class ScannerProviderTests(unittest.IsolatedAsyncioTestCase):
+    async def test_provider_scan_never_waits_for_prior_close_or_calendar(self):
+        detail,minute,daily,opening=GunsDataTests().fixture()
+        ib=NS(reqContractDetailsAsync=AsyncMock(return_value=[detail]),reqHistoricalDataAsync=AsyncMock(return_value=minute))
+        with patch.object(guns_data,'prior_session',side_effect=AssertionError('No local gap calendar')),patch.object(guns_data.time,'time',return_value=opening.timestamp()),patch.object(guns_data,'scanner_sources',return_value={'quoteFallbackConfigured':False}):
+            out=await guns_data.verify(NS(_ib=ib),'123',False)
+        self.assertEqual(out['premarketVolume'],100)
+        self.assertIsNone(out['previousClose'])
+        self.assertEqual(ib.reqHistoricalDataAsync.call_count,1)
+        self.assertEqual(ib.reqHistoricalDataAsync.call_args.args[3],'1 min')
+
     async def test_three_history_jobs_overlap_without_serial_response_lock(self):
         active=peak=0
         async def history(*args,**kwargs):

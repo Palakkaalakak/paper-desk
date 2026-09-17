@@ -109,9 +109,9 @@ test('shortcuts reject unsafe modifiers, repeats, duplicates and malformed bindi
  const b=W.setBinding(W.defaults,0,'Alt+Q');assert.deepEqual(W.bindings({shortcuts:b}),b);assert.deepEqual(W.bindings({shortcuts:['1','1','2','3']}),W.defaults);
 });
 test('candidate ranking fails closed on missing, stale or mismatched evidence',()=>{
- const now=Date.parse('2026-09-10T13:30Z'),row={conid:1,rank:0},q={at:now,tradeAt:now,status:'LIVE',last:10,bid:9.99,ask:10.01},e={conid:1,at:now,sessionKnown:true,stockType:'COMMON',usListed:true,currency:'USD',primaryExchange:'NASDAQ',...closeFixture(now),previousClose:9,premarketVolume:100000,float:referenceFloat(now)};
+ const now=Date.parse('2026-09-10T13:30Z'),row={conid:1,...providerFixture(now)},q={at:now,tradeAt:now,status:'LIVE',last:10,bid:9.99,ask:10.01},e={conid:1,at:now,sessionKnown:true,stockType:'COMMON',usListed:true,currency:'USD',primaryExchange:'NASDAQ',...closeFixture(now),previousClose:9,premarketVolume:100000,float:referenceFloat(now)};
  const run=(ev=e,quote=q,ready=true)=>W.candidate(row,quote,ev,ready,C.defaults,now);assert.ok(run().eligible);
- for(const patch of [{at:now-90001},{at:now+5001},{conid:2},{sessionKnown:false},{previousClose:null},{premarketVolume:null},{premarketVolume:-1},{stockType:'ETF'}]){assert.equal(run({...e,...patch}).eligible,false);assert.equal(run({...e,...patch}).score,null);}
+ for(const patch of [{at:now-90001},{at:now+5001},{conid:2},{sessionKnown:false},{premarketVolume:null},{premarketVolume:-1},{stockType:'ETF'}]){assert.equal(run({...e,...patch}).eligible,false);assert.equal(run({...e,...patch}).score,null);}
  assert.equal(run(null).eligible,false);assert.equal(run(e,q,false).eligible,false);assert.equal(run(e,{...q,status:'DELAYED'}).eligible,false);assert.equal(run(e,{...q,ask:11}).eligible,false);
  const ranked=W.rank([{conid:2,rank:0},row],{1:q,2:q},new Map([[1,e]]),()=>true,C.defaults,now);assert.equal(ranked[0].row.conid,1);
 });
@@ -176,7 +176,7 @@ test('five-key migration preserves custom bindings, including conflicts with def
  assert.equal(W.setBinding(W.defaults,4,'Alt+Z')[4],'Alt+Z');
 });
 test('shortlist is at most four qualifying rows, no padding or mutation after ranking',()=>{
- const now=Date.parse('2026-09-10T13:00Z'),rows=Array.from({length:8},(_,i)=>({conid:i+1,rank:i})),quotes={},ev=new Map();
+ const now=Date.parse('2026-09-10T13:00Z'),rows=Array.from({length:8},(_,i)=>({conid:i+1,...providerFixture(now,i)})),quotes={},ev=new Map();
  for(const r of rows){quotes[r.conid]={tradeAt:now,status:'LIVE',last:10,bid:9.99,ask:10.01,at:now};ev.set(r.conid,{conid:r.conid,at:now,sessionDate:'2026-09-10',sessionKnown:true,stockType:'COMMON',usListed:true,currency:'USD',primaryExchange:'NASDAQ',...closeFixture(now),previousClose:9,premarketVolume:50000,float:referenceFloat(now)});}
  ev.get(1).premarketVolume=null;ev.get(2).stockType='ETF';
  const list=W.shortlist(rows,quotes,ev,()=>true,C.defaults,now);assert.deepEqual(list.map(r=>r.conid),[3,4,5,6]);
@@ -189,7 +189,7 @@ test('scheduled scan occurs once in T-30/open window with supplied DST/session s
  assert.equal(W.scanDue({},[],1),'initial');assert.equal(W.scanDue({publishedAt:1},[],2),null);
 });
 test('strict float excludes unknown, stale, outstanding-only and cap equality',()=>{
- const now=Date.parse('2026-09-10T13:30Z'),row={conid:1},q={at:now,tradeAt:now,status:'LIVE',last:10,bid:9.99,ask:10.01},e={conid:1,at:now,sessionKnown:true,stockType:'COMMON',usListed:true,currency:'USD',primaryExchange:'NASDAQ',...closeFixture(now),previousClose:9,premarketVolume:50000};
+ const now=Date.parse('2026-09-10T13:30Z'),row={conid:1,...providerFixture(now)},q={at:now,tradeAt:now,status:'LIVE',last:10,bid:9.99,ask:10.01},e={conid:1,at:now,sessionKnown:true,stockType:'COMMON',usListed:true,currency:'USD',primaryExchange:'NASDAQ',...closeFixture(now),previousClose:9,premarketVolume:50000};
  const run=f=>W.candidate(row,q,{...e,float:f},true,{...C.defaults,floatMode:'strict'},now);
  assert.equal(run({floatShares:15000000,date:'2026-09-09',source:'Fixture'}).eligible,true);
  for(const f of [null,{outstandingShares:1000000,date:'2026-09-09',source:'Fixture'},{floatShares:100000000,date:'2026-09-09',source:'Fixture'},{floatShares:15000000,date:'2020-01-01',source:'Fixture'}])assert.equal(run(f).eligible,false);
@@ -237,7 +237,8 @@ test('news recovery never substitutes a different catalyst, amount or trading da
 
 test('matching news titles never ignores a material negation',()=>{assert.equal(W.sameStory({headline:'Company says FDA will approve the new therapy this month'},{headline:'Company says FDA will not approve the new therapy this month'}),false);});
 
-function scannerFixture(){const now=Date.parse('2026-09-10T13:00Z'),row={conid:123,symbol:'TEST'},q={at:now,tradeAt:now,status:'LIVE',bid:9.99,ask:10.01,last:10,at:now,brokerConid:123},ev={conid:123,at:now,sessionDate:'2026-09-10',sessionKnown:true,stockType:'COMMON',usListed:true,currency:'USD',primaryExchange:'NASDAQ',...closeFixture(now),previousClose:9,premarketVolume:50000,float:referenceFloat(now)};return {now,row,q,ev};}
+function providerFixture(now,rank=0){return {scannerCode:'TOP_PERC_GAIN',scannerSource:'IBKR Top % Gainers',scannerAt:now,rank};}
+function scannerFixture(){const now=Date.parse('2026-09-10T13:00Z'),row={conid:123,symbol:'TEST',...providerFixture(now)},q={at:now,tradeAt:now,status:'LIVE',bid:9.99,ask:10.01,last:10,at:now,brokerConid:123},ev={conid:123,at:now,sessionDate:'2026-09-10',sessionKnown:true,stockType:'COMMON',usListed:true,currency:'USD',primaryExchange:'NASDAQ',...closeFixture(now),previousClose:9,premarketVolume:50000,float:referenceFloat(now)};return {now,row,q,ev};}
 test('scanner waits for both positive quote sides and actual trade, never a midpoint',()=>{
  const {now,row,q,ev}=scannerFixture();
  for(const patch of [{bid:null},{ask:undefined},{bid:0},{ask:0},{bid:NaN},{ask:Infinity},{last:Infinity},{last:null},{tradeLast:null},{ask:9.98},{halted:true},{status:'DELAYED'},{brokerConid:999}]){
@@ -258,11 +259,11 @@ test('scanner snapshots retain numeric spread, both sides and their quote timest
 });
 test('incomplete legacy or corrupt scanner snapshots cannot be restored as passing cards',()=>{
  const {now,row,q,ev}=scannerFixture(),s=W.screenSnapshot(W.candidate(row,q,ev,true,C.defaults,now),now);
- for(const key of ['price','gap','volume','bid','ask','spread','quoteAt','previousClose','sessionDate','stockType','float'])assert.equal(W.completeScreen({...s,screen:{...s.screen,[key]:null}},C.defaults),false,key);
+ for(const key of ['price','volume','bid','ask','spread','quoteAt','sessionDate','stockType','float'])assert.equal(W.completeScreen({...s,screen:{...s.screen,[key]:null}},C.defaults),false,key);
  for(const patch of [{spread:.001},{bid:0},{quoteAt:now-20000},{price:Infinity},{float:{...ev.float,source:''}}])assert.equal(W.completeScreen({...s,screen:{...s.screen,...patch}},C.defaults),false);
 });
 test('missing history metrics are acquisition pending, not completed numeric rejections',()=>{
- const {now,row,q,ev}=scannerFixture();for(const patch of [{previousClose:null},{premarketVolume:null},{sessionKnown:false},{stockType:null}]){const c=W.candidate(row,q,{...ev,...patch},true,C.defaults,now);assert.equal(c.eligible,false);assert.equal(c.pending,true);}
+ const {now,row,q,ev}=scannerFixture();for(const patch of [{premarketVolume:null},{sessionKnown:false},{stockType:null}]){const c=W.candidate(row,q,{...ev,...patch},true,C.defaults,now);assert.equal(c.eligible,false);assert.equal(c.pending,true);}
  const c=W.candidate(row,q,{...ev,premarketVolume:1000},true,C.defaults,now);assert.equal(c.eligible,false);assert.equal(c.pending,false);
 });
 test('parallel scan bounds requests and preserves order across failures',async()=>{let active=0,max=0;const out=await W.mapPool([0,1,2,3,4],3,async i=>{active++;max=Math.max(max,active);await new Promise(r=>setTimeout(r,5*(5-i)));active--;if(i===2)throw Error('fixture');return i;});assert.equal(max,3);assert.deepEqual(out.map(x=>x.value),[0,1,undefined,3,4]);assert.match(out[2].error.message,/fixture/);});
@@ -288,9 +289,9 @@ test('quote receipt cannot refresh stale last trade; minute fallback is explicit
  const out=C.gapEvidence({...f.q,tradeAt:null},e,f.now);assert.match(out.basis,/not a live trade/);assert.equal(out.price,10);
  assert.equal(C.gapEvidence({...f.q,tradeAt:null},{...e,recentTradeBar:{...e.recentTradeBar,end:f.now+1}},f.now).value,null);
 });
-test('scanner snapshot cannot carry a gap inconsistent with its reference prices',()=>{
+test('invalid local comparison is hidden without rejecting provider selection',()=>{
  const f=scannerFixture(),row=W.screenSnapshot(W.candidate(f.row,f.q,f.ev,true,C.defaults,f.now),f.now);
- assert.ok(W.completeScreen(row,C.defaults));assert.equal(W.completeScreen({...row,screen:{...row.screen,gap:99}},C.defaults),false);
+ assert.ok(W.completeScreen(row,C.defaults));assert.equal(W.completeScreen({...row,screen:{...row.screen,gap:99}},C.defaults),true);assert.equal(W.comparisonGap({...row.screen,gap:99}),null);
  assert.equal(W.cheapFilter([{q:{last:10,prevClose:100}}],'gap',C.defaults).length,1);
 });
 
@@ -320,6 +321,9 @@ test('premarket bands follow DST, open boundaries and partial timeframe overlap'
 });
 test('US evidence is mandatory; exclude and restore only complete verified reserves',()=>{
  const f=scannerFixture();for(const patch of [{usListed:false},{usListed:undefined},{currency:'CAD'}])assert.equal(W.candidate(f.row,f.q,{...f.ev,...patch},true,C.defaults,f.now).eligible,false);
- const pool=Array.from({length:6},(_,i)=>W.screenSnapshot(W.candidate({...f.row,conid:i+1},{...f.q,brokerConid:i+1},{...f.ev,conid:i+1},true,C.defaults,f.now),f.now));
+ const pool=Array.from({length:6},(_,i)=>W.screenSnapshot(W.candidate({...f.row,conid:i+1,rank:i},{...f.q,brokerConid:i+1},{...f.ev,conid:i+1},true,C.defaults,f.now),f.now));
  const ids=rows=>rows.map(r=>r.conid);assert.deepEqual(ids(W.selectCandidates(pool,[],C.defaults)),[1,2,3,4]);assert.deepEqual(ids(W.stableSlots(pool.slice(0,4),W.selectCandidates(pool,[2],C.defaults))),[1,5,3,4]);assert.deepEqual(ids(W.selectCandidates([...pool,pool[5]],[1,2,3,4,5],C.defaults)),[6]);
 });
+
+test('provider selection survives missing, negative and below-five local comparisons',()=>{const f=scannerFixture();for(const patch of [{previousClose:null,previousCloseVerified:false},{previousClose:11},{previousClose:9.9},{previousCloseAt:0}]){const c=W.candidate(f.row,f.q,{...f.ev,...patch},true,C.defaults,f.now);assert.equal(c.eligible,true,JSON.stringify(c.why));assert.equal(W.completeScreen(W.screenSnapshot(c,f.now),C.defaults),true);}});
+test('provider rank outranks volume and obsolete discovery is rejected',()=>{const f=scannerFixture(),rows=[{...f.row,conid:2,rank:4},{...f.row,conid:1,rank:0}],quotes={1:{...f.q,brokerConid:1},2:{...f.q,brokerConid:2}},ev=new Map([[1,{...f.ev,conid:1,premarketVolume:30000,previousClose:null}],[2,{...f.ev,conid:2,premarketVolume:9999999}]]);assert.deepEqual(W.shortlist(rows,quotes,ev,()=>true,C.defaults,f.now).map(r=>r.conid),[1,2]);for(const patch of [{scannerCode:'HOT_BY_VOLUME'},{scannerAt:f.now-1800001},{rank:-1},{scannerSource:''}])assert.equal(W.candidate({...f.row,...patch},f.q,f.ev,true,C.defaults,f.now).eligible,false);});

@@ -1,5 +1,17 @@
 # Paper Desk — local startup and GUNS user guide
 
+## Current scanner source — IBKR Top % Gainers
+
+This section supersedes older gap-filter and volume-ranking instructions below.
+- Discovery uses IBKR `TOP_PERC_GAIN`, US major exchanges, corporate stocks, with IBKR's `changePercAbove=5` filter. IBKR selects/ranks the gainers; Paper Desk does not rank by its own gap calculation or volume score.
+- Local gap is a labeled comparison only. Missing, stale, negative or below-5% local comparisons never reject an IBKR-listed candidate. IBKR's scanner API supplies contracts/ranks, **not a numeric gap percentage**; no provider percentage is fabricated.
+- Quotes, US/USD common-stock identity, premarket volume, spread and float checks remain. Surviving candidates follow IBKR rank; existing screen slots stay stable on refresh. Exclusions promote ranked reserves without touching trades.
+- Scanner verification uses `/data/guns_verify?conid=...&comparison=false`: no prior-close daily history or calendar requests on this critical path. Charts retain their independent dated gap calculation. Default verification retains its detailed comparison for callers that need it.
+- Old hot-by-volume snapshots/acquisition caches are not relabeled as gainers; Scan now obtains a fresh provider list. Cards show provider rank and acquisition time.
+- No new key, cloud deployment or real orders. Python, one IB owner loop, read-only Gateway and browser `paperAccount` remain unchanged. Pull updates, restart Python and reload http://localhost:8765, then click Scan now.
+- Live Gateway scan latency/entitlement acceptance is not established by offline regression tests.
+
+
 Updated 2026-09-17. This guide describes the current Python / vanilla-JavaScript workstation, not a cloud service. Repository: https://github.com/Palakkaalakak/paper-desk (branch `main`).
 
 ## 1. Start safely
