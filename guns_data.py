@@ -45,6 +45,15 @@ async def scanner_capabilities(engine):
                 note='Advertised fields only. Counts, units and as-of dates are not established by this capability response; no inferred float is published.')
 
 
+US_STOCK_EXCHANGES = {'NYSE','NASDAQ','NASDAQ.NMS','NASDAQ.SCM','NASDAQ.GM','AMEX','ARCA','NYSEARCA','NYSEAMERICAN','BATS','IEX','ISLAND'}
+
+
+def us_stock(contract):
+    primary=str(getattr(contract,'primaryExchange','') or '').upper()
+    return (getattr(contract,'secType',None)=='STK' and getattr(contract,'currency',None)=='USD'
+            and primary in US_STOCK_EXCHANGES)
+
+
 async def scan(engine):
     from ib_async import ScannerSubscription, TagValue
     sub = ScannerSubscription(numberOfRows=50, instrument='STK', locationCode='STK.US.MAJOR',
@@ -57,8 +66,9 @@ async def scan(engine):
                 warning='Scanner returns contracts, not verified prices or premarket volume. Separate quote/history checks required.',
                 rows=[dict(conid=r.contractDetails.contract.conId,symbol=r.contractDetails.contract.symbol,
                            name=r.contractDetails.longName,stockType=r.contractDetails.stockType,
-                           secType='STK',exch='SMART',brokerId=True,rank=r.rank) for r in (rows or [])[:50]
-                      if r.contractDetails.contract.secType == 'STK' and r.contractDetails.contract.currency == 'USD'])
+                           secType='STK',exch='SMART',brokerId=True,rank=r.rank,currency='USD',
+                           primaryExchange=r.contractDetails.contract.primaryExchange,usListed=True) for r in (rows or [])[:50]
+                      if us_stock(r.contractDetails.contract)])
 
 
 def close_idle(engine):
@@ -552,7 +562,8 @@ def verification(detail, minute, daily, now):
     pre = [b for b in minute if isinstance(stamp(b.date), int) and end is not None and start<=stamp(b.date) and stamp(b.date)+60000<=end]
     volumes = [number(b.volume, True) for b in pre]
     return dict(conid=detail.contract.conId,stockType=detail.stockType,source='IB Gateway TRADES / RTH daily close',
-                at=now,sessionDate=day.isoformat(),sessionKnown=session is not None,
+                at=now,sessionDate=day.isoformat(),sessionKnown=session is not None,usListed=us_stock(detail.contract),
+                currency=getattr(detail.contract,'currency',None),primaryExchange=getattr(detail.contract,'primaryExchange',None),
                 previousClose=prev[-1][1] if prev else None,previousCloseDate=prev[-1][0] if prev else None,
                 premarketVolume=sum(volumes) if volumes and all(v is not None for v in volumes) else None,
                 premarketStart=start,premarketEnd=stamp(session.start) if session else None,
@@ -579,8 +590,8 @@ async def verify(engine, conid):
             engine._guns_verify_next = time.monotonic()+.35
         ib = engine._ib
         details = await asyncio.wait_for(ib.reqContractDetailsAsync(Contract(conId=int(conid),exchange='SMART')),12)
-        if not details or details[0].contract.conId!=int(conid) or details[0].contract.secType!='STK' or details[0].contract.currency!='USD':
-            raise ValueError('US dollar stock definition unavailable')
+        if not details or details[0].contract.conId!=int(conid) or not us_stock(details[0].contract):
+            raise ValueError('Verified US-listed USD stock definition required')
         d = details[0]
         fallback=scanner_sources()['quoteFallbackConfigured']
         async def get(duration, interval, rth):
