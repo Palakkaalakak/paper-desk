@@ -521,6 +521,49 @@ def main():
         page.locator('#guns-excluded [data-guns-exclude="12345"]').click()
         assert page.evaluate('__gunsTest.desk.execution.book().scan.excluded')==[]
         assert page.locator('.guns-candidate[data-guns-pick="12345"]').count()==1
+        # S1-S3 at 09:20 from chart candles, without price/size/review inputs.
+        scanner_symbols[:]=[('TEST',12345)]
+        pretime=OPEN-600000
+        history['minute'][:]=[b for b in history['minute'] if b['t']<pretime-1800000]
+        for group,high in enumerate((10.7,10.1,10.3,10.2,10.15,10.1)):
+            for minute in range(5):
+                history['minute'].append(dict(t=pretime-1800000+group*300000+minute*60000,o=high-.06,h=high,l=high-.1,c=high-.04,v=1000))
+        for strategy in (1,2,3):
+            print('Checking automatic premarket S'+str(strategy),flush=True)
+            page.clock.set_fixed_time(dt.datetime.fromtimestamp(pretime/1000,dt.timezone.utc))
+            page.reload(wait_until='domcontentloaded')
+            page.wait_for_function('window.__gunsTest && __gunsTest.desk')
+            page.locator('[data-tab="guns"]').click()
+            page.locator('#guns-symbol').fill('TEST');page.locator('#guns-symbol').press('Enter')
+            page.locator('[data-guns-search-pick="0"]').click()
+            page.locator('.guns-stage-nav [data-guns-stage="trade"]').click()
+            page.wait_for_function('''s=>{const b=document.querySelector('[data-guns-confirm="'+s+'"]');return b&&!b.textContent.includes('Warning:');}''',arg=strategy)
+            page.evaluate('document.activeElement.blur()')
+            page.keyboard.press(str(strategy))
+            page.wait_for_selector('#guns-order-preview')
+            assert page.locator('#guns-order-preview input').count()==0
+            assert page.locator('#guns-manual').count()==0
+            assert page.evaluate('__gunsTest.desk.execution.pending().length')==0
+            page.keyboard.press('Enter')
+            order=page.evaluate('__gunsTest.desk.execution.pending()[0]')
+            assert order['guns']['confirmedPlan'] and order['guns']['plan']['levelSource']=='automatic'
+            assert order['qty']>0 and order['guns']['plan']['stop']>0 and order['guns']['plan']['target']>order['stop']
+            assert 'Waiting for regular-market open' in page.locator('#guns-active').inner_text()
+            def feed_price(bid,ask,last,size=7):
+                page.evaluate('''v=>__gunsTest.feed({connected:true,feedHealthy:true,generation:0,quotes:{12345:{bid:v[0],ask:v[1],last:v[2],bidSize:v[3],askSize:v[3],status:'LIVE',at:Date.now(),tradeAt:Date.now(),receivedAt:Date.now()}}})''',[bid,ask,last,size])
+            feed_price(19.99,20,20)
+            assert page.evaluate('__gunsTest.desk.execution.pending()[0].filledQty')==0
+            assert not page.evaluate('__gunsTest.desk.execution.pending()[0].triggered||false')
+            page.wait_for_timeout(300)
+            assert page.evaluate('JSON.parse(localStorage.paperAccount).orders.some(o=>o.guns?.confirmedPlan&&o.status==="working")')
+            page.clock.set_fixed_time(dt.datetime.fromtimestamp(OPEN/1000,dt.timezone.utc))
+            feed_price(order['stop']-.01,order['stop']+.01,order['stop'])
+            active=page.evaluate('__gunsTest.desk.execution.book().active[0]')
+            assert active['qty']==7
+            assert active['stop']==order['guns']['plan']['stop'] and active['target']==order['guns']['plan']['target']
+            feed_price(active['target']+.01,active['target']+.02,active['target']+.01)
+            assert page.evaluate('__gunsTest.desk.execution.book().active.length')==0
+            assert page.evaluate('__gunsTest.desk.execution.book().journal.length')==1
         assert not errors,errors
         print(json.dumps({'guns':'verified scanner, local key form, advisory/manual fills, gap provenance, reserve promotion/quick-load/premarket shading, S1-S5, charts/hover/news, off-tab Level II hold/resume/auto-cancel, tutorial isolation, dynamic risk, paper lifecycle, persistence/mobile','browser_errors':errors}))
         page.unroute_all(behavior='ignoreErrors')
