@@ -521,7 +521,7 @@ def sip_bars(ticker,start,end,timeframe):
     raise ValueError('Alpaca history pagination incomplete')
 
 
-def sip_verification(detail,now,expected_previous=None):
+def sip_verification(detail,now,expected_previous=None,rth_reference=None):
     from types import SimpleNamespace
     from market import number
     ny=ZoneInfo('America/New_York');day=dt.datetime.fromtimestamp(now/1000,ny).date()
@@ -532,15 +532,19 @@ def sip_verification(detail,now,expected_previous=None):
     end=min(dt.datetime.fromtimestamp(now/1000,dt.timezone.utc),session.start)
     if end<=start: raise ValueError('Premarket session has not started')
     minute=sip_bars(ticker,start.isoformat(),end.isoformat(),'1Min')
-    daily=sip_bars(ticker,(day-dt.timedelta(days=14)).isoformat(),day.isoformat(),'1Day')
+    # SIP daily bars are not assumed to be RTH-only. Reuse the independently
+    # acquired IB RTH close, never an extended-hours aggregate denominator.
+    if not rth_reference or not rth_reference.get('previousCloseVerified'):
+        raise ValueError('Verified IB RTH close required for SIP minute fallback')
     def bar(x,daily=False):
         timestamp=iso_stamp(x.get('t'))
         date=dt.datetime.fromtimestamp(timestamp/1000,ny)
         return SimpleNamespace(date=date.date().isoformat() if daily else date,close=number(x.get('c'),True),volume=number(x.get('v'),True))
-    result=verification(detail,[bar(x) for x in minute],[bar(x,True) for x in daily],now,expected_previous)
+    result=verification(detail,[bar(x) for x in minute],[],now,expected_previous)
+    result.update(rth_reference)
     if result['premarketVolume'] is None or result['previousClose'] is None:
         raise ValueError('Alpaca SIP did not supply premarket volume and prior close')
-    result.update(previousCloseSource='Alpaca SIP daily bars / split adjustment',source='Alpaca SIP TRADES / daily close; IBKR contract and session',
+    result.update(source='Alpaca SIP minute TRADES; IBKR RTH close, contract and session',
                   volumeUnit='consolidated SIP shares',coverage='Completed 04:00 ET to regular-open SIP minute bars; all returned pages checked.')
     return result
 
@@ -667,14 +671,18 @@ async def verify(engine, conid):
         fallback=scanner_sources()['quoteFallbackConfigured']
         async def get(duration, interval, rth):
             return await ib.reqHistoricalDataAsync(d.contract,'',duration,interval,'TRADES',rth,formatDate=2,keepUpToDate=False,timeout=8 if fallback else 20)
+        daily=[]
         try:
-            minute,daily = await asyncio.gather(get('1 D','1 min',False),get('1 M','1 day',True))
-            if not minute or not daily: raise ValueError('Scanner verification history incomplete')
+            minute,daily = await asyncio.gather(get('1 D','1 min',False),get('1 M','1 day',True),return_exceptions=True)
+            if isinstance(minute,BaseException) or isinstance(daily,BaseException) or not minute or not daily: raise ValueError('Scanner verification history incomplete')
             result=verification(d,minute,daily,int(time.time()*1000),previous)
             if result['premarketVolume'] is None or result['previousClose'] is None:
                 raise ValueError('IBKR history lacks observed premarket volume/prior close')
         except (ValueError,ConnectionError,asyncio.TimeoutError):
             if not fallback: raise
-            result=await asyncio.to_thread(sip_verification,d,int(time.time()*1000),previous)
+            if isinstance(daily,BaseException) or not daily:
+                daily=await get('1 M','1 day',True)  # Retry missing RTH history independently.
+            reference=close_reference(daily,previous,int(time.time()*1000))
+            result=await asyncio.to_thread(sip_verification,d,int(time.time()*1000),previous,reference)
         if engine._ib is not ib: raise ValueError('Gateway connection changed during contract verification')
         return result

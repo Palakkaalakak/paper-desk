@@ -249,3 +249,23 @@ test('stale, incomplete, cross-contract depth cannot authorize entry or resume',
 test('breakeven stop never loosens and can be explicitly disabled',()=>{const f=fixture(),o=f.arm();f.E.fill(o);const b=f.E.book().active[0];f.tick({bid:b.entry+b.initialR});f.E.manage();assert.equal(b.stop,b.entry);f.tick({bid:b.entry+.01});f.E.manage();assert.equal(b.stop,b.entry);const g=fixture();g.E.g().config.breakeven=false;const p=g.arm();g.E.fill(p);const b2=g.E.book().active[0],old=b2.stop;g.tick({bid:b2.entry+b2.initialR});g.E.manage();assert.equal(b2.stop,old);});
 function depthFixture(f,askSize=100,revision=1){return {conid:1,status:'LIVE',source:'IB Gateway SMART depth',updatedAt:f.Q[1].at,revision,stream:'fixture',bids:[0,1,2,3,4].map(i=>({price:10-i*.01,size:100})),asks:[0,1,2,3,4].map(i=>({price:10.02+i*.01,size:askSize}))};}
 test('S4/S5 wait for fresh Level II while S1 remains unaffected',()=>{for(const setup of [4,5]){const f=fixture();f.plan.setup=setup;const o=f.arm();f.E.fill(o);assert.equal(o.status,'working');assert.equal(o.guns.l2.mode,'waiting');f.E.updateDepth(f.inst,depthFixture(f));f.E.fill(o);assert.equal(o.status,'filled');}const f=fixture(),o=f.arm();f.E.fill(o);assert.equal(o.status,'filled');});
+
+test('gap uses dated prior RTH close and exact unrounded percentage',()=>{
+ const f=scannerFixture(),e={...f.ev,previousClose:100},q={...f.q,last:105};
+ assert.equal(C.gapEvidence(q,e,f.now).value,5);
+ assert.ok(C.gapEvidence({...q,last:104.999},e,f.now).value<5);
+ assert.equal(C.gapEvidence({...q,last:90},e,f.now).value,-10);
+ for(const patch of [{previousClose:0},{previousClose:Infinity},{previousCloseVerified:false},{previousCloseDate:'2026-09-08'},{sessionDate:'2026-09-09'},{previousCloseAt:f.now-90001},{previousCloseBasis:'dividend-adjusted'}])assert.equal(C.gapEvidence(q,{...e,...patch},f.now).value,null);
+ assert.equal(C.gapEvidence({...q,last:10.5},{...e,previousClose:10},f.now).value,5,'split-adjusted denominator must be used as supplied, not adjusted twice');
+});
+test('quote receipt cannot refresh stale last trade; minute fallback is explicitly labeled',()=>{
+ const f=scannerFixture();for(const patch of [{tradeAt:f.now-60001},{tradeAt:null},{tradeAt:f.now+1},{tradeLast:null},{status:'DELAYED'},{at:f.now-15000}])assert.equal(C.gapEvidence({...f.q,...patch},f.ev,f.now).value,null);
+ const e={...f.ev,recentTradeBar:{price:10,start:f.now-60000,end:f.now}};
+ const out=C.gapEvidence({...f.q,tradeAt:null},e,f.now);assert.match(out.basis,/not a live trade/);assert.equal(out.price,10);
+ assert.equal(C.gapEvidence({...f.q,tradeAt:null},{...e,recentTradeBar:{...e.recentTradeBar,end:f.now+1}},f.now).value,null);
+});
+test('scanner snapshot cannot carry a gap inconsistent with its reference prices',()=>{
+ const f=scannerFixture(),row=W.screenSnapshot(W.candidate(f.row,f.q,f.ev,true,C.defaults,f.now),f.now);
+ assert.ok(W.completeScreen(row,C.defaults));assert.equal(W.completeScreen({...row,screen:{...row.screen,gap:99}},C.defaults),false);
+ assert.equal(W.cheapFilter([{q:{last:10,prevClose:100}}],'gap',C.defaults).length,1);
+});

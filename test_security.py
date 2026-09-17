@@ -271,6 +271,41 @@ class AdapterTests(unittest.TestCase):
 
 
 class GunsDataTests(unittest.IsolatedAsyncioTestCase):
+    def test_prior_close_rejects_old_invalid_duplicate_or_current_daily_bars(self):
+        expected='2026-09-09';now=1789047010000
+        older=NS(date='2026-09-08',close=1);right=NS(date=expected,close=9)
+        for rows in [[older],[older,NS(date=expected,close=float('nan'))],[right,right],[NS(date='2026-09-10',close=12)]]:
+            out=guns_data.close_reference(rows,expected,now)
+            self.assertFalse(out['previousCloseVerified']);self.assertIsNone(out['previousClose'])
+        out=guns_data.close_reference([right,older],expected,now)
+        self.assertEqual(out['previousClose'],9);self.assertEqual(out['previousCloseDate'],expected)
+        self.assertEqual(out['previousCloseBasis'],'split-adjusted-not-dividend-adjusted')
+        self.assertIsNone(guns_data.close_reference([right],None,now)['previousClose'])
+        self.assertIsNone(guns_data.daily_date('2026-02-30'))
+        self.assertIsNone(guns_data.daily_date('2026-09-09junk'))
+
+    async def test_prior_calendar_shared_across_workers_and_respects_holiday_dst_dates(self):
+        for current,prior in [('2026-09-08T13:30:00+00:00','20260904'),('2026-11-02T14:30:00+00:00','20261030'),('2026-04-06T13:30:00+00:00','20260402')]:
+            ib=NS(reqHistoricalScheduleAsync=AsyncMock(return_value=NS(sessions=[NS(refDate=prior)])))
+            engine=NS(_ib=ib,_stock=AsyncMock(return_value=NS(conId=99)),info={'generation':1})
+            now=int(dt.datetime.fromisoformat(current).timestamp()*1000)
+            dates=await asyncio.gather(*(guns_data.prior_session(engine,now) for _ in range(6)))
+            self.assertEqual(dates,[guns_data.daily_date(prior)]*6)
+            ib.reqHistoricalScheduleAsync.assert_awaited_once()
+            self.assertTrue(ib.reqHistoricalScheduleAsync.call_args.kwargs['useRTH'])
+            engine.info['generation']=2;await guns_data.prior_session(engine,now)
+            self.assertEqual(ib.reqHistoricalScheduleAsync.await_count,2)
+
+    def test_sip_daily_close_is_never_assumed_regular_session(self):
+        detail,minute,daily,opening=self.fixture();detail.contract.symbol='TEST'
+        now=int(opening.timestamp()*1000)
+        rows=[{'t':(opening-dt.timedelta(minutes=1)).isoformat(),'c':10,'v':100}]
+        reference=guns_data.close_reference(daily,str(daily[0].date),now)
+        with patch.object(guns_data,'sip_bars',return_value=rows) as fetch:
+            out=guns_data.sip_verification(detail,now,str(daily[0].date),reference)
+            self.assertEqual(fetch.call_count,1);self.assertEqual(fetch.call_args.args[-1],'1Min')
+            self.assertEqual(out['previousClose'],9);self.assertEqual(out['previousCloseSource'],'IB Gateway RTH TRADES')
+
     def test_footer_only_news_is_incomplete_not_a_story(self):
         footer='(END) Dow Jones Newswires\nSeptember 09, 2026 15:34 ET (19:34 GMT)\nCopyright (c) 2026 Dow Jones & Company, Inc.\nThe statements in this document shall not be considered as an objective or independent explanation.'
         out=guns_data.article_content(footer)
