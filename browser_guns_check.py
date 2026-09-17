@@ -417,7 +417,7 @@ def main():
         page.locator('[data-guns-cancel]').click()
         # User intent is never vetoed by absent live quotes or setup assessments.
         page.evaluate("__gunsTest.feed({connected:false,feedHealthy:false,quotes:{}});__gunsTest.desk.live()")
-        page.clock.run_for(600)
+        page.clock.set_fixed_time(dt.datetime.fromtimestamp((OPEN+62000)/1000,dt.timezone.utc))
         before_quotes=page.evaluate('JSON.stringify(__paper.Q)')
         page.locator('[data-guns-confirm="1"]').click()
         page.locator('#guns-manual [name="price"]').fill('250000')
