@@ -14,6 +14,18 @@ return function(a){
   function issues(p,inst){const out=[...(p?.errors||['No valid plan'])];if(!inst?.conid||inst.secType!=='STK')out.push('Select a verified stock');if(!a.usingTws()||!a.ready(inst?.conid))out.push('Fresh LIVE Gateway quote required');if(!fresh())out.push('Every held position must have a fresh mark');if(!sizing(p||{},inst).qty)out.push('Risk / buying power permits no whole shares');if(book().active.length+pending().length>=2)out.push('Two pending/open GUNS trades maximum');if(inst&&(a.position(inst.conid)?.qty||state().orders.some(o=>o.status==='working'&&(o.conid===inst.conid||o.legs?.some(l=>l.conid===inst.conid)))))out.push('Symbol already has a position or working order');return out;}
   function cancel(o,note){o.status='cancelled';o.note=note;a.save();return true;}
   function arm(p,inst,notes){const errors=issues(p,inst);if(errors.length)return {errors};const r=sizing(p,inst),s=state();const o={...inst,id:a.uid(),ts:a.now(),day:a.today(),side:'BUY',qty:r.qty,filledQty:0,type:'STPLMT',stop:p.entry,limit:p.limit,tif:'DAY',status:'working',commission:0,guns:{role:'entry',version:C.VERSION,setup:p.setup,plan:JSON.parse(JSON.stringify(p)),notes:JSON.parse(JSON.stringify(notes||{})),bookId:s.bookId,equityAtArm:r.equity,budgetAtArm:r.budget}};s.orders.push(o);a.save();a.sync();return {order:o,errors:[]};}
+  function manualTrade(inst,spec,plan={},notes={}){
+    const side=spec.side,price=Number(spec.price),qty=Number(spec.qty),errors=[];
+    if(!inst?.conid||inst.secType!=='STK')errors.push('Select a stock');
+    if(!['BUY','SELL'].includes(side)||!Number.isFinite(price)||price<=0||!Number.isSafeInteger(qty)||qty<=0||!Number.isFinite(price*qty))errors.push('Enter a positive finite price and whole-share quantity');
+    if(side==='SELL'&&qty>(a.position(inst?.conid)?.qty||0))errors.push('Sell quantity exceeds held long shares');
+    const supplied=x=>x!==''&&x!=null,protectedEntry=side==='BUY'&&(supplied(spec.stop)||supplied(spec.target)),stop=Number(spec.stop),target=Number(spec.target);
+    if(protectedEntry&&(!supplied(spec.stop)||!supplied(spec.target)||!Number.isFinite(stop)||!Number.isFinite(target)||stop<=0||stop>=price||target<=price))errors.push('Optional long bracket requires stop below fill and target above fill; or leave both blank');
+    if(errors.length)return {errors};
+    const now=a.now(),warnings=issues(plan,inst),manualPlan={...plan,entry:price,limit:price,stop,target,tick:plan.tick||.01,setup:Number(spec.setup)||1,session:{start:now,end:plan.session?.end>now?plan.session.end:null}};
+    const o={...inst,mult:1,id:a.uid(),ts:now,day:a.today(),side,qty,filledQty:0,type:'MANUAL',tif:'DAY',status:'working',commission:0,note:'USER-ENTERED PAPER FILL — strategy/data warnings overridden',priceSource:'USER_ENTERED_PAPER',guns:{role:protectedEntry?'entry':'manual',userOverride:true,bookId:state().bookId,setup:manualPlan.setup,plan:manualPlan,notes:JSON.parse(JSON.stringify({...notes,userOverride:true,warnings})),equityAtFill:a.account().netLiq,budgetAtFill:protectedEntry?qty*(price-stop):null,rewardR:protectedEntry?(target-price)/(price-stop):null,breakeven:!!cfg().breakeven}};
+    state().orders.push(o);const result=a.fill(o,qty,price);if(result===false){o.status='rejected';a.save();return {order:o,errors:[o.note||'Invalid accounting inputs']};}a.save();a.sync();return {order:o,errors:[]};
+  }
   function depthItems(){const out=new Map();for(const o of pending())if(l2Applies(o.guns.setup))out.set(o.conid,o);for(const b of book().active)if(l2Applies(b.setup))out.set(b.inst.conid,b.inst);return [...out.values()];}
   function depthGuard(target,position=false){const meta=position?target:target.guns,inst=position?target.inst:target;if(!l2Applies(meta.setup))return true;
     const d=depthBooks.get(state().bookId+':'+inst.conid),result=C.depthRisk(d,inst,position?{entry:target.entry,stop:target.originalStop}:meta.plan,cfg(),a.now()),s=meta.l2||(meta.l2={mode:'waiting'}),before=JSON.stringify(s);
@@ -58,11 +70,12 @@ return function(a){
   }
   function after(o,n,price,oldQty,newQty,realized,fee){const b=book(),now=a.now();if(o.guns?.role==='entry'&&o.side==='BUY'){
     const p=o.guns.plan,initialR=price-p.stop;
-    b.active.push({id:o.id,inst:{conid:o.conid,symbol:o.symbol,secType:'STK',mult:1,exch:'SMART',brokerId:true},entry:price,qty:n,originalQty:n,stop:p.stop,originalStop:p.stop,target:C.round(price+initialR*o.guns.rewardR,p.tick,true),initialR,breakeven:o.guns.breakeven,sessionEnd:p.session.end,openedAt:now,setup:p.setup,version:C.VERSION,plan:p,notes:o.guns.notes,equityAtFill:o.guns.equityAtFill,budgetAtFill:o.guns.budgetAtFill,fees:fee,maxBid:price,minBid:price,events:[{at:now,type:'ENTRY',price,qty:n}]});
+    b.active.push({id:o.id,inst:{conid:o.conid,symbol:o.symbol,secType:'STK',mult:1,exch:'SMART',brokerId:true},entry:price,qty:n,originalQty:n,stop:p.stop,originalStop:p.stop,target:o.guns.userOverride?p.target:C.round(price+initialR*o.guns.rewardR,p.tick,true),initialR,breakeven:o.guns.breakeven,sessionEnd:p.session.end,openedAt:now,setup:p.setup,version:C.VERSION,plan:p,notes:o.guns.notes,equityAtFill:o.guns.equityAtFill,budgetAtFill:o.guns.budgetAtFill,fees:fee,maxBid:price,minBid:price,userOverride:!!o.guns.userOverride,priceSource:o.priceSource||'IB_OBSERVED',events:[{at:now,type:'ENTRY',price,qty:n,priceSource:o.priceSource||'IB_OBSERVED'}]});
   }else if(o.side==='SELL'){
-    const x=b.active.find(x=>x.inst.conid===o.conid);if(!x)return;
-    x.qty=Math.max(0,Math.min(x.qty-n,newQty));x.fees+=fee;x.events.push({at:now,type:o.guns?.reason||'MANUAL EXIT',price,qty:n});
-    if(x.qty===0){x.closedAt=now;x.net=x.events.filter(e=>e.type!=='ENTRY'&&e.qty).reduce((v,e)=>v+(e.price-x.entry)*e.qty,0)-x.fees;x.actualR=x.net/(x.initialR*x.originalQty);b.active=b.active.filter(y=>y!==x);b.journal.unshift(x);state().orders.forEach(other=>{if(other.status==='working'&&other.conid===o.conid&&other.side==='SELL')cancel(other,'Position flat; sibling exit cancelled');});}
+    const matches=b.active.filter(x=>x.inst.conid===o.conid).sort((x,y)=>Number(y.id===o.guns?.parentId)-Number(x.id===o.guns?.parentId));let remaining=n;
+    for(const x of matches){const sold=Math.min(x.qty,remaining);if(!sold)continue;remaining-=sold;x.qty-=sold;x.fees+=fee*sold/n;x.events.push({at:now,type:o.guns?.reason||'MANUAL EXIT',price,qty:sold,priceSource:o.priceSource||'IB_OBSERVED'});
+      if(x.qty===0){x.closedAt=now;x.net=x.events.filter(e=>e.type!=='ENTRY'&&e.qty).reduce((v,e)=>v+(e.price-x.entry)*e.qty,0)-x.fees;x.actualR=x.net/(x.initialR*x.originalQty);b.active=b.active.filter(y=>y!==x);b.journal.unshift(x);}}
+    if(newQty===0)state().orders.forEach(other=>{if(other.status==='working'&&other.conid===o.conid&&other.side==='SELL')cancel(other,'Position flat; sibling exit cancelled');});
   }}
   function manage(cid){let changed=false;for(const b of [...book().active]){if(cid!=null&&b.inst.conid!==cid)continue;if(!a.usingTws()||!a.ready(b.inst.conid))continue;const q=a.quotes()[b.inst.conid];if(!(q.bid>0))continue;if(q.bid>b.maxBid||q.bid<b.minBid)changed=true;b.maxBid=Math.max(b.maxBid,q.bid);b.minBid=Math.min(b.minBid,q.bid);const decision=C.exit(b,q,a.now());if(decision.stop!==b.stop){b.stop=decision.stop;b.events.push({at:a.now(),type:'BREAKEVEN',price:b.stop});changed=true;}
     if(!decision.reason)continue;if(decision.reason==='STOP'&&!b.stopTriggered){b.stopTriggered=true;changed=true;b.events.push({at:a.now(),type:'STOP TRIGGER',price:q.bid});}
@@ -74,6 +87,6 @@ return function(a){
   }if(changed)a.save();return changed;}
   function pulse(){book().active.forEach(b=>depthGuard(b,true));manage();pending().forEach(fill);}
   function flatten(id){const b=book().active.find(x=>x.id===id);if(b){b.forceExit=true;a.save();manage(b.inst.conid);}}
-  return {state,cfg,g,book,pending,fresh,sizing,issues,arm,guard,fill,after,manage,pulse,flatten,exposure,depthItems,updateDepth,depthGuard,depthDecision};
+  return {state,cfg,g,book,pending,fresh,sizing,issues,arm,manualTrade,guard,fill,after,manage,pulse,flatten,exposure,depthItems,updateDepth,depthGuard,depthDecision};
 };
 });

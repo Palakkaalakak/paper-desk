@@ -1847,12 +1847,14 @@ function fillRiskAllowed(fills,order){
   var projected=project(fills),after=acct(projected.positions,projected.cash),before=acct();
   var invalid=!Number.isFinite(after.netLiq)||!Number.isFinite(projected.cash);
   var expandsRisk=after.init>before.init+1e-6;
-  if(invalid||(after.avail < -1e-6 && expandsRisk)||(S.account.type==='cash'&&projected.cash < -1e-6)){
+  var explicitPaper=order.guns?.userOverride===true && order.priceSource==='USER_ENTERED_PAPER';
+  if(invalid||(!explicitPaper&&((after.avail < -1e-6 && expandsRisk)||(S.account.type==='cash'&&projected.cash < -1e-6)))){
     order.status='rejected';order.note='Insufficient buying power at execution price';say(order.symbol+': '+order.note);orderNotice('REJECTED · '+order.symbol+' · '+order.note);return false;
   }
   return true;
 }
 function applyFill(o, fq, price, leg){
+  if(!Number.isFinite(fq)||fq<=0||!Number.isFinite(price)||price<=0)return false;
   if(guns && !leg && !guns.execution.guard(o))return false;
   var inst = leg || {conid:o.conid, symbol:o.symbol, secType:o.secType, mult:o.mult, exch:o.exch, brokerId:o.brokerId};
   var side = leg ? leg.side : o.side;
@@ -1889,7 +1891,8 @@ function applyFill(o, fq, price, leg){
   o.commission = n(o.commission)+comm;
   S.trades.unshift({id:uid(), ts:Date.now(), orderId:o.id, symbol:inst.symbol, conid:inst.conid, secType:inst.secType,
     side:side, qty:fq, price:price, commission:Math.round(comm*100)/100, realized:Math.round(realized*100)/100,
-    cashAfter:S.cash, mult:mult, combo: leg? (o.strategy||'spread') : null});
+    cashAfter:S.cash, mult:mult, priceSource:o.priceSource||'MARKET_DATA',userOverride:!!o.guns?.userOverride,
+    warnings:o.guns?.userOverride?(o.guns.notes?.warnings||[]):[],combo: leg? (o.strategy||'spread') : null});
   say(side+' '+qty(fq)+' '+inst.symbol+' @ '+px(price)+' (comm '+money(comm)+')'+(!leg&&o.status!=='filled'?' [partial]':''));
   if(!leg) snapshotEquity(true);
   if(guns && !leg) guns.execution.after(o,fq,price,oldQty,p.qty,realized,comm);
