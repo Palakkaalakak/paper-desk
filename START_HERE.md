@@ -23,7 +23,8 @@ Paper accounts live in this browser's `paperAccount` localStorage. Another devic
 - Scanner universe means **US-listed, USD-denominated common stocks**, including foreign-domiciled US-listed issuers. Independent company/news search remains available.
 - Check **Exclude / replace** on a scanner stock to promote the next verified reserve. Untick its saved exclusion to restore eligibility. This does not change existing positions or chart assignments. Exclusions reset on the next New York date. If reserves run out, scan again; missing slots are not padded.
 - Click **Quick-load scanner stocks**, in the header or directly above the Trading charts, for four-panel loading. Click a chart to select its stock for shortcuts; selecting a stock never places an order. Premarket is shaded white from 04:00 ET to the reported regular open on intraday frames; larger bars shade only their overlapping portion. Daily has no intraday shading.
-- **Manual paper BUY / SELL** lets you enter price and whole shares without spread, MA, entry-window, risk-budget or live-quote vetoes. An S button opens this ticket when its calculated plan warns. Select SELL to close held long shares; shorts are outside this ticket. Enter both optional BUY stop and target, or leave both blank. A separate **Manual paper close** button is available on protected positions.
+- **S1–S3 → automatic preview → Enter → wait for regular open.** Entry, limit, SL, TP and whole shares come from chart candles and paper-account risk settings, even before 09:28. Screening warnings and unavailable live premarket quotes do not force manual inputs. Missing candles are fetched; absent ATR, session or a required pivot/flag are reported without inventing prices.
+- **Manual paper BUY / SELL** is a separate optional assumed-fill tool, never an automatic shortcut fallback. It lets you enter price and whole shares without spread, MA, entry-window, risk-budget or live-quote vetoes. Select SELL to close held long shares; shorts are outside this ticket. Enter both optional BUY stop and target, or leave both blank. A separate **Manual paper close** button is available on protected positions.
 - The ticket records your assumed price as `USER_ENTERED_PAPER`, including overridden warnings in the trade ledger. It can exceed paper buying power. It never sends an order to IB, changes quotes or claims a live market fill. Pending automatic entries are unchanged; cancel them separately if unwanted. Automatic protective exits still need live quotes.
 - Gap is the current timestamped price versus the **actual previous trading session's IB RTH close**, not yesterday's arbitrary bar, bid/ask midpoint, extended-hours close or a frozen opening gap. A recent completed 1m close may be used when last-trade time is unavailable, visibly labeled as such. Inspect the displayed numerator, denominator, prior-session date and source. Split-adjusted TRADES prices are not dividend-adjusted. Missing calendar or price evidence stays unknown, but does not prevent an explicit manual paper trade.
 
@@ -69,7 +70,7 @@ If no cards appear, open **Screening diagnostics / rejections**. Numeric rejecti
 - Inspect the Daily chart and check **Daily overhead resistance / room reviewed** only when you have assessed it.
 - Use **Open this company in trading** to assign it explicitly. In Trading, **Review confirmations & optional overrides** contains the same company/day reviews.
 
-The strategy button confirms chart/setup review for calculated entries. When assessments warn it opens your manual paper ticket rather than disabling trading. Reading a headline does not invent market data.
+The strategy button confirms chart/setup review for calculated entries. Screening assessments remain advisory; they do not redirect you to a manual ticket. Reading a headline does not invent market data.
 
 ## 5. Charts and controls
 
@@ -84,7 +85,7 @@ Four saved layout presets:
 
 Each panel has company search/dropdown, timeframe and reset-view controls. Switch focus or 2×2 view; clicking a chart selects its stock for the shortcuts. Charts show observed IB bars, volume, EMA9/20 and SMA50/200. Missing indicator warmup is not fabricated. These are local canvas charts, not an embedded TWS window; live parity with TWS remains to be checked.
 
-- **1–5 → preview → Enter confirms / Esc cancels.** The shortcut alone never places an order. Review the selected stock, shares, entry, limit, stop, target and planned risk. Enter arms a calculated paper stop-limit order; it does not guarantee an immediate fill. If assessments warn, the preview instead asks for your own paper price and whole-share quantity; Enter confirms that explicitly labeled assumed fill. Shortcuts are blocked while editing fields or in other app tabs/dialogs.
+- **1–5 → preview → Enter confirms / Esc cancels.** The shortcut alone never places an order. Review the selected stock, shares, entry, limit, stop, target and planned risk. Enter arms a calculated paper stop-limit order; it does not guarantee an immediate fill. The preview calculates the prices and shares automatically. S1–S3 wait for regular open; Enter does not create a premarket fill. Use Manual paper BUY / SELL only if you explicitly want an assumed fill. Shortcuts are blocked while editing fields or in other app tabs/dialogs.
 - **H:** toggle hovered-candle entry selection. The actual candle column supplies its high/low, independent of cursor Y-price. Outside the chart → AUTO. Strategy timeframe/session rules still apply; S5 cannot use a later candle.
 - **Q:** show/hide quick settings. Risk presets, target R, S1/S2 stop mode and breakeven are also available directly.
 - Shortcut bindings can be changed to unique supported Alt+letter/digit combinations.
@@ -98,17 +99,17 @@ Times below are for a normal 09:30 ET regular open; execution uses the reported 
 
 | Strategy | Automatic entry reference | Initial stop | App window |
 |---|---|---|---|
-| S1: Premarket high breakout | Actual PM high +$0.01 | Completed 1m ATR distance by default | Arm from 09:28; fills wait for open; expires 09:35 |
-| S2: Premarket pivot | Most recent completed lower 5m pivot +$0.01 | Completed 1m ATR distance by default | 09:28–09:35; fills wait for open |
-| S3: Premarket bull flag | Final completed 5m flag candle high +$0.01 | Same candle low −$0.01 | 09:28–09:35; fills wait for open |
+| S1: Premarket high breakout | Actual PM high +$0.01 | Completed 1m ATR distance by default | Queue whenever calculable in today's session; fills wait for open; DAY expiry at close |
+| S2: Premarket pivot | Most recent completed lower 5m pivot +$0.01 | Completed 1m ATR distance by default | Queue in premarket; fills wait for open; DAY expiry at close |
+| S3: Premarket bull flag | Final completed 5m flag candle high +$0.01 | Same candle low −$0.01 | Queue in premarket; fills wait for open; DAY expiry at close |
 | S4: First opening bull flag | Completed opening 1m flag candle high +$0.01 | Same candle low −$0.01 | First hour after open; needs a valid completed reference |
 | S5: First bullish minute | First 09:30–09:31 candle high +$0.01 | That first candle low −$0.01 | After first close and strictly before 09:32 |
 
-Prices round to the verified tick. S1/S2 allow explicit PRICE or FIXED stop presets instead of ATR; missing ATR never silently selects another stop. S5 additionally requires a bullish first candle and range ≤2× premarket ATR. S2 requires at least 1R to PM high; other non-S1 strategies apply the app's PM-resistance guard. Human Daily-room review remains separate.
+Prices round to the verified tick. S1/S2 allow explicit PRICE or FIXED stop presets instead of ATR; missing ATR never silently selects another stop. S5 bullishness/range, PM resistance and human Daily-room assessments remain visible screening advice. Actual strategy reference candles, valid price levels and a known regular session are still needed for calculation.
 
-For all strategies, the latest completed basis candle must close above EMA9, EMA20, SMA50 and SMA200: **5m for S1–S3, 1m for S4/S5**, with at least 200 basis bars. A current last trade above an MA is not the same as that completed-candle check. Formation/retracement hints remain advisory; you judge chart quality.
+The screening checklist assesses whether the latest completed basis candle closes above EMA9, EMA20, SMA50 and SMA200 (not an order veto): **5m for S1–S3, 1m for S4/S5**, with at least 200 basis bars. A current last trade above an MA is not the same as that completed-candle check. Formation/retracement hints remain advisory; you judge chart quality.
 
-Entry cap: entry +$0.03 when entry is below $20, otherwise +$0.05, tick-rounded. No fills above the cap. A changed pending entry/stop requires review and re-arm. At most two pending/open GUNS trades are allowed in the paper book.
+Entry cap: entry +$0.03 when entry is below $20, otherwise +$0.05, tick-rounded. No fills above the cap: confirmed stop-limit orders wait for an executable price and remain triggered after a post-open trigger. Confirmed entry/SL/TP stay fixed as charts change; cancel and preview again to change them. Sizing still follows current equity before fill. Existing older pending orders keep their original saved policy; cancel/re-preview to use the new policy. Same-symbol overlapping orders remain guarded.
 
 ## 7. Risk, automatic breakeven and exits
 
