@@ -143,7 +143,9 @@ class MarketEngine:
         stamp = getattr(t, 'time', None)
         q = {k:number(getattr(t,k,None), k in ('bid','ask','last'))
              for k in ('bid','ask','last','bidSize','askSize','volume')}
-        q.update(prevClose=number(getattr(t,'close',None),True),
+        trade_stamps=[x for x in (getattr(t,'lastTimestamp',None),getattr(t,'rtTime',None)) if isinstance(x,dt.datetime)]
+        q.update(tradeAt=max((int(x.timestamp()*1000) for x in trade_stamps),default=None),
+                 prevClose=number(getattr(t,'close',None),True),
                  status={1:'LIVE',2:'FROZEN',3:'DELAYED',4:'DELAYED FROZEN'}.get(getattr(t,'marketDataType',1),'UNKNOWN'),
                  halted=number(getattr(t,'halted',None)) in (1,2), source='IB Gateway',
                  at=int(stamp.timestamp()*1000) if isinstance(stamp,dt.datetime) else now,
@@ -340,7 +342,7 @@ class MarketEngine:
             c = await self._contract(row)
             if self._ib is not ib or self.info.get('generation',0)!=generation:
                 return
-            ticker = ib.reqMktData(c,'',False,False)
+            ticker = ib.reqMktData(c,'233' if c.secType=='STK' else '',False,False)
             self._active[cid] = dict(contract=c,ticker=ticker)
             self._ticker_ids.setdefault(id(ticker),set()).add(cid)
             if any(number(getattr(ticker,k,None),True) is not None for k in ('bid','ask','last')):

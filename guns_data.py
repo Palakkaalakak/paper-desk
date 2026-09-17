@@ -155,7 +155,7 @@ async def _bars(engine,ticker):
     previous=await prior_session(engine,now)
     reference=close_reference(entry['lists'][1],previous,now)
     return dict(symbol=ticker,conid=d.contract.conId,source='IB Gateway TRADES',updatedAt=entry['updated'],
-                **reference,sessionDate=dt.datetime.fromtimestamp(now/1000,ZoneInfo('America/New_York')).date().isoformat(),
+                **reference,recentTradeBar=recent_trade_bar(entry['lists'][0],now),sessionDate=dt.datetime.fromtimestamp(now/1000,ZoneInfo('America/New_York')).date().isoformat(),
                 minTick=number(d.minTick),stockType=d.stockType,sessions=sessions,
                 minute=encode(entry['lists'][0]),daily=encode(entry['lists'][1]))
 
@@ -594,6 +594,18 @@ async def prior_session(engine,now):
     return await asyncio.shield(entry['task'])
 
 
+def recent_trade_bar(minute,now):
+    """Timestamped fallback for gap only, never a fabricated live quote/fill."""
+    from market import number
+    bars=[b for b in minute if isinstance(stamp(b.date),int) and 0<=now-stamp(b.date)-60000<=60000]
+    if not bars:return None
+    latest=max(stamp(b.date) for b in bars);matches=[b for b in bars if stamp(b.date)==latest]
+    if len(matches)!=1:return None
+    price=number(getattr(matches[0],'close',None),True)
+    if price is None or price<=0:return None
+    return dict(price=price,start=latest,end=latest+60000,source='completed TRADES minute close')
+
+
 def close_reference(daily,expected,now,source='IB Gateway RTH TRADES'):
     """Never skip a missing/invalid latest session in favor of an older price."""
     from market import number
@@ -622,7 +634,7 @@ def verification(detail, minute, daily, now, expected_previous=None):
     return dict(conid=detail.contract.conId,stockType=detail.stockType,source='IB Gateway TRADES / RTH daily close',
                 at=now,sessionDate=day.isoformat(),sessionKnown=session is not None,usListed=us_stock(detail.contract),
                 currency=getattr(detail.contract,'currency',None),primaryExchange=getattr(detail.contract,'primaryExchange',None),
-                **reference,
+                **reference,recentTradeBar=recent_trade_bar(minute,now),
                 premarketVolume=sum(volumes) if volumes and all(v is not None for v in volumes) else None,
                 premarketStart=start,premarketEnd=stamp(session.start) if session else None,
                 lastPremarketBar=max((stamp(b.date) for b in pre),default=None),observedBars=len(pre),

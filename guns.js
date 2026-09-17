@@ -13,6 +13,25 @@ const rules=[
 const fmt=new Intl.DateTimeFormat('en-US',{timeZone:'America/New_York',year:'numeric',month:'2-digit',day:'2-digit'});
 function day(t){const p=Object.fromEntries(fmt.formatToParts(new Date(t)).map(x=>[x.type,x.value]));return p.year+'-'+p.month+'-'+p.day;}
 const finite=x=>typeof x==='number'&&Number.isFinite(x);
+// One calculation for scanner and planner. No midpoint, undated quote.close,
+// weekday calendar guesses, or older daily-bar substitutions.
+function gapEvidence(q,e,now){
+ const fail=reason=>({value:null,reason});e=e||{};
+ const today=day(now),date=e.previousCloseDate,expected=e.expectedPreviousCloseDate,close=e.previousClose;
+ if(e.sessionDate!==today||!e.previousCloseVerified||!finite(close)||close<=0||!/^\d{4}-\d{2}-\d{2}$/.test(date||'')||date!==expected||date>=today||!e.previousCloseSource||e.previousCloseBasis!=='split-adjusted-not-dividend-adjusted')return fail('Verified prior trading-session close unavailable');
+ if(!finite(e.previousCloseAt)||now-e.previousCloseAt<0||now-e.previousCloseAt>90000)return fail('Prior-close evidence needs refresh');
+ let price=q&&Object.hasOwn(q,'tradeLast')?q.tradeLast:q?.last,at=q?.tradeAt,basis='timestamped last trade';
+ const live=q?.status==='LIVE'&&!q.error&&!q.halted&&finite(q.at)&&now-q.at>=0&&now-q.at<15000;
+ if(!live)return fail('Fresh live quote unavailable');
+ if(!finite(price)||price<=0||!finite(at)||now-at<0||now-at>60000||day(at)!==today){
+  const b=e.recentTradeBar;
+  if(!b||!finite(b.price)||b.price<=0||!finite(b.start)||!finite(b.end)||b.end-b.start!==60000||now-b.end<0||now-b.end>60000||day(b.start)!==today)return fail('Timestamped trade or recent completed trade bar unavailable');
+  price=b.price;at=b.end;basis='completed 1m TRADES close (not a live trade)';
+ }
+ const value=100*(price-close)/close;
+ if(!finite(value))return fail('Gap arithmetic unavailable');
+ return {value,price,at,basis,previousClose:close,previousCloseDate:date,previousCloseSource:e.previousCloseSource,adjustment:e.previousCloseBasis,reason:null};
+}
 function round(p,t,up){return Math.round((up?Math.ceil(p/t-1e-8):Math.floor(p/t+1e-8))*t*1e8)/1e8;}
 function average(rows,n,exp){let sum=0,v=null;return rows.map((b,i)=>{sum+=b.c;if(i>=n)sum-=rows[i-n].c;if(i<n-1)return null;v=v===null?sum/n:exp?b.c*2/(n+1)+v*(1-2/(n+1)):sum/n;return v;});}
 function studies(rows){return [average(rows,9,true),average(rows,20,true),average(rows,50,false),average(rows,200,false)];}
@@ -52,8 +71,8 @@ function analyze(data,q,cfg,setup,notes,now){cfg=Object.assign({},defaults,cfg);
  check('Latest completed minute available',closed.at(-1)?.t===Math.floor(now/60000)*60000-60000);
  const pre=closed.filter(b=>sess&&b.t>=sess.start-19800000&&b.t<sess.start),regular=closed.filter(b=>sess&&b.t>=sess.start&&b.t<sess.end);
  const preObserved=observed.filter(b=>sess&&b.t>=sess.start-19800000&&b.t<sess.start);
- const daily=(data.daily||[]).filter(b=>String(b.t)<day(now)),prev=daily.at(-1)?.c,price=q&&Object.hasOwn(q,'tradeLast')?q.tradeLast:q?.last,tick=data.minTick;
- const pmHigh=preObserved.length?Math.max(...preObserved.map(b=>b.h)):null,volume=pre.length&&pre.every(b=>finite(b.v)&&b.v>=0)?pre.reduce((s,b)=>s+b.v,0):null,gap=prev&&finite(price)?(price/prev-1)*100:null;
+ const price=q&&Object.hasOwn(q,'tradeLast')?q.tradeLast:q?.last,tick=data.minTick;
+ const pmHigh=preObserved.length?Math.max(...preObserved.map(b=>b.h)):null,volume=pre.length&&pre.every(b=>finite(b.v)&&b.v>=0)?pre.reduce((s,b)=>s+b.v,0):null,gapInfo=gapEvidence(q,data,now),gap=gapInfo.value;
  const period=Math.max(2,Math.min(100,Number(cfg.atrPeriod)||14)),a=atr(closed,period),preAtr=atr(pre,period);
  check('Verified penny-or-finer tick',finite(tick)&&tick>0&&tick<=.01);
  check('Corporate common stock verified',data.stockType==='COMMON'||notes.common===true);
@@ -83,7 +102,7 @@ function analyze(data,q,cfg,setup,notes,now){cfg=Object.assign({},defaults,cfg);
  check('No chase above entry limit',limit&&q?.ask<=limit);
  return {setup,checks,errors,advisories,levelSource:levels.levelSource,trigger,pattern:f,firstCandle:regular.find(b=>b.t===sess?.start),preAtr,
  contextCurrent:checks.filter(c=>['Valid ordered broker OHLC bars','Latest completed minute available','Chart stream current','Current exchange session known'].includes(c.label)).every(c=>c.ok),
- entry,limit,stop,target,risk,atr:a,pmHigh,gap,volume,session:sess,
+ entry,limit,stop,target,risk,atr:a,pmHigh,gap,gapInfo,volume,session:sess,
  expiresAt:sess?Math.min(sess.end,sess.start+(setup<=3?300000:setup===5?120000:3600000)):null};
 }
 // Informational context only: uses the same analyzed levels as execution, never changes orders.
@@ -132,5 +151,5 @@ function depthRisk(d,inst,p,cfg,now){
 function premarketBands(rows,frame,sessions){if(frame==='d')return [];const duration=Number(frame)*60000;if(!finite(duration)||duration<=0)return [];const clock=new Intl.DateTimeFormat('en-US',{timeZone:'America/New_York',hour:'2-digit',minute:'2-digit',hourCycle:'h23'}),windows=(sessions||[]).filter(s=>finite(s.start)).map(s=>{const parts=Object.fromEntries(clock.formatToParts(new Date(s.start)).map(p=>[p.type,p.value]));return {start:s.start-((Number(parts.hour)-4)*60+Number(parts.minute))*60000,end:s.start};});return rows.flatMap((b,index)=>{if(!finite(b.t))return [];const s=windows.find(s=>b.t<s.end&&b.t+duration>s.start);if(!s)return [];return [{index,from:Math.max(0,(s.start-b.t)/duration),to:Math.min(1,(s.end-b.t)/duration)}];});}
 function size(equity,pct,entry,stop,bp,fees){const budget=equity*pct/100,d=entry-stop;const zero={equity,budget:finite(budget)?budget:0,qty:0,risk:0,fees:0,unused:finite(budget)?budget:0};if(![equity,pct,entry,stop,bp].every(finite)||equity<=0||pct<=0||pct>100||entry<=0||stop<=0||d<=0||bp<=0)return zero;fees=fees||(()=>0);let lo=0,hi=Math.floor(Math.min(budget/d,bp/entry));while(lo<hi){const n=Math.ceil((lo+hi)/2),f=fees(n);if(finite(f)&&f>=0&&n*d+f<=budget+1e-8&&n*entry+f<=bp+1e-8)lo=n;else hi=n-1;}const f=lo?fees(lo):0;return {equity,budget,qty:lo,risk:lo*d+f,fees:f,unused:budget-lo*d-f};}
 function exit(b,q,now){if(b.forceExit||b.stopTriggered||q.bid<=b.stop)return {reason:b.forceExit?'MANUAL FLATTEN':'STOP',stop:b.stop};if(now>=b.sessionEnd-60000)return {reason:'SESSION CLOSE',stop:b.stop};if(q.bid>=b.target)return {reason:'TARGET',stop:b.stop};return {reason:null,stop:b.breakeven&&q.bid>=b.entry+b.initialR?Math.max(b.stop,b.entry):b.stop};}
-return {VERSION,defaults,names,rules,validBar,day,round,average,studies,atr,aggregate,flag,placement,analyze,strategyHint,depthRisk,premarketBands,size,exit};
+return {VERSION,defaults,names,rules,validBar,day,gapEvidence,round,average,studies,atr,aggregate,flag,placement,analyze,strategyHint,depthRisk,premarketBands,size,exit};
 });
