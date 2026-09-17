@@ -298,7 +298,21 @@ def main():
         page.keyboard.press('Alt+q')
         assert page.evaluate('__gunsTest.desk.execution.pending().length')==0
         assert page.locator('#guns-order-preview').is_visible()
+        original_book=page.evaluate('__paper.S.bookId')
+        page.evaluate('__paper.S.bookId="preview-account-mismatch"')
         page.keyboard.press('Enter')
+        assert 'Account changed' in page.locator('#guns-preview-error').inner_text()
+        page.evaluate('(id)=>__paper.S.bookId=id',original_book)
+        original_cash=page.evaluate('__paper.S.cash')
+        page.evaluate('__paper.S.cash=80000')
+        page.keyboard.press('Enter')
+        assert 'quantity updated' in page.locator('#guns-preview-error').inner_text()
+        assert page.evaluate('__gunsTest.desk.execution.pending().length')==0
+        page.set_viewport_size({'width':390,'height':844})
+        assert page.evaluate('document.querySelector("#guns-order-preview").scrollWidth<=document.querySelector("#guns-order-preview").clientWidth+1')
+        page.set_viewport_size({'width':1440,'height':1000})
+        page.keyboard.press('Enter')
+        page.evaluate('(cash)=>__paper.S.cash=cash',original_cash)
         assert page.evaluate('__gunsTest.desk.execution.pending()[0].guns.notes.chartSetup')==1
         assert page.evaluate('__gunsTest.desk.execution.pending()[0].guns.notes.newsEvidence.articleId')=='story1'
         page.locator('[data-guns="tutorial"]').click()
@@ -422,7 +436,7 @@ def main():
         page.clock.fast_forward(31000)  # Advance the inactive-window check without a real 31-second wait.
         page.evaluate('__gunsTest.desk.pulse()')
         assert requests.count('/data/guns_scan')==scans
-        # Fresh desktop context verifies that key 5 actually places S5, not a selector.
+        # Fresh desktop context verifies key 5 previews S5 and Enter arms it.
         history['minute'].append(dict(t=OPEN,o=10.51,h=10.54,l=10.51,c=10.53,v=1000))
         page.clock.set_fixed_time(dt.datetime.fromtimestamp((OPEN+61000)/1000,dt.timezone.utc))
         page.reload(wait_until='domcontentloaded')
@@ -449,7 +463,7 @@ def main():
         page.locator('[data-guns-confirm="1"]').click()
         page.locator('#guns-manual [name="price"]').fill('250000')
         page.locator('#guns-manual [name="qty"]').fill('3')
-        page.locator('#guns-manual button[type="submit"]').click()
+        page.locator('#guns-manual [name="qty"]').press('Enter')
         page.wait_for_function('!document.querySelector("#guns-manual")')
         trade=page.evaluate('__paper.S.trades[0]')
         assert trade['priceSource']=='USER_ENTERED_PAPER' and trade['userOverride'] is True
@@ -462,7 +476,7 @@ def main():
         page.locator('#guns-manual [name="side"]').select_option('SELL')
         page.locator('#guns-manual [name="price"]').fill('250000')
         page.locator('#guns-manual [name="qty"]').fill('3')
-        page.locator('#guns-manual button[type="submit"]').click()
+        page.locator('#guns-manual [name="qty"]').press('Enter')
         page.wait_for_function('!document.querySelector("#guns-manual")')
         assert page.evaluate('__paper.S.positions.find(p=>p.conid===12345).qty')==0
         assert page.evaluate('__paper.S.trades[0].priceSource')=='USER_ENTERED_PAPER'
@@ -479,6 +493,8 @@ def main():
         assert page.locator('.guns-candidate').count()==4
         assert page.locator('.guns-candidate[data-guns-pick="30004"]').count()==1
         assert page.evaluate('JSON.stringify(__gunsTest.desk.execution.book().desk)')==before_desk
+        page.locator('[data-guns="load-charts"]').click()
+        assert page.locator('#guns-quickload-charts').is_visible()
         page.locator('#guns-quickload-charts').click()
         assert page.locator('canvas[data-chart-slot]').count()==4
         before_orders=page.evaluate('__paper.S.orders.length')
