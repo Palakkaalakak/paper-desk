@@ -12,8 +12,18 @@ return function(a){
   const fresh=()=>state().positions.every(p=>!p.qty||a.ready(p.conid));
   function sizing(p,inst){const acc=a.account();return C.size(acc.netLiq,Number(cfg().riskPct),p.limit,p.stop,Math.max(0,acc.bp),n=>a.commission(inst,n,p.limit,'BUY')+a.commission(inst,n,p.stop,'SELL'));}
   function issues(p,inst){const out=[...(p?.errors||['No valid plan'])];if(!inst?.conid||inst.secType!=='STK')out.push('Select a verified stock');if(!a.usingTws()||!a.ready(inst?.conid))out.push('Fresh LIVE Gateway quote required');if(!fresh())out.push('Every held position must have a fresh mark');if(!sizing(p||{},inst).qty)out.push('Risk / buying power permits no whole shares');if(book().active.length+pending().length>=2)out.push('Two pending/open GUNS trades maximum');if(inst&&(a.position(inst.conid)?.qty||state().orders.some(o=>o.status==='working'&&(o.conid===inst.conid||o.legs?.some(l=>l.conid===inst.conid)))))out.push('Symbol already has a position or working order');return out;}
+  function orderIssues(p,inst){
+    const out=[...(p?.calculationErrors||[])],now=a.now();
+    if(!inst?.conid||inst.secType!=='STK')out.push('Select a stock');
+    if(p?.chartConid!=null&&(Number(p.chartConid)!==Number(inst?.conid)||p.chartSymbol!==inst?.symbol))out.push('Chart contract does not match selected stock');
+    if(![p?.entry,p?.limit,p?.stop,p?.target,p?.tick].every(Number.isFinite)||!(p.stop>0&&p.entry>p.stop&&p.limit>=p.entry&&p.target>p.entry&&p.tick>0))out.push('Strategy price levels are not calculable yet');
+    if(!Number.isFinite(p?.session?.start)||!Number.isFinite(p?.session?.end)||p.session.end<=p.session.start||C.day(p.session.start)!==C.day(now)||now>=p.session.end)out.push('Current regular-market session required');
+    const qty=sizing(p||{},inst).qty;if(!Number.isSafeInteger(qty)||qty<=0)out.push('Risk / buying power permits no whole shares');
+    if(inst&&(a.position(inst.conid)?.qty||state().orders.some(o=>o.status==='working'&&(o.conid===inst.conid||o.legs?.some(l=>l.conid===inst.conid)))))out.push('Symbol already has a position or working order');
+    return [...new Set(out)];
+  }
   function cancel(o,note){o.status='cancelled';o.note=note;a.save();return true;}
-  function arm(p,inst,notes){const errors=issues(p,inst);if(errors.length)return {errors};const r=sizing(p,inst),s=state();const o={...inst,id:a.uid(),ts:a.now(),day:a.today(),side:'BUY',qty:r.qty,filledQty:0,type:'STPLMT',stop:p.entry,limit:p.limit,tif:'DAY',status:'working',commission:0,guns:{role:'entry',version:C.VERSION,setup:p.setup,plan:JSON.parse(JSON.stringify(p)),notes:JSON.parse(JSON.stringify(notes||{})),bookId:s.bookId,equityAtArm:r.equity,budgetAtArm:r.budget}};s.orders.push(o);a.save();a.sync();return {order:o,errors:[]};}
+  function arm(p,inst,notes,confirmedPlan=false){const errors=confirmedPlan?orderIssues(p,inst):issues(p,inst);if(errors.length)return {errors};const r=sizing(p,inst),s=state();const o={...inst,id:a.uid(),ts:a.now(),day:a.today(),side:'BUY',qty:r.qty,filledQty:0,type:'STPLMT',stop:p.entry,limit:p.limit,tif:'DAY',status:'working',commission:0,guns:{role:'entry',version:C.VERSION,confirmedPlan,setup:p.setup,plan:JSON.parse(JSON.stringify(confirmedPlan?{...p,expiresAt:p.setup<=3?p.session.end:p.expiresAt}:p)),notes:JSON.parse(JSON.stringify(confirmedPlan?{...notes,warnings:issues(p,inst)}:notes||{})),bookId:s.bookId,equityAtArm:r.equity,budgetAtArm:r.budget}};s.orders.push(o);a.save();a.sync();return {order:o,errors:[]};}
   function manualTrade(inst,spec,plan={},notes={}){
     const side=spec.side,price=Number(spec.price),qty=Number(spec.qty),errors=[];
     if(!inst?.conid||inst.secType!=='STK')errors.push('Select a stock');
@@ -52,25 +62,29 @@ return function(a){
     if(b)b.events.push({at:a.now(),type:'LEVEL II ACKNOWLEDGED',detail:s.finding});a.save();return true;
   }
   function guard(o){if(o.guns)return true;const owned=new Set([...book().active.map(b=>b.inst.conid),...pending().map(p=>p.conid)]);const legs=o.legs||[o];for(const l of legs){if(!owned.has(l.conid))continue;const held=a.position(l.conid)?.qty||0,remaining=(o.qty-o.filledQty)*(l.ratio||1);if(o.legs||l.side!=='SELL'||remaining>held||held<=0){o.status='rejected';o.note='GUNS owns this symbol; cancel entry / flatten bracket first';a.save();return false;}}return true;}
-  function fill(o){if(!o.guns)return null;if(o.guns.role!=='entry'||o.status!=='working')return false;const p=o.guns.plan,now=a.now();if(o.guns.bookId!==state().bookId)return cancel(o,'Portfolio changed');if(now>=p.expiresAt)return cancel(o,'Setup entry window expired');if(!depthGuard(o))return false;if(!a.usingTws()||!a.ready(o.conid)||!fresh())return false;if(a.position(o.conid)?.qty)return cancel(o,'Symbol exposure changed');const q=a.quotes()[o.conid],r=sizing(p,o);const changed=o.qty!==r.qty||o.guns.budgetAtFill!==r.budget;o.qty=r.qty;o.guns.equityAtFill=r.equity;o.guns.budgetAtFill=r.budget;if(!r.qty)return cancel(o,'Current equity / buying power permits no whole shares');if(changed)a.save();
+  function fill(o){if(!o.guns)return null;if(o.guns.role!=='entry'||o.status!=='working')return false;const p=o.guns.plan,now=a.now();if(o.guns.bookId!==state().bookId)return cancel(o,'Portfolio changed');if(now>=p.expiresAt)return cancel(o,'Paper entry expired');if(now<p.session.start)return false;if(!depthGuard(o))return false;if(!a.usingTws()||!a.ready(o.conid)||!fresh())return false;if(a.position(o.conid)?.qty)return cancel(o,'Symbol exposure changed');const q=a.quotes()[o.conid],r=sizing(p,o);const changed=o.qty!==r.qty||o.guns.budgetAtFill!==r.budget;o.qty=r.qty;o.guns.equityAtFill=r.equity;o.guns.budgetAtFill=r.budget;if(!r.qty)return cancel(o,'Current equity / buying power permits no whole shares');if(changed)a.save();
     // Revalidate the setup with current bars before any trigger. A changed pattern
     // requires explicit re-arming instead of silently moving an approved entry.
-    const current=a.validate?a.validate(o):null;
-    if(q.ask>o.limit && Number.isFinite(q.tradeLast??q.last) && (q.tradeLast??q.last)>=o.stop)return cancel(o,'No chase: ask exceeded stop-limit cap');
-    if(!current||current.errors?.length)return false;
-    if(['entry','limit','stop'].some(k=>Math.abs(current[k]-p[k])>1e-7))return cancel(o,'Setup changed; review and re-arm');
-    if(now<p.session.start||q.ask-q.bid>Number(cfg().maxSpread)+1e-9)return false;
+    if(!o.guns.confirmedPlan){
+      const current=a.validate?a.validate(o):null;
+      if(q.ask>o.limit && Number.isFinite(q.tradeLast??q.last) && (q.tradeLast??q.last)>=o.stop)return cancel(o,'No chase: ask exceeded stop-limit cap');
+      if(!current||current.errors?.length)return false;
+      if(['entry','limit','stop'].some(k=>Math.abs(current[k]-p[k])>1e-7))return cancel(o,'Setup changed; review and re-arm');
+      if(q.ask-q.bid>Number(cfg().maxSpread)+1e-9)return false;
+    }
+    // Confirmed prices are immutable; a changing chart is not a new order.
+    if(!Number.isFinite(q.bid)||!Number.isFinite(q.ask)||q.bid<=0||q.ask<q.bid)return false;
     const last=Object.hasOwn(q,'tradeLast')?q.tradeLast:q.last;
     if(!Number.isFinite(last)||last<o.stop)return false;
-    if(q.ask>o.limit)return cancel(o,'No chase: ask exceeded stop-limit cap');
+    if(q.ask>o.limit)return o.guns.confirmedPlan?false:cancel(o,'No chase: ask exceeded stop-limit cap');
     const count=Math.min(r.qty,Math.floor(q.askSize||0));if(count<=0)return false;
-    const price=a.marketPrice(o,'BUY',count);if(!Number.isFinite(price)||price>o.limit||price<=p.stop)return false;
+    const price=a.marketPrice(o,'BUY',count);if(!Number.isFinite(price)||price>o.limit||price<=p.stop||(o.guns.confirmedPlan&&price>=p.target))return false;
     o.guns.plannedQty=r.qty;o.guns.cancelledQty=r.qty-count;o.qty=count;o.guns.rewardR=Number(cfg().rewardR);o.guns.breakeven=!!cfg().breakeven;o.triggered=true;
     a.fill(o,count,price);a.save();return true;
   }
   function after(o,n,price,oldQty,newQty,realized,fee){const b=book(),now=a.now();if(o.guns?.role==='entry'&&o.side==='BUY'){
     const p=o.guns.plan,initialR=price-p.stop;
-    b.active.push({id:o.id,inst:{conid:o.conid,symbol:o.symbol,secType:'STK',mult:1,exch:'SMART',brokerId:true},entry:price,qty:n,originalQty:n,stop:p.stop,originalStop:p.stop,target:o.guns.userOverride?p.target:C.round(price+initialR*o.guns.rewardR,p.tick,true),initialR,breakeven:o.guns.breakeven,sessionEnd:p.session.end,openedAt:now,setup:p.setup,version:C.VERSION,plan:p,notes:o.guns.notes,equityAtFill:o.guns.equityAtFill,budgetAtFill:o.guns.budgetAtFill,fees:fee,maxBid:price,minBid:price,userOverride:!!o.guns.userOverride,priceSource:o.priceSource||'IB_OBSERVED',events:[{at:now,type:'ENTRY',price,qty:n,priceSource:o.priceSource||'IB_OBSERVED'}]});
+    b.active.push({id:o.id,inst:{conid:o.conid,symbol:o.symbol,secType:'STK',mult:1,exch:'SMART',brokerId:true},entry:price,qty:n,originalQty:n,stop:p.stop,originalStop:p.stop,target:o.guns.userOverride||o.guns.confirmedPlan?p.target:C.round(price+initialR*o.guns.rewardR,p.tick,true),initialR,breakeven:o.guns.breakeven,sessionEnd:p.session.end,openedAt:now,setup:p.setup,version:C.VERSION,plan:p,notes:o.guns.notes,equityAtFill:o.guns.equityAtFill,budgetAtFill:o.guns.budgetAtFill,fees:fee,maxBid:price,minBid:price,userOverride:!!o.guns.userOverride,priceSource:o.priceSource||'IB_OBSERVED',events:[{at:now,type:'ENTRY',price,qty:n,priceSource:o.priceSource||'IB_OBSERVED'}]});
   }else if(o.side==='SELL'){
     const matches=b.active.filter(x=>x.inst.conid===o.conid).sort((x,y)=>Number(y.id===o.guns?.parentId)-Number(x.id===o.guns?.parentId));let remaining=n;
     for(const x of matches){const sold=Math.min(x.qty,remaining);if(!sold)continue;remaining-=sold;x.qty-=sold;x.fees+=fee*sold/n;x.events.push({at:now,type:o.guns?.reason||'MANUAL EXIT',price,qty:sold,priceSource:o.priceSource||'IB_OBSERVED'});
@@ -87,6 +101,6 @@ return function(a){
   }if(changed)a.save();return changed;}
   function pulse(){book().active.forEach(b=>depthGuard(b,true));manage();pending().forEach(fill);}
   function flatten(id){const b=book().active.find(x=>x.id===id);if(b){b.forceExit=true;a.save();manage(b.inst.conid);}}
-  return {state,cfg,g,book,pending,fresh,sizing,issues,arm,manualTrade,guard,fill,after,manage,pulse,flatten,exposure,depthItems,updateDepth,depthGuard,depthDecision};
+  return {state,cfg,g,book,pending,fresh,sizing,issues,orderIssues,arm,manualTrade,guard,fill,after,manage,pulse,flatten,exposure,depthItems,updateDepth,depthGuard,depthDecision};
 };
 });

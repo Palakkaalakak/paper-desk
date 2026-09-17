@@ -64,7 +64,7 @@ function placement(data,cfg,setup,human){cfg=Object.assign({},defaults,cfg);setu
  return {trigger,entry,limit,stop,target,risk,pattern,pmHigh,levelSource:hovered?'hover':overridden?'user':'automatic'};
 }
 function analyze(data,q,cfg,setup,notes,now){cfg=Object.assign({},defaults,cfg);notes=notes||{};now=now||Date.now();setup=Number(setup);const checks=[],errors=[],advisories=[];const advise=(label,ok)=>advisories.push({label,ok:!!ok});const check=(label,ok)=>{checks.push({label,ok:!!ok});if(!ok)errors.push(label);};
- if(!data)return {checks,advisories,errors:['Waiting for live broker chart data'],setup};
+ if(!data)return {checks,advisories,errors:['Waiting for broker chart data'],calculationErrors:['Broker chart candles not loaded'],setup};
  const sess=(data.sessions||[]).find(s=>day(s.start)===day(now));
  const raw=data.minute||[],observed=raw.filter(b=>finite(b.t)&&b.t<=now&&validBar(b)),closed=observed.filter(b=>b.t+60000<=now),m5=aggregate(closed,5).filter(b=>b.complete&&b.t+300000<=now);
  check('Valid ordered broker OHLC bars',raw.every((b,i)=>finite(b.t)&&validBar(b)&&(!i||b.t>raw[i-1].t)));
@@ -100,7 +100,16 @@ function analyze(data,q,cfg,setup,notes,now){cfg=Object.assign({},defaults,cfg);
  check('Valid trigger, stop and target',entry>0&&stop>0&&risk>0&&target>entry);
  if(setup!==1)check('At least 1R before premarket resistance',entry&&pmHigh&&(setup===2?pmHigh-entry>=risk:entry>pmHigh||pmHigh-entry>=risk));
  check('No chase above entry limit',limit&&q?.ask<=limit);
- return {setup,checks,errors,advisories,levelSource:levels.levelSource,trigger,pattern:f,firstCandle:regular.find(b=>b.t===sess?.start),preAtr,
+ // Screening judgments and quote freshness do not prevent queuing a chart-derived paper order.
+ const calculationErrors=[];
+ if(!checks.find(c=>c.label==='Valid ordered broker OHLC bars')?.ok)calculationErrors.push('Invalid or unordered chart candles');
+ if(!finite(tick)||tick<=0)calculationErrors.push('Contract price increment unavailable');
+ if(!sess||!finite(sess.start)||!finite(sess.end)||sess.end<=sess.start||now>=sess.end)calculationErrors.push('Current regular-market session unavailable or already closed');
+ if(notes.hover?.enabled&&!checks.find(c=>c.label.startsWith('Hover candle matches'))?.ok)calculationErrors.push('Selected hover candle does not match the stock / strategy');
+ if(!finite(trigger)||trigger<=0)calculationErrors.push(['','Premarket high unavailable','No completed lower premarket pivot found','No completed premarket flag candle found','No completed opening flag candle found','First regular-market minute has not completed'][setup]||'Unknown strategy');
+ if(setup===5&&regular[0]?.t!==sess?.start)calculationErrors.push('First regular-market minute is missing; later candles cannot replace it');
+ if(![entry,limit,stop,target].every(finite)||!(stop>0&&entry>stop&&limit>=entry&&target>entry))calculationErrors.push(setup<=2&&cfg.stopMode==='ATR'&&!finite(a)?'Not enough completed minute candles to calculate ATR':'Cannot calculate valid entry, stop and target from the strategy candles');
+ return {setup,checks,errors,advisories,calculationErrors,chartAt:data.updatedAt,chartSymbol:data.symbol,chartConid:data.conid,tick,levelSource:levels.levelSource,trigger,pattern:f,firstCandle:regular.find(b=>b.t===sess?.start),preAtr,
  contextCurrent:checks.filter(c=>['Valid ordered broker OHLC bars','Latest completed minute available','Chart stream current','Current exchange session known'].includes(c.label)).every(c=>c.ok),
  entry,limit,stop,target,risk,atr:a,pmHigh,gap,gapInfo,volume,session:sess,
  expiresAt:sess?Math.min(sess.end,sess.start+(setup<=3?300000:setup===5?120000:3600000)):null};
