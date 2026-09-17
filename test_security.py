@@ -119,7 +119,7 @@ class ServerSecurityTests(unittest.TestCase):
                 self.assertEqual(self.request('GET',path,self.authed())[0],200)
             self.assertEqual(call.call_count,3)
             call.assert_called_with('guns_news','TEST',timeout=40)
-            for path,args,timeout in [('/data/guns_verify?conid=123',('guns_verify','123'),40),('/data/guns_article?newsProvider=TEST&articleId=story%2F1',('guns_article','TEST','story/1'),20)]:
+            for path,args,timeout in [('/data/guns_verify?conid=123',('guns_verify','123',True),40),('/data/guns_verify?conid=123&comparison=false',('guns_verify','123',False),40),('/data/guns_article?newsProvider=TEST&articleId=story%2F1',('guns_article','TEST','story/1'),20)]:
                 self.assertEqual(self.request('GET',path)[0],403)
                 self.assertEqual(self.request('GET',path,self.authed())[0],200)
                 call.assert_called_with(*args,timeout=timeout)
