@@ -179,8 +179,8 @@ def main():
         page.evaluate('tick(10.68,10.7,10.69);__gunsTest.desk.live()')
         assert 'above premarket high' in page.locator('#guns-strategy-summary').inner_text()
         assert page.locator('[data-guns-confirm="1"]').is_enabled()
-        assert 'No chase' in page.locator('#guns-entry-blockers').inner_text()
-        assert 'Warning:' in page.locator('[data-guns-confirm="1"]').inner_text()
+        assert 'Order calculated from chart data' in page.locator('#guns-entry-blockers').inner_text()
+        assert 'Warning:' not in page.locator('[data-guns-confirm="1"]').inner_text()
         page.evaluate("__gunsTest.feed({connected:false,feedHealthy:false,quotes:{}});__gunsTest.desk.live()")
         assert 'distance unavailable' in page.locator('#guns-strategy-summary').inner_text()
         page.evaluate('tick();__gunsTest.desk.live()')
@@ -461,6 +461,15 @@ def main():
         page.clock.set_fixed_time(dt.datetime.fromtimestamp((OPEN+62000)/1000,dt.timezone.utc))
         before_quotes=page.evaluate('JSON.stringify(__paper.Q)')
         page.locator('[data-guns-confirm="1"]').click()
+        page.wait_for_selector('#guns-order-preview')
+        assert page.locator('#guns-manual').count()==0
+        assert page.locator('#guns-order-preview input').count()==0
+        page.keyboard.press('Enter')
+        assert page.evaluate('__gunsTest.desk.execution.pending()[0].guns.confirmedPlan') is True
+        assert page.evaluate('__gunsTest.desk.execution.pending()[0].filledQty')==0
+        page.locator('[data-guns-cancel]').click()
+        # Manual assumed fills remain an optional, explicitly selected tool.
+        page.locator('[data-guns="manual"]').click()
         page.locator('#guns-manual [name="price"]').fill('250000')
         page.locator('#guns-manual [name="qty"]').fill('3')
         page.locator('#guns-manual [name="qty"]').press('Enter')

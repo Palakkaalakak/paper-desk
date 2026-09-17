@@ -75,7 +75,7 @@ return function(a){
     // Confirmed prices are immutable; a changing chart is not a new order.
     if(!Number.isFinite(q.bid)||!Number.isFinite(q.ask)||q.bid<=0||q.ask<q.bid)return false;
     const last=Object.hasOwn(q,'tradeLast')?q.tradeLast:q.last;
-    if(!Number.isFinite(last)||last<o.stop)return false;
+    if(!o.guns.confirmedPlan||!o.triggered){if(!Number.isFinite(last)||last<o.stop)return false;if(o.guns.confirmedPlan){o.triggered=true;a.save();}}
     if(q.ask>o.limit)return o.guns.confirmedPlan?false:cancel(o,'No chase: ask exceeded stop-limit cap');
     const count=Math.min(r.qty,Math.floor(q.askSize||0));if(count<=0)return false;
     const price=a.marketPrice(o,'BUY',count);if(!Number.isFinite(price)||price>o.limit||price<=p.stop||(o.guns.confirmedPlan&&price>=p.target))return false;

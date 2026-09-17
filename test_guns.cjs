@@ -4,6 +4,30 @@ function fixture(){let now=Date.parse('2026-09-10T13:30:10Z'),equity=100000,live
  const bridge={state:()=>S,quotes:()=>Q,account:()=>({netLiq:equity,bp:equity}),position:cid=>S.positions.find(p=>p.conid===cid),ready:cid=>live&&!!Q[cid],usingTws:()=>live,now:()=>now,uid:()=>String(++id),today:()=>C.day(now),commission:()=>1,marketPrice:(i,side)=>Q[i.conid][side==='BUY'?'ask':'bid'],validate:()=>valid?plan:{...plan,errors:['Stale history']},save:()=>{},sync:()=>{},fill:(o,n,price)=>{let p=S.positions.find(x=>x.conid===o.conid);if(!p){p={conid:o.conid,qty:0};S.positions.push(p);}const old=p.qty;p.qty+=o.side==='BUY'?n:-n;o.filledQty+=n;o.status=o.filledQty===o.qty?'filled':'working';E.after(o,n,price,old,p.qty,0,1);}};
  E=Execution(bridge);return {E,S,Q,inst,plan,bridge,setEquity:x=>equity=x,setLive:x=>live=x,setValid:x=>valid=x,tick:(patch={})=>{now+=1000;Object.assign(Q[1],patch,{at:now,receivedAt:now});},arm:()=>E.arm(plan,inst,{common:true,catalyst:true,room:true}).order};
 }
+test('S1-S3 calculate automatically at 09:20 without quotes, review fields or screening approval',()=>{
+ const f=chartFixture(),start=f.data.sessions[0].start,now=start-600000;
+ f.data.minute=f.data.minute.filter(b=>b.t<now-1800000);
+ [10.7,10.1,10.3,10.2,10.15,10.1].forEach((h,g)=>{for(let i=0;i<5;i++)f.data.minute.push({t:now-1800000+g*300000+i*60000,o:h-.06,h,l:h-.1,c:h-.04,v:1000});});
+ Object.assign(f.data,{symbol:'TEST',conid:1,updatedAt:now-60000});
+ for(const setup of [1,2,3]){const p=C.analyze(f.data,null,{},setup,{},now);assert.deepEqual(p.calculationErrors,[],JSON.stringify(p));assert.equal(p.levelSource,'automatic');assert.ok(p.entry>p.stop&&p.target>p.entry);assert.ok(p.errors.includes('Setup entry window'));assert.ok(p.errors.includes('Favorable catalyst reviewed; no fixed-price buyout'));const x=fixture();x.setLive(false);assert.deepEqual(x.E.orderIssues(p,x.inst),[]);assert.ok(x.E.arm(p,x.inst,{},true).order);}
+});
+test('confirmed premarket paper plan queues disconnected, ignores advisory vetoes and waits for open before any trigger',()=>{
+ const f=fixture();Object.assign(f.plan,{target:10.43,session:{start:f.bridge.now()+60000,end:f.bridge.now()+3600000},errors:['Spread within configured limit','Above 9/20 EMA and 50/200 SMA','Setup entry window']});f.setLive(false);
+ const o=f.E.arm(f.plan,f.inst,{},true).order;assert.ok(o);assert.equal(o.guns.plan.expiresAt,f.plan.session.end);assert.equal(o.guns.plan.stop,9.8);assert.equal(o.guns.plan.target,10.43);
+ f.setLive(true);f.Q[1].ask=20;f.Q[1].last=20;f.E.fill(o);assert.equal(o.status,'working');assert.equal(o.filledQty,0);assert.ok(!o.triggered);
+ f.bridge.now=()=>f.plan.session.start;f.setValid(false);f.E.fill(o);assert.equal(o.status,'working');assert.equal(o.triggered,true);
+ // Stop-limit stays triggered when price returns below its trigger, without chasing.
+ f.Q[1].ask=10.02;f.Q[1].bid=9.9;f.Q[1].last=10;f.plan.stop=9.5;f.plan.target=11;f.E.fill(o);
+ assert.equal(o.status,'filled');const b=f.E.book().active[0];assert.equal(b.stop,9.8);assert.equal(b.target,10.43);assert.equal(b.qty,o.filledQty);
+});
+test('confirmed plans still require real numerical levels, session and consistent chart identity',()=>{
+ for(const patch of [{target:NaN},{stop:11},{session:null},{chartConid:999,chartSymbol:'OTHER'},{calculationErrors:['No completed premarket flag candle found']}]){const f=fixture();assert.ok(f.E.arm({...f.plan,target:10.43,...patch},f.inst,{},true).errors.length);assert.equal(f.S.orders.length,0);}
+});
+test('queued calculated orders never fill with missing quotes, liquidity or invalid prices and expire at session close',()=>{
+ const f=fixture(),o=f.E.arm({...f.plan,target:10.43},f.inst,{},true).order;f.setLive(false);f.E.fill(o);assert.equal(o.filledQty,0);f.setLive(true);f.Q[1].askSize=0;f.E.fill(o);assert.equal(o.filledQty,0);f.Q[1].askSize=100;f.Q[1].bid=NaN;f.E.fill(o);assert.equal(o.filledQty,0);f.bridge.now=()=>o.guns.plan.session.end;f.E.fill(o);assert.equal(o.status,'cancelled');
+});
+test('missing strategy candles or ATR never fabricate automatic levels',()=>{const f=chartFixture();for(const setup of [1,2,3]){const p=C.analyze({...f.data,minute:[]},null,{},setup,{},f.now);assert.ok(p.calculationErrors.length);assert.ok(!p.target);}});
+
 test('scanner pool starts six requests together and waits for slow work without stage deadline',async()=>{const W=require('./guns-workflow.js');let started=0,release;const gate=new Promise(r=>release=r),counts=[];const pending=W.mapPool(Array.from({length:12},(_,i)=>i),6,async i=>{started++;await gate;return i;},{onProgress:x=>counts.push(x.active)});assert.equal(started,6);await new Promise(r=>setTimeout(r,25));assert.equal(started,6);release();const out=await pending;assert.deepEqual(out.map(x=>x.value),Array.from({length:12},(_,i)=>i));assert.equal(Math.max(...counts),6);});
 test('public outstanding bound is labeled with actual provider and snapshot-date basis',()=>{const W=require('./guns-workflow.js'),f={basis:'outstanding-upper-bound',upperBoundShares:3201764,floatShares:null,source:'Stock Analysis / published statistics',date:'2026-09-16T02:27:47Z',dateBasis:'provider-statistics-update'};assert.match(W.floatLabel(f),/not exact float/);assert.match(W.floatLabel(f),/Stock Analysis/);assert.match(W.floatLabel(f),/issuer effective date not supplied/);assert.doesNotMatch(W.floatLabel(f),/IBKR/);assert.ok(W.floatBelow(f,100000000,Date.parse('2026-09-16T13:30:00Z')));});
 test('failed scan does not immediately restart endlessly, but a new scheduled window may retry',()=>{const W=require('./guns-workflow.js'),open=Date.parse('2026-09-16T13:30:00Z'),st={manualRetry:true,attemptedAt:open-60000};assert.equal(W.scanDue(st,[{start:open}],open-30000),null);assert.equal(W.scanDue(st,[],open+60000),null);assert.equal(W.scanDue(st,[{start:open+86400000}],open+86400000-60000),'initial');});
