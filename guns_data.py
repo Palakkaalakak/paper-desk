@@ -151,7 +151,11 @@ async def _bars(engine,ticker):
     def encode(rows):
         return [dict(t=stamp(b.date),o=number(b.open),h=number(b.high),l=number(b.low),c=number(b.close),v=number(b.volume))
                 for b in rows if all(number(v) is not None for v in (b.open,b.high,b.low,b.close))]
+    now=int(time.time()*1000)
+    previous=await prior_session(engine,now)
+    reference=close_reference(entry['lists'][1],previous,now)
     return dict(symbol=ticker,conid=d.contract.conId,source='IB Gateway TRADES',updatedAt=entry['updated'],
+                **reference,sessionDate=dt.datetime.fromtimestamp(now/1000,ZoneInfo('America/New_York')).date().isoformat(),
                 minTick=number(d.minTick),stockType=d.stockType,sessions=sessions,
                 minute=encode(entry['lists'][0]),daily=encode(entry['lists'][1]))
 
@@ -517,7 +521,7 @@ def sip_bars(ticker,start,end,timeframe):
     raise ValueError('Alpaca history pagination incomplete')
 
 
-def sip_verification(detail,now):
+def sip_verification(detail,now,expected_previous=None):
     from types import SimpleNamespace
     from market import number
     ny=ZoneInfo('America/New_York');day=dt.datetime.fromtimestamp(now/1000,ny).date()
@@ -533,10 +537,10 @@ def sip_verification(detail,now):
         timestamp=iso_stamp(x.get('t'))
         date=dt.datetime.fromtimestamp(timestamp/1000,ny)
         return SimpleNamespace(date=date.date().isoformat() if daily else date,close=number(x.get('c'),True),volume=number(x.get('v'),True))
-    result=verification(detail,[bar(x) for x in minute],[bar(x,True) for x in daily],now)
+    result=verification(detail,[bar(x) for x in minute],[bar(x,True) for x in daily],now,expected_previous)
     if result['premarketVolume'] is None or result['previousClose'] is None:
         raise ValueError('Alpaca SIP did not supply premarket volume and prior close')
-    result.update(source='Alpaca SIP TRADES / daily close; IBKR contract and session',
+    result.update(previousCloseSource='Alpaca SIP daily bars / split adjustment',source='Alpaca SIP TRADES / daily close; IBKR contract and session',
                   volumeUnit='consolidated SIP shares',coverage='Completed 04:00 ET to regular-open SIP minute bars; all returned pages checked.')
     return result
 
@@ -548,15 +552,69 @@ async def schedule(engine):
     return dict(sessions=sessions,source='IB US equity liquid session schedule',at=int(time.time()*1000))
 
 
-def verification(detail, minute, daily, now):
+def daily_date(value):
+    """Daily labels are exchange dates, not arbitrary timestamp prefixes."""
+    if isinstance(value,dt.datetime):
+        return value.astimezone(ZoneInfo('America/New_York')).date().isoformat() if value.tzinfo else None
+    if isinstance(value,dt.date):return value.isoformat()
+    try:
+        text=str(value)
+        if re.fullmatch(r'\d{8}',text):return dt.datetime.strptime(text,'%Y%m%d').date().isoformat()
+        if re.fullmatch(r'\d{4}-\d{2}-\d{2}',text):return dt.date.fromisoformat(text).isoformat()
+    except ValueError:pass
+    return None
+
+
+async def prior_session(engine,now):
+    """Shared IB US equity RTH calendar; honors holidays and exceptional closures."""
+    day=dt.datetime.fromtimestamp(now/1000,ZoneInfo('America/New_York')).date().isoformat()
+    ib=engine._ib;generation=getattr(engine,'info',{}).get('generation',0)
+    key=(day,id(ib),generation)
+    cached=getattr(engine,'_guns_calendar',None)
+    if cached and cached['key']==key and cached['expires']>time.monotonic():
+        return await asyncio.shield(cached['task'])
+    async def acquire():
+        try:
+            contract=await engine._stock('SPY')
+            schedule=await asyncio.wait_for(ib.reqHistoricalScheduleAsync(contract,14,useRTH=True),12)
+            if engine._ib is not ib or getattr(engine,'info',{}).get('generation',0)!=generation:
+                raise ValueError('Gateway changed during session acquisition')
+            dates={daily_date(s.refDate) for s in schedule.sessions}
+            dates={d for d in dates if d and d<day}
+            if not dates:raise ValueError('Previous US equity session unavailable')
+            previous=max(dates)
+            if (dt.date.fromisoformat(day)-dt.date.fromisoformat(previous)).days>14:
+                raise ValueError('US session calendar stale')
+            return previous
+        except (AttributeError,ValueError,ConnectionError,TimeoutError):
+            entry['expires']=time.monotonic()+30
+            return None
+    entry={'key':key,'expires':time.monotonic()+3600}
+    entry['task']=asyncio.create_task(acquire());engine._guns_calendar=entry
+    return await asyncio.shield(entry['task'])
+
+
+def close_reference(daily,expected,now,source='IB Gateway RTH TRADES'):
+    """Never skip a missing/invalid latest session in favor of an older price."""
+    from market import number
+    matching=[b for b in daily if daily_date(b.date)==expected] if expected else []
+    close=number(matching[0].close,True) if len(matching)==1 else None
+    valid=close is not None and close>0
+    return dict(previousClose=close if valid else None,previousCloseDate=expected if valid else None,
+                expectedPreviousCloseDate=expected,previousCloseVerified=valid,
+                previousCloseSource=source,previousCloseBasis='split-adjusted-not-dividend-adjusted',
+                previousCloseAt=now,previousCloseWarning=None if valid else
+                ('Previous trading session calendar unavailable' if not expected else 'Prior session daily close missing, invalid or duplicated'))
+
+
+def verification(detail, minute, daily, now, expected_previous=None):
     """Independent scanner evidence. Missing observations remain unknown, not zero."""
     from market import number
     ny = ZoneInfo('America/New_York')
     day = dt.datetime.fromtimestamp(now/1000, ny).date()
     sessions = detail.liquidSessions()
     session = next((s for s in sessions if s.start.astimezone(ny).date()==day), None)
-    prev = [(str(b.date)[:10], number(b.close, True)) for b in daily if str(b.date)[:10]<day.isoformat()]
-    prev = sorted((date,close) for date,close in prev if close is not None and close>0)
+    reference=close_reference(daily,expected_previous,now)
     start = int(dt.datetime.combine(day,dt.time(4),ny).timestamp()*1000)
     end = min(now, stamp(session.start)) if session else None
     pre = [b for b in minute if isinstance(stamp(b.date), int) and end is not None and start<=stamp(b.date) and stamp(b.date)+60000<=end]
@@ -564,7 +622,7 @@ def verification(detail, minute, daily, now):
     return dict(conid=detail.contract.conId,stockType=detail.stockType,source='IB Gateway TRADES / RTH daily close',
                 at=now,sessionDate=day.isoformat(),sessionKnown=session is not None,usListed=us_stock(detail.contract),
                 currency=getattr(detail.contract,'currency',None),primaryExchange=getattr(detail.contract,'primaryExchange',None),
-                previousClose=prev[-1][1] if prev else None,previousCloseDate=prev[-1][0] if prev else None,
+                **reference,
                 premarketVolume=sum(volumes) if volumes and all(v is not None for v in volumes) else None,
                 premarketStart=start,premarketEnd=stamp(session.start) if session else None,
                 lastPremarketBar=max((stamp(b.date) for b in pre),default=None),observedBars=len(pre),
@@ -593,17 +651,18 @@ async def verify(engine, conid):
         if not details or details[0].contract.conId!=int(conid) or not us_stock(details[0].contract):
             raise ValueError('Verified US-listed USD stock definition required')
         d = details[0]
+        previous=await prior_session(engine,int(time.time()*1000))
         fallback=scanner_sources()['quoteFallbackConfigured']
         async def get(duration, interval, rth):
             return await ib.reqHistoricalDataAsync(d.contract,'',duration,interval,'TRADES',rth,formatDate=2,keepUpToDate=False,timeout=8 if fallback else 20)
         try:
             minute,daily = await asyncio.gather(get('1 D','1 min',False),get('1 M','1 day',True))
             if not minute or not daily: raise ValueError('Scanner verification history incomplete')
-            result=verification(d,minute,daily,int(time.time()*1000))
+            result=verification(d,minute,daily,int(time.time()*1000),previous)
             if result['premarketVolume'] is None or result['previousClose'] is None:
                 raise ValueError('IBKR history lacks observed premarket volume/prior close')
         except (ValueError,ConnectionError,asyncio.TimeoutError):
             if not fallback: raise
-            result=await asyncio.to_thread(sip_verification,d,int(time.time()*1000))
+            result=await asyncio.to_thread(sip_verification,d,int(time.time()*1000),previous)
         if engine._ib is not ib: raise ValueError('Gateway connection changed during contract verification')
         return result
