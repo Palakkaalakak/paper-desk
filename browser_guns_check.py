@@ -260,6 +260,7 @@ def main():
         assert 'TEST · S1' in page.locator('#guns-preview-title').inner_text()
         assert page.locator('#guns-order-preview dd').count()==6
         page.keyboard.press('Escape')
+        page.wait_for_selector('#guns-order-preview',state='detached')
         assert page.locator('#guns-order-preview').count()==0
         assert page.evaluate('__gunsTest.desk.execution.pending().length')==0
         page.clock.run_for(600)
