@@ -14,7 +14,8 @@
  function restoreScreen(){const st=screenState(),old=st.rows||[];if(st.exclusionDay!==C.day(a.now())){st.exclusionDay=C.day(a.now());st.excluded=[];}st.pool=(st.pool||old).filter(r=>W.completeScreen(r,E.cfg()));rows=W.selectCandidates(st.pool,st.excluded||[],E.cfg());if(st.version!==C.VERSION||JSON.stringify(rows)!==JSON.stringify(old)){st.rows=rows;if(!rows.length)st.publishedAt=null;st.version=C.VERSION;st.retryAt=0;E.g().config.floatMode='strict';a.save();}}
  restoreCharts();restoreScreen();
  const esc=a.esc,px=x=>Number.isFinite(x)?a.px(x):'—',money=x=>Number.isFinite(x)?a.money(x):'—';
- function put(id,html){const el=document.getElementById(id);if(el&&el.innerHTML!==html)el.innerHTML=html;}
+ const renderedHTML=new WeakMap();
+ function put(id,html){const el=document.getElementById(id);if(el&&renderedHTML.get(el)!==html){el.innerHTML=html;renderedHTML.set(el,html);}}
  function notes(inst=selected){if(!inst)return {};const k=C.day(a.now())+':'+inst.symbol,b=E.book();return b.notes[k]||(b.notes[k]={});}
  function review(s){const n={...notes(),chartSetup:s};delete n.hover;const hit=hoverAnchor();if(hit)n.hover=hit;return n;}
  function plan(s=setup,preview=false){return analyze(cache.get(selected?.symbol),a.quotes()[selected?.conid],s,preview?review(s):notes());}
