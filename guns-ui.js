@@ -19,7 +19,7 @@
  function notes(inst=selected){if(!inst)return {};const k=C.day(a.now())+':'+inst.symbol,b=E.book();return b.notes[k]||(b.notes[k]={});}
  function review(s){const n={...notes(),chartSetup:s};delete n.hover;const hit=hoverAnchor();if(hit)n.hover=hit;return n;}
  function plan(s=setup,preview=false){return analyze(cache.get(selected?.symbol),a.quotes()[selected?.conid],s,preview?review(s):notes());}
- function verifyCandidate(row){if(!row||jobs.has('verify'))return;job('verify',async()=>{times['verify:'+row.conid]=a.now();const data=await request('guns_verify',{conid:row.conid});if(Number(data.conid)!==Number(row.conid))throw Error('Verification contract mismatch');evidence.set(row.conid,{...data,float:evidence.get(row.conid)?.float||row.screen?.float});if(evidence.size>60)evidence.delete(evidence.keys().next().value);});}
+ function verifyCandidate(row){if(!row||jobs.has('verify'))return;job('verify',async()=>{times['verify:'+row.conid]=a.now();const data=await request('guns_verify',{conid:row.conid,comparison:'false'});if(Number(data.conid)!==Number(row.conid))throw Error('Verification contract mismatch');evidence.set(row.conid,{...data,float:evidence.get(row.conid)?.float||row.screen?.float});if(evidence.size>60)evidence.delete(evidence.keys().next().value);});}
  function tutorialOpen(){if(E.exposure()){errors.arm='Cancel / flatten GUNS exposure before entering the isolated tutorial.';live();return;}tutorial.open();}
  function newsTime(t){const d=new Date(t);return Number.isFinite(d.getTime())?d.toLocaleString('en-US',{timeZone:'America/New_York',month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'})+' ET':String(t||'Time unavailable');}
  function actualQuote(q){return q?{...q,last:Object.hasOwn(q,'tradeLast')?q.tradeLast:q.last}:{};}
@@ -77,8 +77,8 @@
     discovery=pool.map(x=>x.row);a.sync();
     pool=await runPhase('1 / Concurrent quote acquisition',pool,6,async({row},i,signal)=>{const q=await acquireQuote(row,signal);return usable(signal)&&q?{row,q}:null;});
     pool=cheap(pool,'Acquired quotes');if(!current())return;discovery=pool.map(x=>x.row);a.sync();
-    pool=await runPhase('2 / Concurrent history + identity/session verification',pool,3,async({row},i,signal)=>{
-     const cached=evidence.get(row.conid),ev=cached&&a.now()-cached.at>=0&&a.now()-cached.at<60000?cached:await read('guns_verify',{conid:row.conid},signal,35000);
+    pool=await runPhase('2 / Concurrent minute-volume + identity/session verification',pool,3,async({row},i,signal)=>{
+     const cached=evidence.get(row.conid),ev=cached&&a.now()-cached.at>=0&&a.now()-cached.at<60000?cached:await read('guns_verify',{conid:row.conid,comparison:'false'},signal,35000);
      if(!usable(signal))return null;if(Number(ev.conid)!==Number(row.conid))throw Error('Contract mismatch');
      const q=await acquireQuote(row,signal);if(!usable(signal)||!q)return null;const c=check(row,q,ev,{...E.cfg(),floatMode:'prefer'});
      if(!c.eligible){if(c.pending)unresolved++;scanDiagnostics.push(row.symbol+': '+c.why.join('; '));return null;}
@@ -90,7 +90,7 @@
      if(!W.floatBelow(f,E.cfg().maxFloat,a.now())){scanDiagnostics.push(row.symbol+': '+(f.basis==='outstanding-upper-bound'?'Outstanding-share bound cannot establish float below cap':'Float reaches cap'));return null;}
      if(f.diagnostics?.length)scanDiagnostics.push(row.symbol+': '+f.diagnostics.map(x=>x.source+' '+(x.httpStatus?'HTTP '+x.httpStatus+' ':'')+x.code).join('; ')+' → '+W.floatLabel(f));
      evidence.set(row.conid,{...ev,float:f});floatRefs.set(row.symbol,f);times['verify:'+row.conid]=a.now();return row;});
-    const candidates=await runPhase('4 / Concurrent finalist quote refresh',pool,6,async(row,i,signal)=>{let ev=evidence.get(row.conid);if(a.now()-ev.at>75000){ev={...await read('guns_verify',{conid:row.conid},signal,40000),float:ev.float};if(!usable(signal))return null;evidence.set(row.conid,ev);}const q=await acquireQuote(row,signal);if(!usable(signal)||!q)return null;const c=check(row,q,ev,{...E.cfg(),floatMode:'strict'}),snapshot=W.screenSnapshot(c,a.now());if(c.eligible&&W.completeScreen(snapshot,E.cfg()))return snapshot;unresolved++;scanDiagnostics.push(row.symbol+': '+c.why.join('; '));return null;});
+    const candidates=await runPhase('4 / Concurrent finalist quote refresh',pool,6,async(row,i,signal)=>{let ev=evidence.get(row.conid);if(a.now()-ev.at>75000){ev={...await read('guns_verify',{conid:row.conid,comparison:'false'},signal,40000),float:ev.float};if(!usable(signal))return null;evidence.set(row.conid,ev);}const q=await acquireQuote(row,signal);if(!usable(signal)||!q)return null;const c=check(row,q,ev,{...E.cfg(),floatMode:'strict'}),snapshot=W.screenSnapshot(c,a.now());if(c.eligible&&W.completeScreen(snapshot,E.cfg()))return snapshot;unresolved++;scanDiagnostics.push(row.symbol+': '+c.why.join('; '));return null;});
     if(!current())return;const final=W.selectCandidates(candidates,st.excluded||[],E.cfg());st.lastRun={elapsedMs:Math.round(performance.now()-started),unresolved,discovered:found.length,published:final.length};st.retryAt=0;st.recoveries=0;
     if(!final.length&&unresolved){st.manualRetry=true;scanProgress='Scan finished in '+Math.ceil(st.lastRun.elapsedMs/1000)+'s · no new complete candidates · '+unresolved+' acquisition issues · prior shortlist retained. Scan now to retry.';a.save();return;}
     st.pool=candidates;rows=W.stableSlots(rows,final);st.rows=rows;st.publishedAt=a.now();st.version=C.VERSION;st.acquisition=null;st.manualRetry=false;

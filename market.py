@@ -534,9 +534,9 @@ class MarketEngine:
         from guns_data import news
         return await news(self, symbol)
 
-    async def _guns_verify(self, conid):
+    async def _guns_verify(self, conid, include_comparison=True):
         from guns_data import verify
-        return await verify(self, conid)
+        return await verify(self, conid, include_comparison)
 
     async def _guns_article(self, provider, article_id):
         from guns_data import article

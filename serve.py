@@ -350,7 +350,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 args = () if kind in ('guns_scan','guns_schedule','guns_capabilities') else (one('symbol', ''),)
                 out = market.ENGINE.call(kind, *args, timeout=40)
             elif kind == 'guns_verify':
-                out = market.ENGINE.call(kind, one('conid', ''), timeout=40)
+                out = market.ENGINE.call(kind, one('conid', ''), one('comparison', 'true') != 'false', timeout=40)
             elif kind == 'guns_article':
                 out = market.ENGINE.call(kind, one('newsProvider', ''), one('articleId', ''), timeout=20)
             elif kind == 'depth':
