@@ -443,7 +443,7 @@ def main():
         assert page.evaluate('JSON.parse(localStorage.paperAccount).trades[0].priceSource')=='USER_ENTERED_PAPER'
         # Real scanner pipeline acquires reserves; exclusions promote without touching charts/trades.
         page.set_viewport_size({'width':1440,'height':1000})
-        page.evaluate('tick();__gunsTest.desk.execution.book().scan.acquisition=null')
+        page.evaluate("__gunsTest.feed({connected:true,feedHealthy:true,generation:0,quotes:{12345:{bid:10.48,ask:10.5,last:10.49,bidSize:100,askSize:100,status:'LIVE',at:Date.now(),tradeAt:Date.now(),receivedAt:Date.now()}}});__gunsTest.desk.execution.book().scan.acquisition=null")
         scanner_symbols[:]=[('TEST',12345)]+[('RSV'+str(i),30000+i) for i in range(1,6)]
         page.locator('[data-guns="scan"]').click()
         page.wait_for_function('__gunsTest.desk.execution.book().scan.pool.length===6')
