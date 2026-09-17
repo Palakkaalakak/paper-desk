@@ -57,16 +57,17 @@ def us_stock(contract):
 async def scan(engine):
     from ib_async import ScannerSubscription, TagValue
     sub = ScannerSubscription(numberOfRows=50, instrument='STK', locationCode='STK.US.MAJOR',
-                              scanCode='HOT_BY_VOLUME', abovePrice=1.5, aboveVolume=30000,
+                              scanCode='TOP_PERC_GAIN', abovePrice=1.5, aboveVolume=30000,
                               stockTypeFilter='CORP')
     rows = await asyncio.wait_for(engine._ib.reqScannerDataAsync(
         sub, scannerSubscriptionFilterOptions=[TagValue('changePercAbove','5')]),15)
     if rows is None: raise ValueError('IBKR scanner response pending')
-    return dict(at=int(time.time()*1000),source='IB Gateway scanner',preliminary=True,
-                warning='Scanner returns contracts, not verified prices or premarket volume. Separate quote/history checks required.',
+    acquired=int(time.time()*1000)
+    return dict(at=acquired,source='IBKR Top % Gainers',scannerCode='TOP_PERC_GAIN',preliminary=True,
+                warning='IBKR ranks and filters gainers above 5% versus previous close. The API returns contracts/ranks, not gap percentages. Local gap is comparison only; quote/volume/float checks remain separate.',
                 rows=[dict(conid=r.contractDetails.contract.conId,symbol=r.contractDetails.contract.symbol,
                            name=r.contractDetails.longName,stockType=r.contractDetails.stockType,
-                           secType='STK',exch='SMART',brokerId=True,rank=r.rank,currency=getattr(r.contractDetails.contract,'currency',None),
+                           secType='STK',exch='SMART',brokerId=True,rank=r.rank,scannerCode='TOP_PERC_GAIN',scannerSource='IBKR Top % Gainers',scannerAt=acquired,currency=getattr(r.contractDetails.contract,'currency',None),
                            primaryExchange=getattr(r.contractDetails.contract,'primaryExchange',None),usListed=us_stock(r.contractDetails.contract)) for r in (rows or [])[:50]
                       # Missing summary metadata goes through the existing parallel
                       # contract-details verifier, not an early false rejection.
