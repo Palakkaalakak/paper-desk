@@ -17,7 +17,7 @@ def main():
     /* ---------- debug surface ---------- */''')
     state=json.loads(re.search(r'<script id="st" type="application/json">(.*?)</script>',html).group(1))
     state['settings'].update(dataSource='free',provider='tws',auto=False)
-    history=dict(symbol='TEST',conid=12345,stockType='COMMON',minTick=.01,updatedAt=OPEN+10000,
+    history=dict(symbol='TEST',conid=12345,stockType='COMMON',usListed=True,currency='USD',primaryExchange='NASDAQ',minTick=.01,updatedAt=OPEN+10000,
                  sessions=[dict(start=OPEN,end=OPEN+23400000)],minute=[],daily=[])
     for i in range(1500):
         close=8.99+i*.001
@@ -28,6 +28,9 @@ def main():
     errors=[]
     requests=[]
     credential_requests=[]
+    scanner_symbols=[('TEST',12345)]
+    def close_evidence(now):
+        return dict(previousClose=9,previousCloseDate='2026-09-09',expectedPreviousCloseDate='2026-09-09',previousCloseVerified=True,previousCloseBasis='split-adjusted-not-dividend-adjusted',previousCloseSource='Fixture IB RTH',previousCloseAt=now,sessionDate='2026-09-10')
     depth_fixture={'mode':'missing','revision':0}
     with sync_playwright() as pw:
         browser=pw.chromium.launch(args=['--no-sandbox'])
@@ -53,18 +56,18 @@ def main():
                 credential_requests.append(r.request.post_data_json)
                 return r.fulfill(json={'configured':True})
             if path=='/data/guns_data_status':return r.fulfill(json={'floatConfigured':True,'quoteFallbackConfigured':True})
-            if path=='/data/guns_ib_quote':return r.fulfill(json=dict(brokerConid=int(params['conid'][0]),bid=10.48,ask=10.50,last=10.49,source='IB Gateway',status='LIVE',at=int(r.request.headers['x-fixture-now']),screeningOnly=True))
-            if path=='/data/guns_scan':return r.fulfill(json={'rows':[dict(conid=12345,symbol='TEST',name='Fixture stock',secType='STK',brokerId=True)]})
+            if path=='/data/guns_ib_quote':return r.fulfill(json=dict(brokerConid=int(params['conid'][0]),bid=10.48,ask=10.50,last=10.49,source='IB Gateway',status='LIVE',at=int(r.request.headers['x-fixture-now']),tradeAt=int(r.request.headers['x-fixture-now']),screeningOnly=True))
+            if path=='/data/guns_scan':return r.fulfill(json={'rows':[dict(conid=cid,symbol=sym,name='Fixture stock',secType='STK',brokerId=True) for sym,cid in scanner_symbols]})
             if path=='/data/search':
                 sym=(params.get('q') or ['TEST'])[0].upper()
                 return r.fulfill(json={'results':[dict(conid=12345 if sym=='TEST' else 23456,symbol=sym,name='Fixture '+sym,type='STK')]})
             if path=='/data/guns_bars':
                 sym=(params.get('symbol') or ['TEST'])[0]
-                return r.fulfill(json={**history,'symbol':sym,'conid':12345 if sym=='TEST' else 23456,'updatedAt':int(r.request.headers.get('x-fixture-now',str(OPEN+10000)))})
+                return r.fulfill(json={**history,**close_evidence(int(r.request.headers['x-fixture-now'])),'symbol':sym,'conid':dict(scanner_symbols).get(sym,23456),'updatedAt':int(r.request.headers['x-fixture-now'])})
             if path=='/data/guns_schedule':return r.fulfill(json={'sessions':[dict(start=OPEN,end=OPEN+23400000)]})
             if path=='/data/guns_float':return r.fulfill(json={'floatShares':15000000,'date':'2026-09-09','source':'Fixture float'})
             if path=='/data/guns_sources':return r.fulfill(json={'rows':[dict(headline='Fixture linked company release',provider='Fixture RSS',time='2026-09-10',articleId='',url='https://example.com/release',contentStatus='excerpt',text='Fixture source excerpt')],'diagnostics':[]})
-            if path=='/data/guns_verify':return r.fulfill(json=dict(conid=12345,at=OPEN+10000,sessionDate='2026-09-10',sessionKnown=True,stockType='COMMON',previousClose=9,previousCloseDate='2026-09-09',premarketVolume=330000,observedBars=330,source='Fixture IB TRADES',volumeUnit='shares',coverage='Observed bars only'))
+            if path=='/data/guns_verify':return r.fulfill(json=dict(conid=int(params['conid'][0]),at=int(r.request.headers['x-fixture-now']),**close_evidence(int(r.request.headers['x-fixture-now'])),sessionKnown=True,stockType='COMMON',usListed=True,currency='USD',primaryExchange='NASDAQ',premarketVolume=330000,observedBars=330,source='Fixture IB TRADES',volumeUnit='shares',coverage='Observed bars only'))
             if path=='/data/guns_news':return r.fulfill(json={'source':'Fixture API news','at':OPEN+10000,'providers':[dict(code='TEST',name='Fixture provider')],'rows':[dict(time='2026-09-10',provider='TEST',articleId='story1',headline='Fixture earnings beat'),dict(time='2026-09-10',provider='TEST',articleId='footer',headline='Footer-only fixture')]})
             if path=='/data/guns_article' and params.get('articleId')==['footer']:return r.fulfill(json={'text':'','rawText':'(END) Copyright fixture','contentStatus':'incomplete'})
             if path=='/data/guns_article':return r.fulfill(json={'text':'Fixture earnings article <img src=x onerror=alert(1)>','provider':'TEST','articleId':'story1','contentStatus':'body_returned','rawText':'Fixture earnings article <img src=x onerror=alert(1)>'})
@@ -86,7 +89,7 @@ def main():
         page.goto('http://paper.test/',wait_until='domcontentloaded')
         page.wait_for_function('window.__gunsTest && __gunsTest.desk')
         page.evaluate('''() => {
-          window.tick=(bid=10.48,ask=10.5,last=10.49,size=100)=>__gunsTest.feed({connected:true,feedHealthy:true,generation:0,quotes:{12345:{bid,ask,last,bidSize:size,askSize:size,status:'LIVE',at:Date.now(),receivedAt:Date.now()}}});
+          window.tick=(bid=10.48,ask=10.5,last=10.49,size=100)=>__gunsTest.feed({connected:true,feedHealthy:true,generation:0,quotes:{12345:{bid,ask,last,bidSize:size,askSize:size,status:'LIVE',at:Date.now(),tradeAt:Date.now(),receivedAt:Date.now()}}});
           tick(0,10.5); // A zero bid must wait for real quotes, not become spread failure.
           const fetchBeforeScan=window.fetch;
           window.quoteRecoveryChecks=0;
@@ -175,9 +178,9 @@ def main():
         page.locator('#guns-setup').select_option('1')
         page.evaluate('tick(10.68,10.7,10.69);__gunsTest.desk.live()')
         assert 'above premarket high' in page.locator('#guns-strategy-summary').inner_text()
-        assert page.locator('[data-guns-confirm="1"]').is_disabled()
+        assert page.locator('[data-guns-confirm="1"]').is_enabled()
         assert 'No chase' in page.locator('#guns-entry-blockers').inner_text()
-        assert 'Blocked:' in page.locator('[data-guns-confirm="1"]').inner_text()
+        assert 'Warning:' in page.locator('[data-guns-confirm="1"]').inner_text()
         page.evaluate("__gunsTest.feed({connected:false,feedHealthy:false,quotes:{}});__gunsTest.desk.live()")
         assert 'distance unavailable' in page.locator('#guns-strategy-summary').inner_text()
         page.evaluate('tick();__gunsTest.desk.live()')
@@ -400,7 +403,7 @@ def main():
         page.clock.set_fixed_time(dt.datetime.fromtimestamp((OPEN+61000)/1000,dt.timezone.utc))
         page.reload(wait_until='domcontentloaded')
         page.wait_for_function('window.__gunsTest && __gunsTest.desk')
-        page.evaluate("__gunsTest.feed({connected:true,feedHealthy:true,generation:0,quotes:{12345:{bid:10.52,ask:10.54,last:10.53,bidSize:100,askSize:100,status:'LIVE',at:Date.now(),receivedAt:Date.now()}}})")
+        page.evaluate("__gunsTest.feed({connected:true,feedHealthy:true,generation:0,quotes:{12345:{bid:10.52,ask:10.54,last:10.53,bidSize:100,askSize:100,status:'LIVE',at:Date.now(),tradeAt:Date.now(),receivedAt:Date.now()}}})")
         page.set_viewport_size({'width':1440,'height':1000})
         page.locator('[data-tab="guns"]').click()
         page.locator('[data-guns="scan"]').click()
@@ -412,8 +415,54 @@ def main():
         page.evaluate('document.activeElement.blur()');page.keyboard.press('5')
         assert page.evaluate('__gunsTest.desk.execution.pending()[0]?.guns.setup')==5,page.locator('#guns-error').inner_text()
         page.locator('[data-guns-cancel]').click()
+        # User intent is never vetoed by absent live quotes or setup assessments.
+        page.evaluate("__gunsTest.feed({connected:false,feedHealthy:false,quotes:{}});__gunsTest.desk.live()")
+        page.clock.run_for(600)
+        before_quotes=page.evaluate('JSON.stringify(__paper.Q)')
+        page.locator('[data-guns-confirm="1"]').click()
+        page.locator('#guns-manual [name="price"]').fill('250000')
+        page.locator('#guns-manual [name="qty"]').fill('3')
+        page.locator('#guns-manual button[type="submit"]').click()
+        page.wait_for_function('!document.querySelector("#guns-manual")')
+        trade=page.evaluate('__paper.S.trades[0]')
+        assert trade['priceSource']=='USER_ENTERED_PAPER' and trade['userOverride'] is True
+        assert trade['price']==250000 and trade['qty']==3 and trade['cashAfter']<0
+        assert 'Fresh LIVE Gateway quote required' in trade['warnings']
+        assert page.evaluate('JSON.stringify(__paper.Q)')==before_quotes
+        page.set_viewport_size({'width':390,'height':844})
+        page.locator('[data-guns="manual"]').click()
+        assert page.evaluate('document.querySelector("#guns-manual").scrollWidth<=document.querySelector("#guns-manual").clientWidth+1')
+        page.locator('#guns-manual [name="side"]').select_option('SELL')
+        page.locator('#guns-manual [name="price"]').fill('250000')
+        page.locator('#guns-manual [name="qty"]').fill('3')
+        page.locator('#guns-manual button[type="submit"]').click()
+        page.wait_for_function('!document.querySelector("#guns-manual")')
+        assert page.evaluate('__paper.S.positions.find(p=>p.conid===12345).qty')==0
+        assert page.evaluate('__paper.S.trades[0].priceSource')=='USER_ENTERED_PAPER'
+        page.wait_for_timeout(300)
+        assert page.evaluate('JSON.parse(localStorage.paperAccount).trades[0].priceSource')=='USER_ENTERED_PAPER'
+        # Real scanner pipeline acquires reserves; exclusions promote without touching charts/trades.
+        page.set_viewport_size({'width':1440,'height':1000})
+        page.evaluate('tick();__gunsTest.desk.execution.book().scan.acquisition=null')
+        scanner_symbols[:]=[('TEST',12345)]+[('RSV'+str(i),30000+i) for i in range(1,6)]
+        page.locator('[data-guns="scan"]').click()
+        page.wait_for_function('__gunsTest.desk.execution.book().scan.pool.length===6')
+        before_desk=page.evaluate('JSON.stringify(__gunsTest.desk.execution.book().desk)')
+        page.locator('[data-guns-exclude="12345"]').check()
+        assert page.locator('.guns-candidate').count()==4
+        assert page.locator('.guns-candidate[data-guns-pick="30004"]').count()==1
+        assert page.evaluate('JSON.stringify(__gunsTest.desk.execution.book().desk)')==before_desk
+        page.locator('[data-guns="load-charts"]').click()
+        assert page.locator('canvas[data-chart-slot]').count()==4
+        assert page.evaluate('__gunsTest.desk.execution.book().desk.slots.map(s=>s.inst.conid)')==[30004,30001,30002,30003]
+        page.wait_for_function('[...document.querySelectorAll("canvas[data-chart-slot]")].every(c=>Number(c.dataset.premarketBands)>0)')
+        page.locator('[data-guns-layout="daily"]').click()
+        page.wait_for_function('[...document.querySelectorAll("canvas[data-chart-slot]")].every(c=>c.dataset.premarketBands==="0")')
+        page.locator('.guns-stage-nav [data-guns-stage="scanner"]').click()
+        page.locator('#guns-excluded [data-guns-exclude="12345"]').uncheck()
+        assert page.locator('.guns-candidate[data-guns-pick="12345"]').count()==1
         assert not errors,errors
-        print(json.dumps({'guns':'verified scanner, local key form, visible blockers, S1-S5, charts/hover/news, off-tab Level II hold/resume/auto-cancel, tutorial isolation, dynamic risk, paper lifecycle, persistence/mobile','browser_errors':errors}))
+        print(json.dumps({'guns':'verified scanner, local key form, advisory/manual fills, gap provenance, reserve promotion/quick-load/premarket shading, S1-S5, charts/hover/news, off-tab Level II hold/resume/auto-cancel, tutorial isolation, dynamic risk, paper lifecycle, persistence/mobile','browser_errors':errors}))
         page.unroute_all(behavior='ignoreErrors')
         browser.close()
 
