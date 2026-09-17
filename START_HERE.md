@@ -115,7 +115,7 @@ Entry cap: entry +$0.03 when entry is below $20, otherwise +$0.05, tick-rounded.
 
 - Risk budget = **current marked equity × risk %**. At 1%: $90,000 → $900; $100,100 → $1,001.
 - Pending quantity is recalculated, including fees, whole shares, buying power and the limit-cap risk. Missing marks on held positions block new entries.
-- Targets re-anchor to actual entry fill and chosen R. Changes to risk/R settings do not rewrite existing filled brackets.
+- Confirmed entry, SL and TP are saved at confirmation and do not move with later chart candles or the fill price. Risk % still sizes whole shares from current paper equity before fill. Target-R changes apply to new previews, not existing confirmed brackets.
 - With **Breakeven at +1R** enabled at fill, the stop moves to actual entry when executable bid reaches entry + initial R. It never loosens, but “entry” is **before fees**, so this is not guaranteed net-zero P&L.
 - **No continuous ATR trailing stop is implemented.** ATR is used for the initial S1/S2 stop when selected.
 - Stops can fill in parts, stay triggered until the remaining quantity exits, and may slip. Targets, manual flatten and the session-close exit also require executable IB quotes.
