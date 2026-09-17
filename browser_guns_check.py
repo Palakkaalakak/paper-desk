@@ -255,6 +255,23 @@ def main():
         page.mouse.move(x,rect['y']+180);page.clock.run_for(30)
         assert page.locator('#guns-anchor-mode').inner_text()==high
         page.keyboard.press('1')
+        assert page.evaluate('__gunsTest.desk.execution.pending().length')==0
+        assert page.locator('#guns-order-preview').is_visible()
+        assert 'TEST · S1' in page.locator('#guns-preview-title').inner_text()
+        assert page.locator('#guns-order-preview dd').count()==6
+        page.keyboard.press('Escape')
+        assert page.locator('#guns-order-preview').count()==0
+        assert page.evaluate('__gunsTest.desk.execution.pending().length')==0
+        page.clock.run_for(600)
+        page.evaluate('tick();document.activeElement.blur()')
+        page.mouse.move(x,rect['y']+180);page.clock.run_for(30)
+        page.keyboard.press('1')
+        assert page.locator('#guns-order-preview').is_visible()
+        page.evaluate('''document.querySelector('#guns-preview-submit').dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',repeat:true,bubbles:true,cancelable:true}))''')
+        assert page.evaluate('__gunsTest.desk.execution.pending().length')==0
+        page.keyboard.press('Enter')
+        page.keyboard.press('Enter')
+        assert page.evaluate('__gunsTest.desk.execution.pending().length')==1
         assert page.evaluate('__gunsTest.desk.execution.pending()[0]?.guns.notes.hover.enabled') is True,page.locator('#guns-error').inner_text()
         assert page.evaluate('__gunsTest.desk.execution.pending()[0].guns.plan.levelSource')=='hover'
         page.mouse.move(0,0);page.clock.run_for(30)
@@ -279,6 +296,9 @@ def main():
         page.keyboard.press('1')
         assert page.evaluate('__gunsTest.desk.execution.pending().length')==0
         page.keyboard.press('Alt+q')
+        assert page.evaluate('__gunsTest.desk.execution.pending().length')==0
+        assert page.locator('#guns-order-preview').is_visible()
+        page.keyboard.press('Enter')
         assert page.evaluate('__gunsTest.desk.execution.pending()[0].guns.notes.chartSetup')==1
         assert page.evaluate('__gunsTest.desk.execution.pending()[0].guns.notes.newsEvidence.articleId')=='story1'
         page.locator('[data-guns="tutorial"]').click()
@@ -317,6 +337,9 @@ def main():
             button=page.locator('[data-guns-confirm="'+str(setup)+'"]')
             assert button.is_enabled(),button.get_attribute('title')
             button.click()
+            assert page.evaluate('__gunsTest.desk.execution.pending().length')==0
+            assert page.locator('#guns-order-preview').is_visible()
+            page.keyboard.press('Enter')
             assert page.evaluate('__gunsTest.desk.execution.pending()[0]?.guns.setup')==setup,page.locator('#guns-error').inner_text()
             if setup==4:
                 print('Checking Level II off-tab hold/resume/cancel',flush=True)
@@ -346,6 +369,7 @@ def main():
                 page.locator('#guns-l2-cancel').check()
                 page.evaluate('tick(10.19,10.21,10.20,100)')
                 page.locator('[data-guns-confirm="4"]').click()
+                page.keyboard.press('Enter')
                 page.clock.run_for(2200)
                 page.evaluate('__gunsTest.desk.pulse()')
                 page.wait_for_function("__gunsTest.desk.execution.pending().length===0",timeout=10000)
@@ -413,6 +437,9 @@ def main():
         page.locator('#guns-setup').select_option('5')
         page.wait_for_function("document.querySelector('[data-guns-confirm=\"5\"]') && !document.querySelector('[data-guns-confirm=\"5\"]').textContent.includes('Warning:')")
         page.evaluate('document.activeElement.blur()');page.keyboard.press('5')
+        assert page.evaluate('__gunsTest.desk.execution.pending().length')==0
+        assert page.locator('#guns-order-preview').is_visible()
+        page.keyboard.press('Enter')
         assert page.evaluate('__gunsTest.desk.execution.pending()[0]?.guns.setup')==5,page.locator('#guns-error').inner_text()
         page.locator('[data-guns-cancel]').click()
         # User intent is never vetoed by absent live quotes or setup assessments.
@@ -452,8 +479,14 @@ def main():
         assert page.locator('.guns-candidate').count()==4
         assert page.locator('.guns-candidate[data-guns-pick="30004"]').count()==1
         assert page.evaluate('JSON.stringify(__gunsTest.desk.execution.book().desk)')==before_desk
-        page.locator('[data-guns="load-charts"]').click()
+        page.locator('#guns-quickload-charts').click()
         assert page.locator('canvas[data-chart-slot]').count()==4
+        before_orders=page.evaluate('__paper.S.orders.length')
+        page.locator('canvas[data-chart-slot="1"]').click()
+        assert page.evaluate('__gunsTest.desk.execution.book().desk.active')==1
+        assert 'RSV1' in page.locator('.guns-quickload-bar').inner_text()
+        assert page.evaluate('__paper.S.orders.length')==before_orders
+        assert page.locator('dialog[open]').count()==0
         assert page.evaluate('__gunsTest.desk.execution.book().desk.slots.map(s=>s.inst.conid)')==[30004,30001,30002,30003]
         page.wait_for_function('[...document.querySelectorAll("canvas[data-chart-slot]")].every(c=>Number(c.dataset.premarketBands)>0)')
         page.locator('[data-guns-layout="daily"]').click()
