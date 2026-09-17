@@ -269,3 +269,33 @@ test('scanner snapshot cannot carry a gap inconsistent with its reference prices
  assert.ok(W.completeScreen(row,C.defaults));assert.equal(W.completeScreen({...row,screen:{...row.screen,gap:99}},C.defaults),false);
  assert.equal(W.cheapFilter([{q:{last:10,prevClose:100}}],'gap',C.defaults).length,1);
 });
+
+test('manual fills override strategy data and buying-power assessments, without changing quotes',()=>{
+ const f=fixture();f.setLive(false);f.setEquity(0);f.plan.errors=['Spread within configured limit','Above 9/20 EMA and 50/200 SMA','Setup entry window'];f.plan.session=null;const quotes=JSON.stringify(f.Q);
+ const r=f.E.manualTrade(f.inst,{side:'BUY',price:10,qty:7,stop:9,target:12},f.plan);
+ assert.deepEqual(r.errors,[]);assert.equal(r.order.status,'filled');assert.equal(r.order.priceSource,'USER_ENTERED_PAPER');assert.ok(r.order.guns.notes.warnings.includes('Fresh LIVE Gateway quote required'));
+ assert.equal(C.exit(f.E.book().active[0],{bid:10.2},Date.now()).reason,null);
+ assert.deepEqual(f.E.manualTrade(f.inst,{side:'SELL',price:11,qty:7}).errors,[]);assert.equal(f.S.positions[0].qty,0);assert.equal(JSON.stringify(f.Q),quotes);
+});
+test('manual fill input integrity and optional brackets remain explicit',()=>{
+ const f=fixture();for(const patch of [{price:NaN},{price:0},{qty:1.5},{qty:-1},{stop:11,target:12},{stop:9},{side:'SELL'}])assert.ok(f.E.manualTrade(f.inst,{side:'BUY',price:10,qty:1,...patch}).errors.length);
+ assert.equal(f.S.orders.length,0);assert.deepEqual(f.E.manualTrade(f.inst,{side:'BUY',price:10,qty:1}).errors,[]);assert.equal(f.E.book().active.length,0);
+});
+test('multiple same-symbol brackets close parent first with conserved quantities and fees',()=>{
+ const f=fixture();f.setLive(false);const buy=(qty,target)=>f.E.manualTrade(f.inst,{side:'BUY',price:10,qty,stop:9,target}).order;
+ buy(3,12.005);const second=buy(4,13);assert.equal(f.E.book().active[0].target,12.005);
+ f.bridge.fill({conid:1,side:'SELL',qty:2,filledQty:0,status:'working',guns:{role:'exit',parentId:second.id}},2,11);
+ assert.deepEqual(f.E.book().active.map(b=>b.qty),[3,2]);f.E.manualTrade(f.inst,{side:'SELL',price:11,qty:5});
+ assert.equal(f.E.book().active.length,0);assert.equal(f.S.positions[0].qty,0);assert.equal(f.E.book().journal.reduce((v,b)=>v+b.fees,0),4);
+});
+test('premarket bands follow DST, open boundaries and partial timeframe overlap',()=>{
+ for(const open of ['2026-03-09T13:30Z','2026-11-02T14:30Z']){const start=Date.parse(open),pm=start-330*60000,sessions=[{start}];
+  for(const frame of ['1','5','15']){const duration=Number(frame)*60000;assert.deepEqual(C.premarketBands([{t:pm-duration},{t:pm},{t:start-duration},{t:start}],frame,sessions),[{index:1,from:0,to:1},{index:2,from:0,to:1}]);}
+  assert.deepEqual(C.premarketBands([{t:start-300000}],'15',sessions),[{index:0,from:0,to:1/3}]);assert.deepEqual(C.premarketBands([{t:pm-300000}],'15',sessions),[{index:0,from:1/3,to:1}]);assert.deepEqual(C.premarketBands([{t:pm}],'d',sessions),[]);assert.deepEqual(C.premarketBands([{t:pm}],'1',[]),[]);
+ }
+});
+test('US evidence is mandatory; exclude and restore only complete verified reserves',()=>{
+ const f=scannerFixture();for(const patch of [{usListed:false},{usListed:undefined},{currency:'CAD'}])assert.equal(W.candidate(f.row,f.q,{...f.ev,...patch},true,C.defaults,f.now).eligible,false);
+ const pool=Array.from({length:6},(_,i)=>W.screenSnapshot(W.candidate({...f.row,conid:i+1},{...f.q,brokerConid:i+1},{...f.ev,conid:i+1},true,C.defaults,f.now),f.now));
+ const ids=rows=>rows.map(r=>r.conid);assert.deepEqual(ids(W.selectCandidates(pool,[],C.defaults)),[1,2,3,4]);assert.deepEqual(ids(W.stableSlots(pool.slice(0,4),W.selectCandidates(pool,[2],C.defaults))),[1,5,3,4]);assert.deepEqual(ids(W.selectCandidates([...pool,pool[5]],[1,2,3,4,5],C.defaults)),[6]);
+});

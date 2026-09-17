@@ -306,6 +306,20 @@ class GunsDataTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(fetch.call_count,1);self.assertEqual(fetch.call_args.args[-1],'1Min')
             self.assertEqual(out['previousClose'],9);self.assertEqual(out['previousCloseSource'],'IB Gateway RTH TRADES')
 
+    def test_us_stock_definition_rejects_foreign_currency_venue_and_smart_only(self):
+        base=dict(secType='STK',currency='USD',primaryExchange='NASDAQ')
+        self.assertTrue(guns_data.us_stock(NS(**base,issuerCountry='China')))
+        for patch in [dict(currency='CAD'),dict(secType='OPT'),dict(primaryExchange='LSE'),dict(primaryExchange='SMART'),dict(primaryExchange='')]:
+            self.assertFalse(guns_data.us_stock(NS(**{**base,**patch})))
+
+    async def test_preliminary_scanner_retains_missing_metadata_for_verification(self):
+        contracts=[NS(conId=i,symbol='TEST',secType='STK',currency='USD',primaryExchange=ex) for i,ex in enumerate(['NASDAQ','','LSE','SMART'],1)]
+        rows=[NS(rank=i,contractDetails=NS(contract=c,longName='Test',stockType='COMMON')) for i,c in enumerate(contracts)]
+        ib=NS(reqScannerDataAsync=AsyncMock(return_value=rows))
+        out=await guns_data.scan(NS(_ib=ib))
+        self.assertEqual([r['conid'] for r in out['rows']],[1,2]);self.assertFalse(out['rows'][1]['usListed'])
+        self.assertEqual(ib.reqScannerDataAsync.call_args.args[0].locationCode,'STK.US.MAJOR')
+
     def test_footer_only_news_is_incomplete_not_a_story(self):
         footer='(END) Dow Jones Newswires\nSeptember 09, 2026 15:34 ET (19:34 GMT)\nCopyright (c) 2026 Dow Jones & Company, Inc.\nThe statements in this document shall not be considered as an objective or independent explanation.'
         out=guns_data.article_content(footer)

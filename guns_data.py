@@ -66,9 +66,13 @@ async def scan(engine):
                 warning='Scanner returns contracts, not verified prices or premarket volume. Separate quote/history checks required.',
                 rows=[dict(conid=r.contractDetails.contract.conId,symbol=r.contractDetails.contract.symbol,
                            name=r.contractDetails.longName,stockType=r.contractDetails.stockType,
-                           secType='STK',exch='SMART',brokerId=True,rank=r.rank,currency='USD',
-                           primaryExchange=r.contractDetails.contract.primaryExchange,usListed=True) for r in (rows or [])[:50]
-                      if us_stock(r.contractDetails.contract)])
+                           secType='STK',exch='SMART',brokerId=True,rank=r.rank,currency=getattr(r.contractDetails.contract,'currency',None),
+                           primaryExchange=getattr(r.contractDetails.contract,'primaryExchange',None),usListed=us_stock(r.contractDetails.contract)) for r in (rows or [])[:50]
+                      # Missing summary metadata goes through the existing parallel
+                      # contract-details verifier, not an early false rejection.
+                      if getattr(r.contractDetails.contract,'secType','') in ('','STK')
+                      and getattr(r.contractDetails.contract,'currency','') in ('','USD')
+                      and getattr(r.contractDetails.contract,'primaryExchange','') in US_STOCK_EXCHANGES|{''}])
 
 
 def close_idle(engine):
