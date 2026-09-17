@@ -1,6 +1,20 @@
 # Paper Desk — IB Gateway paper-trading workstation
 
-## Current finishing pass — 2026-09-15
+## Current scanner update — 2026-09-17
+
+This section supersedes the older scanner notes below. [Full usage guide](START_HERE.md).
+
+- **1–2 minutes is a performance target, not a cutoff.** No total-scan or per-stage deadline remains. Normal individual request timeouts still handle hung connections. Progress shows completed counts, actual in-flight jobs and elapsed time.
+- **Cheapest first, genuinely concurrent:** discovery and source status together; zero-network cached volume/price/spread/gap checks; six concurrent quote workers; three concurrent history/identity/session jobs; float last with three workers; concurrent finalist quote refresh. Missing values remain unverified. Publication order and saved slots remain stable.
+- **Removed avoidable waiting:** complete IB snapshots return when fresh bid/ask/trade arrive rather than waiting roughly 11 seconds for snapshot-end. Owned request-ID cancellation and reconnect guards remain. History start spacing is 350ms instead of three seconds, with at most three verification jobs / six history requests. Scan minute history is one day instead of two; prior-close daily history remains separate. IB soft throttling still applies; minute/daily bars are outside the <=30-second-bar hard pacing rules. [IB history limits](https://interactivebrokers.github.io/tws-api/historical_limitations.html).
+- **No-key default for share references:** public Stock Analysis statistics first, configured FMP only as fallback. Exact symbol, integer counts and provider-statistics update date are checked. The date is labeled as a provider snapshot, not an issuer float-effective date. Missing exact float may use a clearly labeled total-outstanding-share upper bound, never invented exact float. No provider credential was committed.
+- **Verified reported symbols:** public float returned for MEDS (1,484,043), ZTG (4,083,302), RETO (8,219,654), WAFU (1,274,499), CYPH (74,752,337), FTFT (7,882,808). YFOR returned an outstanding-share upper bound of 3,201,764. These are observed snapshots, not hardcoded values. All seven had returned FMP HTTP 402 for subscription coverage, while AAPL succeeded; the default no longer depends on that subscription.
+- **Measured scope:** one actual HTTP probe of those seven share references, using three workers and no FMP key, finished in **0.466 seconds** from this sandbox. This measures only share-reference acquisition, may benefit from provider caching, and is **not an end-to-end scanner guarantee**. Live Gateway scan timing remains unmeasured here.
+- **Regression evidence:** 66 Python tests and 62 JavaScript tests passed. Tests cover six pool jobs starting together, three overlapping history jobs, early snapshot completion, count/date/identity validation and explicit source provenance. The expanded GUNS browser suite passed after the no-cutoff scanner change with zero browser errors, covering scanner, news, charts, Level II decisions and paper lifecycle.
+
+Existing Python/IB owner-loop architecture, local URL http://localhost:8765, browser account model and paper-only execution remain unchanged. `/data/guns_float?symbol=...` uses the new default; `/data/guns_data_status` advertises it. Successful counts retain the existing six-hour server cache. Public access/schema and universal symbol coverage are not guaranteed. Acquisition failures with no new complete candidates retain the prior shortlist and require manual retry rather than endlessly restarting. No cloud deployment or real broker orders were added.
+
+## Previous finishing pass — 2026-09-15
 
 **Start here:** [Local startup and complete GUNS feature/user guide](START_HERE.md). Covers scanner stages, reviews, four chart presets, S1–S5 windows/stops, dynamic risk, breakeven, Level II, key setup and disabled-entry troubleshooting.
 
