@@ -411,7 +411,7 @@ def main():
         page.locator('#guns-catalyst').check();page.locator('#guns-room').check()
         page.locator('.guns-stage-nav [data-guns-stage="trade"]').click()
         page.locator('#guns-setup').select_option('5')
-        page.wait_for_function("!document.querySelector('[data-guns-confirm=\"5\"]').disabled")
+        page.wait_for_function("document.querySelector('[data-guns-confirm=\"5\"]') && !document.querySelector('[data-guns-confirm=\"5\"]').textContent.includes('Warning:')")
         page.evaluate('document.activeElement.blur()');page.keyboard.press('5')
         assert page.evaluate('__gunsTest.desk.execution.pending()[0]?.guns.setup')==5,page.locator('#guns-error').inner_text()
         page.locator('[data-guns-cancel]').click()
