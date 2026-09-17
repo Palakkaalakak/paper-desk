@@ -61,8 +61,9 @@ test('analyzed tooltip context becomes unavailable when chart timestamps are sta
 });
 
 const W=require('./guns-workflow.js'),T=require('./guns-tutorial.js');
+function closeFixture(now){return {previousClose:9,previousCloseDate:'2026-09-09',expectedPreviousCloseDate:'2026-09-09',sessionDate:C.day(now),previousCloseVerified:true,previousCloseBasis:'split-adjusted-not-dividend-adjusted',previousCloseSource:'Fixture IB RTH',previousCloseAt:now};}
 function referenceFloat(now){return {floatShares:15000000,date:new Date(now-86400000).toISOString(),source:"Fixture IBKR"};}
-function chartFixture(){const now=Date.parse('2026-09-10T13:30:10Z'),start=now-10000;return {now,data:{float:referenceFloat(now),minTick:.01,stockType:'COMMON',updatedAt:now,sessions:[{start,end:start+23400000}],daily:[{t:'2026-09-09',c:9}],minute:Array.from({length:1500},(_,i)=>{const c=8.99+i*.001;return {t:start-(1500-i)*60000,o:c-.001,h:c+.011,l:c-.01,c,v:1000};})},q:{last:10.2,bid:10.2,ask:10.21},notes:{room:true,catalyst:true}};}
+function chartFixture(){const now=Date.parse('2026-09-10T13:30:10Z'),start=now-10000;return {now,data:{float:referenceFloat(now),minTick:.01,stockType:'COMMON',usListed:true,currency:'USD',primaryExchange:'NASDAQ',...closeFixture(now),updatedAt:now,sessions:[{start,end:start+23400000}],daily:[{t:'2026-09-09',c:9}],minute:Array.from({length:1500},(_,i)=>{const c=8.99+i*.001;return {t:start-(1500-i)*60000,o:c-.001,h:c+.011,l:c-.01,c,v:1000};})},q:{status:'LIVE',at:now,tradeAt:now,last:10.2,bid:10.2,ask:10.21},notes:{room:true,catalyst:true}};}
 test('human confirmation required; heuristic advice is not a chart-quality veto',()=>{
  const f=chartFixture(),n={...f.notes,levels:{3:{trigger:10.2,candleLow:10.1}}};
  let p=C.analyze(f.data,f.q,{},3,n,f.now);assert.ok(p.errors.includes('Chart and setup reviewed by user'));
@@ -84,7 +85,7 @@ test('shortcuts reject unsafe modifiers, repeats, duplicates and malformed bindi
  const b=W.setBinding(W.defaults,0,'Alt+Q');assert.deepEqual(W.bindings({shortcuts:b}),b);assert.deepEqual(W.bindings({shortcuts:['1','1','2','3']}),W.defaults);
 });
 test('candidate ranking fails closed on missing, stale or mismatched evidence',()=>{
- const now=100000,row={conid:1,rank:0},q={status:'LIVE',last:10,bid:9.99,ask:10.01},e={conid:1,at:now,sessionKnown:true,stockType:'COMMON',previousClose:9,premarketVolume:100000,float:referenceFloat(now)};
+ const now=Date.parse('2026-09-10T13:30Z'),row={conid:1,rank:0},q={at:now,tradeAt:now,status:'LIVE',last:10,bid:9.99,ask:10.01},e={conid:1,at:now,sessionKnown:true,stockType:'COMMON',usListed:true,currency:'USD',primaryExchange:'NASDAQ',...closeFixture(now),previousClose:9,premarketVolume:100000,float:referenceFloat(now)};
  const run=(ev=e,quote=q,ready=true)=>W.candidate(row,quote,ev,ready,C.defaults,now);assert.ok(run().eligible);
  for(const patch of [{at:now-90001},{at:now+5001},{conid:2},{sessionKnown:false},{previousClose:null},{premarketVolume:null},{premarketVolume:-1},{stockType:'ETF'}]){assert.equal(run({...e,...patch}).eligible,false);assert.equal(run({...e,...patch}).score,null);}
  assert.equal(run(null).eligible,false);assert.equal(run(e,q,false).eligible,false);assert.equal(run(e,{...q,status:'DELAYED'}).eligible,false);assert.equal(run(e,{...q,ask:11}).eligible,false);
@@ -152,7 +153,7 @@ test('five-key migration preserves custom bindings, including conflicts with def
 });
 test('shortlist is at most four qualifying rows, no padding or mutation after ranking',()=>{
  const now=Date.parse('2026-09-10T13:00Z'),rows=Array.from({length:8},(_,i)=>({conid:i+1,rank:i})),quotes={},ev=new Map();
- for(const r of rows){quotes[r.conid]={status:'LIVE',last:10,bid:9.99,ask:10.01,at:now};ev.set(r.conid,{conid:r.conid,at:now,sessionDate:'2026-09-10',sessionKnown:true,stockType:'COMMON',previousClose:9,premarketVolume:50000,float:referenceFloat(now)});}
+ for(const r of rows){quotes[r.conid]={tradeAt:now,status:'LIVE',last:10,bid:9.99,ask:10.01,at:now};ev.set(r.conid,{conid:r.conid,at:now,sessionDate:'2026-09-10',sessionKnown:true,stockType:'COMMON',usListed:true,currency:'USD',primaryExchange:'NASDAQ',...closeFixture(now),previousClose:9,premarketVolume:50000,float:referenceFloat(now)});}
  ev.get(1).premarketVolume=null;ev.get(2).stockType='ETF';
  const list=W.shortlist(rows,quotes,ev,()=>true,C.defaults,now);assert.deepEqual(list.map(r=>r.conid),[3,4,5,6]);
  quotes[3].last=11;W.rank(rows,quotes,ev,()=>true,C.defaults,now);assert.deepEqual(list.map(r=>r.conid),[3,4,5,6]);
@@ -164,7 +165,7 @@ test('scheduled scan occurs once in T-30/open window with supplied DST/session s
  assert.equal(W.scanDue({},[],1),'initial');assert.equal(W.scanDue({publishedAt:1},[],2),null);
 });
 test('strict float excludes unknown, stale, outstanding-only and cap equality',()=>{
- const now=Date.parse('2026-09-10T13:30Z'),row={conid:1},q={status:'LIVE',last:10,bid:9.99,ask:10.01},e={conid:1,at:now,sessionKnown:true,stockType:'COMMON',previousClose:9,premarketVolume:50000};
+ const now=Date.parse('2026-09-10T13:30Z'),row={conid:1},q={at:now,tradeAt:now,status:'LIVE',last:10,bid:9.99,ask:10.01},e={conid:1,at:now,sessionKnown:true,stockType:'COMMON',usListed:true,currency:'USD',primaryExchange:'NASDAQ',...closeFixture(now),previousClose:9,premarketVolume:50000};
  const run=f=>W.candidate(row,q,{...e,float:f},true,{...C.defaults,floatMode:'strict'},now);
  assert.equal(run({floatShares:15000000,date:'2026-09-09',source:'Fixture'}).eligible,true);
  for(const f of [null,{outstandingShares:1000000,date:'2026-09-09',source:'Fixture'},{floatShares:100000000,date:'2026-09-09',source:'Fixture'},{floatShares:15000000,date:'2020-01-01',source:'Fixture'}])assert.equal(run(f).eligible,false);
@@ -212,7 +213,7 @@ test('news recovery never substitutes a different catalyst, amount or trading da
 
 test('matching news titles never ignores a material negation',()=>{assert.equal(W.sameStory({headline:'Company says FDA will approve the new therapy this month'},{headline:'Company says FDA will not approve the new therapy this month'}),false);});
 
-function scannerFixture(){const now=Date.parse('2026-09-10T13:00Z'),row={conid:123,symbol:'TEST'},q={status:'LIVE',bid:9.99,ask:10.01,last:10,at:now,brokerConid:123},ev={conid:123,at:now,sessionDate:'2026-09-10',sessionKnown:true,stockType:'COMMON',previousClose:9,premarketVolume:50000,float:referenceFloat(now)};return {now,row,q,ev};}
+function scannerFixture(){const now=Date.parse('2026-09-10T13:00Z'),row={conid:123,symbol:'TEST'},q={at:now,tradeAt:now,status:'LIVE',bid:9.99,ask:10.01,last:10,at:now,brokerConid:123},ev={conid:123,at:now,sessionDate:'2026-09-10',sessionKnown:true,stockType:'COMMON',usListed:true,currency:'USD',primaryExchange:'NASDAQ',...closeFixture(now),previousClose:9,premarketVolume:50000,float:referenceFloat(now)};return {now,row,q,ev};}
 test('scanner waits for both positive quote sides and actual trade, never a midpoint',()=>{
  const {now,row,q,ev}=scannerFixture();
  for(const patch of [{bid:null},{ask:undefined},{bid:0},{ask:0},{bid:NaN},{ask:Infinity},{last:Infinity},{last:null},{tradeLast:null},{ask:9.98},{halted:true},{status:'DELAYED'},{brokerConid:999}]){
@@ -241,7 +242,7 @@ test('missing history metrics are acquisition pending, not completed numeric rej
  const c=W.candidate(row,q,{...ev,premarketVolume:1000},true,C.defaults,now);assert.equal(c.eligible,false);assert.equal(c.pending,false);
 });
 test('parallel scan bounds requests and preserves order across failures',async()=>{let active=0,max=0;const out=await W.mapPool([0,1,2,3,4],3,async i=>{active++;max=Math.max(max,active);await new Promise(r=>setTimeout(r,5*(5-i)));active--;if(i===2)throw Error('fixture');return i;});assert.equal(max,3);assert.deepEqual(out.map(x=>x.value),[0,1,undefined,3,4]);assert.match(out[2].error.message,/fixture/);});
-test('cheap stages reject known failures but retain missing evidence for verification',()=>{let p=[{q:{last:10,prevClose:9,bid:9.99,ask:10.01,volume:50000}},{q:{last:10,prevClose:10}},{q:{last:1,prevClose:.8}},{q:{last:10,prevClose:9,bid:9,ask:10}},{q:{last:10,prevClose:9,volume:100}},{q:{last:10}}];for(const stage of ['gap','price','spread','volume'])p=W.cheapFilter(p,stage,C.defaults);assert.equal(p.length,2);assert.equal(p[1].q.prevClose,undefined);});
+test('cheap stages reject known failures but retain missing evidence for verification',()=>{let p=[{q:{last:10,prevClose:9,bid:9.99,ask:10.01,volume:50000}},{q:{last:10,prevClose:10}},{q:{last:1,prevClose:.8}},{q:{last:10,prevClose:9,bid:9,ask:10}},{q:{last:10,prevClose:9,volume:100}},{q:{last:10}}];for(const stage of ['gap','price','spread','volume'])p=W.cheapFilter(p,stage,C.defaults);assert.equal(p.length,3);assert.equal(p[2].q.prevClose,undefined);});
 test('Level II confirms distinct updates, holds entry, and requires explicit resume',()=>{const f=fixture();f.plan.setup=4;const o=f.arm();f.E.updateDepth(f.inst,depthFixture(f,500));f.E.fill(o);assert.equal(o.status,'working');assert.equal(o.guns.l2.mode,'checking');f.tick();f.E.updateDepth(f.inst,depthFixture(f,500,1));assert.notEqual(o.guns.l2.mode,'review');f.E.updateDepth(f.inst,depthFixture(f,500,2));assert.equal(o.guns.l2.mode,'review');f.E.fill(o);assert.equal(o.filledQty,0);assert.equal(f.E.depthDecision(o.id,'resume'),true);f.E.fill(o);assert.equal(o.status,'filled');});
 test('auto-cancel applies only to entries; open protective exits still execute',()=>{const f=fixture();f.plan.setup=5;f.E.g().config.l2AutoCancel=true;const o=f.arm();f.E.updateDepth(f.inst,depthFixture(f,500));f.tick();f.E.updateDepth(f.inst,depthFixture(f,500,2));assert.equal(o.status,'cancelled');assert.equal(f.S.positions.length,0);const g=fixture();g.plan.setup=4;g.E.g().config.l2AutoCancel=true;const p=g.arm();g.E.updateDepth(g.inst,depthFixture(g));g.E.fill(p);const b=g.E.book().active[0],stop=b.stop;g.tick();g.E.updateDepth(g.inst,depthFixture(g,500,2));g.tick();g.E.updateDepth(g.inst,depthFixture(g,500,3));assert.equal(b.l2.mode,'review');assert.equal(b.stop,stop);g.tick({bid:stop-.01});g.E.manage();assert.equal(g.S.positions[0].qty,0);});
 test('stale, incomplete, cross-contract depth cannot authorize entry or resume',()=>{const f=fixture();f.plan.setup=4;const o=f.arm();for(const patch of [{conid:99},{updatedAt:0},{status:'DELAYED'},{asks:[]},{bids:[{price:11,size:100},{price:10.99,size:100},{price:10.98,size:100}]}]){f.E.updateDepth(f.inst,{...depthFixture(f),...patch});f.E.fill(o);assert.equal(o.filledQty,0);assert.equal(f.E.depthDecision(o.id,'resume'),false);}});

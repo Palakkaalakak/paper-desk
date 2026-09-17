@@ -286,7 +286,7 @@ class GunsDataTests(unittest.IsolatedAsyncioTestCase):
 
     def fixture(self, day='2026-09-10'):
         opening=dt.datetime.combine(dt.date.fromisoformat(day),dt.time(9,30),ZoneInfo('America/New_York'))
-        detail=NS(contract=NS(conId=123,secType='STK',currency='USD'),stockType='COMMON',liquidSessions=lambda:[NS(start=opening,end=opening+dt.timedelta(hours=6.5))])
+        detail=NS(contract=NS(conId=123,secType='STK',currency='USD',primaryExchange='NASDAQ'),stockType='COMMON',liquidSessions=lambda:[NS(start=opening,end=opening+dt.timedelta(hours=6.5))])
         minute=[NS(date=opening-dt.timedelta(minutes=1),volume=100),NS(date=opening,volume=999)]
         daily=[NS(date=opening.date()-dt.timedelta(days=1),close=9),NS(date=opening.date(),close=10)]
         return detail,minute,daily,opening
@@ -294,7 +294,7 @@ class GunsDataTests(unittest.IsolatedAsyncioTestCase):
     def test_completed_premarket_and_prior_close_across_dst(self):
         for day,hour in [('2026-09-10',13),('2026-11-02',14)]:
             detail,minute,daily,opening=self.fixture(day)
-            out=guns_data.verification(detail,minute,daily,int(opening.timestamp()*1000))
+            out=guns_data.verification(detail,minute,daily,int(opening.timestamp()*1000),str(daily[0].date))
             self.assertEqual(out['premarketVolume'],100)
             self.assertEqual(out['observedBars'],1)
             self.assertEqual(out['previousClose'],9)
@@ -317,7 +317,8 @@ class GunsDataTests(unittest.IsolatedAsyncioTestCase):
     async def test_verification_identity_validation_and_read_only_snapshots(self):
         detail,minute,daily,opening=self.fixture()
         ib=NS(reqContractDetailsAsync=AsyncMock(return_value=[detail]),reqHistoricalDataAsync=AsyncMock(side_effect=[minute,daily]))
-        engine=NS(_ib=ib)
+        ib.reqHistoricalScheduleAsync=AsyncMock(return_value=NS(sessions=[NS(refDate=str(daily[0].date))]))
+        engine=NS(_ib=ib,_stock=AsyncMock(return_value=detail.contract))
         with patch.object(guns_data.time,'time',return_value=opening.timestamp()):
             out=await guns_data.verify(engine,'123')
         self.assertEqual(out['premarketVolume'],100)
@@ -486,7 +487,7 @@ class ScannerProviderTests(unittest.IsolatedAsyncioTestCase):
             await asyncio.sleep(.9)
             active-=1
             return [object()]
-        ib=NS(reqContractDetailsAsync=AsyncMock(side_effect=lambda c:[NS(contract=NS(conId=c.conId,secType='STK',currency='USD',symbol='TEST'))]),reqHistoricalDataAsync=history)
+        ib=NS(reqContractDetailsAsync=AsyncMock(side_effect=lambda c:[NS(contract=NS(conId=c.conId,secType='STK',currency='USD',primaryExchange='NASDAQ',symbol='TEST'))]),reqHistoricalDataAsync=history)
         engine=NS(_ib=ib)
         with patch.object(guns_data,'verification',return_value={'premarketVolume':30000,'previousClose':9}),patch.object(guns_data,'scanner_sources',return_value={'quoteFallbackConfigured':False}):
             result=await asyncio.gather(*(guns_data.verify(engine,str(i)) for i in [1,2,3]))
@@ -531,7 +532,7 @@ class ScannerProviderTests(unittest.IsolatedAsyncioTestCase):
         detail,minute,daily,opening=GunsDataTests().fixture()
         detail.contract.symbol='TEST'
         ib=NS(reqContractDetailsAsync=AsyncMock(return_value=[detail]),reqHistoricalDataAsync=AsyncMock(return_value=[]))
-        expected=guns_data.verification(detail,minute,daily,int(opening.timestamp()*1000))
+        expected=guns_data.verification(detail,minute,daily,int(opening.timestamp()*1000),str(daily[0].date))
         with patch.object(guns_data,'scanner_sources',return_value={'quoteFallbackConfigured':True}),patch.object(guns_data,'sip_verification',return_value=expected) as fallback:
             out=await guns_data.verify(NS(_ib=ib),'123')
             self.assertEqual(out['conid'],123);fallback.assert_called_once()

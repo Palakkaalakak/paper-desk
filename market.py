@@ -342,7 +342,7 @@ class MarketEngine:
             c = await self._contract(row)
             if self._ib is not ib or self.info.get('generation',0)!=generation:
                 return
-            ticker = ib.reqMktData(c,'233' if c.secType=='STK' else '',False,False)
+            ticker = ib.reqMktData(c,'233' if getattr(c,'secType',None)=='STK' else '',False,False)
             self._active[cid] = dict(contract=c,ticker=ticker)
             self._ticker_ids.setdefault(id(ticker),set()).add(cid)
             if any(number(getattr(ticker,k,None),True) is not None for k in ('bid','ask','last')):
