@@ -1,5 +1,30 @@
 # Paper Desk — IB Gateway paper-trading workstation
 
+
+## Latest controls and gap reliability — 2026-09-17
+
+**This section supersedes historical blocking/float/scanner notes below.** Architecture remains Python, `ib_async==2.1.0`, one IB asyncio owner loop, vanilla JavaScript and `localStorage['paperAccount']`. Local runtime: **http://localhost:8765**. No deployment, collector or real broker orders. Read-only connection, order-method seals and broker-write route restrictions remain intact.
+
+### Completed
+- Scanner publication requires **US-listed USD common-stock evidence**, not US issuer domicile. Incomplete IB scanner summaries proceed to the existing parallel contract verifier; SMART alone does not prove US listing.
+- **Exclude / replace** checkboxes promote the next complete verified reserve, retain surviving slots, and persist per paper book/day. Restore by unticking. No reserve means fewer than four cards, not fabricated candidates. Exclusions do not modify positions or charts.
+- **Load scanner → 4 charts** explicitly assigns the visible candidates. Intraday charts shade **04:00 New York time to the reported regular open** in translucent white, including partial 5m/15m overlaps and DST. Daily charts are unshaded; unknown sessions are not guessed.
+- Strategy buttons remain enabled. When automatic strategy/data checks warn, they open an explicit **user-entered paper ticket**. **Manual paper BUY / SELL** is always available for the selected stock, including without live quotes. Positive finite prices and whole-share quantities are required; this long-stock ticket sells held shares, not shorts. Optional BUY brackets require both stop and target, or neither. Buying-power/strategy judgments do not veto this explicit path. Assumed fills may produce negative paper cash.
+- Orders, trade ledger and protected brackets record `USER_ENTERED_PAPER` and overridden warnings. Quotes are never fabricated or altered. Calculated automatic entries retain their checks; optional Level II cancellation only affects unfilled entries. Protective exits remain active when executable live quotes exist; manual closing remains available without them. Brackets are browser-local, never broker-held.
+
+### Gap definition and evidence
+`gapPercent = 100 × (referencePrice − priorRTHClose) / priorRTHClose`, without rounding before screening. Before open this is a premarket gap; after open it is **current change versus prior close**, not a frozen opening-auction gap.
+
+1. A shared IB **SPY RTH historical SCHEDULE** request identifies the actual prior US equity session, including weekends, holidays and exceptional closures. It is cached by ET date and connection generation; no weekday guessing.
+2. The exact session's unique **IB TRADES / useRTH=True daily close** is required. Missing, duplicated, nonpositive or invalid closes cannot silently fall back to an older bar. TRADES is split-adjusted, not dividend-adjusted; no second split adjustment or dividend total-return adjustment is applied. [IB historical bar semantics](https://interactivebrokers.github.io/tws-api/historical_bars.html).
+3. Fresh live quotes use a timestamped last trade (up to 60s old). Quote receipt alone does not freshen a stale trade. If its timestamp is unavailable, a recent completed TRADES minute close may supply the gap numerator, explicitly labeled **not a live trade**. It never supplies a paper fill. Missing evidence remains unavailable.
+4. No early rejection based on undated `quote.prevClose`. SIP fallback can provide minute data but cannot substitute extended-hours daily bars for the verified IB RTH denominator. Scanner/planner share one gap function; snapshots save price, source, date and time and validate the percentage against its inputs.
+
+### Verification and next steps
+71 Python tests and 70 JavaScript tests passed in the latest unit run. The expanded GUNS browser suite passed with zero browser errors, including manual BUY/SELL without quotes and beyond buying power, ledger provenance, reserves, quick-load, shading, S1–S5 and Level II. General browser regression is being rechecked after updating its old disabled-button expectation.
+
+Live Gateway entitlement/calendar availability, price parity and full scanner timing still need acceptance on your machine. No universal coverage or 100% reliability claim is made. Keep a modern Gateway running, restart Python after pulling updates, and reload the browser. Continuous ATR trailing and native TWS embedding remain unimplemented. API paths are unchanged; `/data/guns_verify?conid=...` and `/data/guns_bars?symbol=...` now include dated close and gap-reference evidence. No new storage service or credentials are required.
+
 ## Current scanner update — 2026-09-17
 
 This section supersedes the older scanner notes below. [Full usage guide](START_HERE.md).

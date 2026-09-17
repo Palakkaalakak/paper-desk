@@ -459,7 +459,9 @@ def main():
         page.locator('[data-guns-layout="daily"]').click()
         page.wait_for_function('[...document.querySelectorAll("canvas[data-chart-slot]")].every(c=>c.dataset.premarketBands==="0")')
         page.locator('.guns-stage-nav [data-guns-stage="scanner"]').click()
-        page.locator('#guns-excluded [data-guns-exclude="12345"]').uncheck()
+        # Restoring removes the checkbox; verify resulting state instead.
+        page.locator('#guns-excluded [data-guns-exclude="12345"]').click()
+        assert page.evaluate('__gunsTest.desk.execution.book().scan.excluded')==[]
         assert page.locator('.guns-candidate[data-guns-pick="12345"]').count()==1
         assert not errors,errors
         print(json.dumps({'guns':'verified scanner, local key form, advisory/manual fills, gap provenance, reserve promotion/quick-load/premarket shading, S1-S5, charts/hover/news, off-tab Level II hold/resume/auto-cancel, tutorial isolation, dynamic risk, paper lifecycle, persistence/mobile','browser_errors':errors}))

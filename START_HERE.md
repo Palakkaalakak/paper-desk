@@ -1,6 +1,6 @@
 # Paper Desk — local startup and GUNS user guide
 
-Updated 2026-09-16. This guide describes the current Python / vanilla-JavaScript workstation, not a cloud service. Repository: https://github.com/Palakkaalakak/paper-desk (branch `main`).
+Updated 2026-09-17. This guide describes the current Python / vanilla-JavaScript workstation, not a cloud service. Repository: https://github.com/Palakkaalakak/paper-desk (branch `main`).
 
 ## 1. Start safely
 
@@ -13,9 +13,19 @@ Updated 2026-09-16. This guide describes the current Python / vanilla-JavaScript
 
 Automatic port discovery covers Gateway 4001/4002 and TWS 7496/7497. A live-account Gateway login supplies data only: Paper Desk does not send real broker orders. The adapter retains `readonly=True` and order-method seals; the server blocks broker-write routes.
 
-**Keep the browser, server and Gateway running.** Stops, targets and fills are browser-local simulations, not broker-held orders. Sleeping or closing the browser suspends that protection. Fresh LIVE IB quotes and displayed liquidity are required for execution; delayed, frozen or unavailable quotes cannot substitute. Gaps and simulated slippage can exceed the planned risk budget.
+**Keep the browser, server and Gateway running.** Stops, targets and fills are browser-local simulations, not broker-held orders. Sleeping or closing the browser suspends that protection. Fresh LIVE IB quotes and displayed liquidity are required for automatic market-data fills. Explicit user-entered paper BUY/SELL does not require live quotes and is labeled as assumed execution, never as a live fill. Gaps and simulated slippage can exceed the planned risk budget.
 
 Paper accounts live in this browser's `paperAccount` localStorage. Another device/browser has a separate account. GitHub source checkpoints do not back up paper balances, orders, keys or journals. No hosted URL or cloud collector was created.
+
+
+## Latest fast workflow: scanner, charts and manual trades
+
+- Scanner universe means **US-listed, USD-denominated common stocks**, including foreign-domiciled US-listed issuers. Independent company/news search remains available.
+- Check **Exclude / replace** on a scanner stock to promote the next verified reserve. Untick its saved exclusion to restore eligibility. This does not change existing positions or chart assignments. Exclusions reset on the next New York date. If reserves run out, scan again; missing slots are not padded.
+- Use **Load scanner → 4 charts** for explicit four-panel loading. Premarket is shaded white from 04:00 ET to the reported regular open on intraday frames; larger bars shade only their overlapping portion. Daily has no intraday shading.
+- **Manual paper BUY / SELL** lets you enter price and whole shares without spread, MA, entry-window, risk-budget or live-quote vetoes. An S button opens this ticket when its calculated plan warns. Select SELL to close held long shares; shorts are outside this ticket. Enter both optional BUY stop and target, or leave both blank. A separate **Manual paper close** button is available on protected positions.
+- The ticket records your assumed price as `USER_ENTERED_PAPER`, including overridden warnings in the trade ledger. It can exceed paper buying power. It never sends an order to IB, changes quotes or claims a live market fill. Pending automatic entries are unchanged; cancel them separately if unwanted. Automatic protective exits still need live quotes.
+- Gap is the current timestamped price versus the **actual previous trading session's IB RTH close**, not yesterday's arbitrary bar, bid/ask midpoint, extended-hours close or a frozen opening gap. A recent completed 1m close may be used when last-trade time is unavailable, visibly labeled as such. Inspect the displayed numerator, denominator, prior-session date and source. Split-adjusted TRADES prices are not dividend-adjusted. Missing calendar or price evidence stays unknown, but does not prevent an explicit manual paper trade.
 
 ## 2. Configure scanner reference data
 
@@ -36,7 +46,7 @@ Optional quote/history fallback: configure `PAPER_ALPACA_KEY` and `PAPER_ALPACA_
 ## 3. Scanner workflow
 
 1. Open **GUNS → 01 / Scanner**. Initial acquisition starts when eligible; **Scan now** requests a manual scan.
-2. IBKR discovery and source-status checks run concurrently. Up to 50 discovered stocks first receive zero-network checks from fresh cached data: available traded volume, price, measured spread and gap. Missing fields remain unverified.
+2. IBKR discovery and source-status checks run concurrently. Up to 50 discovered stocks first receive zero-network checks from fresh cached data: available traded volume, price and measured spread. Gap waits for dated prior-session evidence; an undated quote close never eliminates a stock. Missing fields remain unverified.
 3. Quote acquisition uses six concurrent workers, not one stock at a time. Cached checks are repeated on acquired data. Snapshot reads return as soon as complete fresh bid/ask/trade fields arrive, rather than waiting for IB's roughly 11-second snapshot-end notification. Browser quote waiting and repeated per-symbol retry sleeps have been removed.
 4. Survivors get contract/session/history verification: three concurrent jobs, two parallel history requests per job, and 350ms start spacing rather than three seconds. Scan history is one day of minute bars plus one month of daily bars. This checks observed PM volume and the previous RTH close separately from total volume. The pinned adapter's throttling and IB's soft history limits remain.
 5. Float is requested last for verified survivors, three at once. Finalists receive concurrent quote refresh; old verification evidence is refreshed if needed before publication.
@@ -59,7 +69,7 @@ If no cards appear, open **Screening diagnostics / rejections**. Numeric rejecti
 - Inspect the Daily chart and check **Daily overhead resistance / room reviewed** only when you have assessed it.
 - Use **Open this company in trading** to assign it explicitly. In Trading, **Review confirmations & optional overrides** contains the same company/day reviews.
 
-The strategy button itself confirms your chart/setup review. Reading a headline or checking one box does not bypass missing prices, float, history, spread, window or risk constraints.
+The strategy button confirms chart/setup review for calculated entries. When assessments warn it opens your manual paper ticket rather than disabling trading. Reading a headline does not invent market data.
 
 ## 5. Charts and controls
 
@@ -74,7 +84,7 @@ Four saved layout presets:
 
 Each panel has company search/dropdown, timeframe and reset-view controls. Switch focus or 2×2 view; the active chart determines execution selection. Charts show observed IB bars, volume, EMA9/20 and SMA50/200. Missing indicator warmup is not fabricated. These are local canvas charts, not an embedded TWS window; live parity with TWS remains to be checked.
 
-- **1–5:** confirm/place that numbered strategy's calculated paper stop-limit entry, stop and target. The dropdown is not a second transmit step. Shortcuts are blocked while editing fields or in other app tabs/dialogs.
+- **1–5:** arm the calculated entry when ready, or open an explicit manual ticket when assessments warn. The dropdown is not a second transmit step. Shortcuts are blocked while editing fields or in other app tabs/dialogs.
 - **H:** toggle hovered-candle entry selection. The actual candle column supplies its high/low, independent of cursor Y-price. Outside the chart → AUTO. Strategy timeframe/session rules still apply; S5 cannot use a later candle.
 - **Q:** show/hide quick settings. Risk presets, target R, S1/S2 stop mode and breakeven are also available directly.
 - Shortcut bindings can be changed to unique supported Alt+letter/digit combinations.

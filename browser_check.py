@@ -129,7 +129,9 @@ def main():
             page.locator('[data-tab="guns"]').click()
             assert page.locator('#guns-workspace').count()==1
             page.locator('.guns-stage-nav [data-guns-stage="trade"]').click()
-            assert page.locator('[data-guns="arm"]').is_disabled()
+            assert page.locator('[data-guns="arm"]').is_enabled()
+            assert page.locator('[data-guns="manual"]').is_enabled()
+            assert page.evaluate('__paper.S.orders.length')==2
             assert page.evaluate('document.documentElement.scrollWidth<=window.innerWidth+1')
             page.reload(wait_until='domcontentloaded');page.wait_for_function('window.__paper && __paper.S.orders.length===2')
             result['functional_checks']='quotes, 500 positions, stable input, market/limit orders, stale/disconnect/delayed protection, persistence, settlement, export, mobile'
