@@ -9,6 +9,7 @@ This section supersedes older gap-filter and volume-ranking instructions below.
 - Scanner verification uses `/data/guns_verify?conid=...&comparison=false`: no prior-close daily history or calendar requests on this critical path. Charts retain their independent dated gap calculation. Default verification retains its detailed comparison for callers that need it.
 - Old hot-by-volume snapshots/acquisition caches are not relabeled as gainers; Scan now obtains a fresh provider list. Cards show provider rank and acquisition time.
 - No new key, cloud deployment or real orders. Python, one IB owner loop, read-only Gateway and browser `paperAccount` remain unchanged. Pull updates, restart Python and reload http://localhost:8765, then click Scan now.
+- Verification: **72 Python + 77 JavaScript tests passed (149 total)**; both complete browser suites passed with zero browser errors. Includes provider ranks without prior-close evidence, reserve promotion/quick-load, and automatic S1/S2/S3 previews at 09:20 with no price/size inputs, premarket no-fill, regular-open fill and saved SL/TP exits.
 - Live Gateway scan latency/entitlement acceptance is not established by offline regression tests.
 
 
