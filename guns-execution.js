@@ -10,7 +10,7 @@ return function(a){
   const pending=()=>state().orders.filter(o=>o.status==='working'&&o.guns?.role==='entry');
   const exposure=()=>book().active.length>0||pending().length>0;
   const fresh=()=>state().positions.every(p=>!p.qty||a.ready(p.conid));
-  function sizing(p,inst){const acc=a.account();return C.size(acc.netLiq,Number(cfg().riskPct),p.limit,p.stop,Math.max(0,acc.bp),n=>a.commission(inst,n,p.limit,'BUY')+a.commission(inst,n,p.stop,'SELL'));}
+  function sizing(p,inst,price=p.limit){const acc=a.account();return C.size(acc.netLiq,Number(cfg().riskPct),price,p.stop,Math.max(0,acc.bp),n=>a.commission(inst,n,price,'BUY')+a.commission(inst,n,p.stop,'SELL'));}
   function issues(p,inst){const out=[...(p?.errors||['No valid plan'])];if(!inst?.conid||inst.secType!=='STK')out.push('Select a verified stock');if(!a.usingTws()||!a.ready(inst?.conid))out.push('Fresh LIVE Gateway quote required');if(!fresh())out.push('Every held position must have a fresh mark');if(!sizing(p||{},inst).qty)out.push('Risk / buying power permits no whole shares');if(book().active.length+pending().length>=2)out.push('Two pending/open GUNS trades maximum');if(inst&&(a.position(inst.conid)?.qty||state().orders.some(o=>o.status==='working'&&(o.conid===inst.conid||o.legs?.some(l=>l.conid===inst.conid)))))out.push('Symbol already has a position or working order');return out;}
   function orderIssues(p,inst){
     const out=[...(p?.calculationErrors||[])],now=a.now();
@@ -77,30 +77,80 @@ return function(a){
     const last=Object.hasOwn(q,'tradeLast')?q.tradeLast:q.last;
     if(!o.guns.confirmedPlan||!o.triggered){if(!Number.isFinite(last)||last<o.stop)return false;if(o.guns.confirmedPlan){o.triggered=true;a.save();}}
     if(q.ask>o.limit)return o.guns.confirmedPlan?false:cancel(o,'No chase: ask exceeded stop-limit cap');
-    const count=Math.min(r.qty,Math.floor(q.askSize||0));if(count<=0)return false;
-    const price=a.marketPrice(o,'BUY',count);if(!Number.isFinite(price)||price>o.limit||price<=p.stop||(o.guns.confirmedPlan&&price>=p.target))return false;
-    o.guns.plannedQty=r.qty;o.guns.cancelledQty=r.qty-count;o.qty=count;o.guns.rewardR=Number(cfg().rewardR);o.guns.breakeven=!!cfg().breakeven;o.triggered=true;
+    // Full risk-sized paper simulation: displayed size is evidence, not a silent order-size cap.
+    const full=!!o.guns.confirmedPlan;
+    if(!(q.askSize>0))return false;
+    const price=full?q.ask:a.marketPrice(o,'BUY',Math.min(r.qty,Math.floor(q.askSize)));
+    if(!Number.isFinite(price)||price>o.limit||price<=p.stop||(full&&price>=p.target))return false;
+    const filledSize=full?sizing(p,o,price):r,count=full?filledSize.qty:Math.min(r.qty,Math.floor(q.askSize));if(!Number.isSafeInteger(count)||count<=0)return false;
+    o.guns.plannedQty=filledSize.qty;o.guns.cancelledQty=full?0:r.qty-count;o.qty=count;o.guns.rewardR=Number(cfg().rewardR);o.guns.breakeven=!!cfg().breakeven;o.triggered=true;
+    o.guns.fillModel=full?'RISK_SIZED_PAPER':'DISPLAYED_SIZE_PAPER';o.guns.riskPctAtFill=Number(cfg().riskPct);o.guns.budgetAtFill=filledSize.budget;o.guns.fundedRisk=count*(price-p.stop);o.guns.displayedAskSize=q.askSize;
     a.fill(o,count,price);a.save();return true;
   }
   function after(o,n,price,oldQty,newQty,realized,fee){const b=book(),now=a.now();if(o.guns?.role==='entry'&&o.side==='BUY'){
     const p=o.guns.plan,initialR=price-p.stop;
-    b.active.push({id:o.id,inst:{conid:o.conid,symbol:o.symbol,secType:'STK',mult:1,exch:'SMART',brokerId:true},entry:price,qty:n,originalQty:n,stop:p.stop,originalStop:p.stop,target:o.guns.userOverride||o.guns.confirmedPlan?p.target:C.round(price+initialR*o.guns.rewardR,p.tick,true),initialR,breakeven:o.guns.breakeven,sessionEnd:p.session.end,openedAt:now,setup:p.setup,version:C.VERSION,plan:p,notes:o.guns.notes,equityAtFill:o.guns.equityAtFill,budgetAtFill:o.guns.budgetAtFill,fees:fee,maxBid:price,minBid:price,userOverride:!!o.guns.userOverride,priceSource:o.priceSource||'IB_OBSERVED',events:[{at:now,type:'ENTRY',price,qty:n,priceSource:o.priceSource||'IB_OBSERVED'}]});
+    b.active.push({id:o.id,inst:{conid:o.conid,symbol:o.symbol,secType:'STK',mult:1,exch:'SMART',brokerId:true},entry:price,qty:n,originalQty:n,stop:p.stop,originalStop:p.stop,target:o.guns.userOverride||o.guns.confirmedPlan?p.target:C.round(price+initialR*o.guns.rewardR,p.tick,true),initialR,breakeven:o.guns.breakeven,sessionEnd:p.session.end,openedAt:now,setup:p.setup,version:C.VERSION,plan:p,notes:o.guns.notes,equityAtFill:o.guns.equityAtFill,budgetAtFill:o.guns.budgetAtFill,fillModel:o.guns.fillModel||'DISPLAYED_SIZE_PAPER',riskPctAtFill:o.guns.riskPctAtFill,fundedRisk:initialR*n,fees:fee,maxBid:price,minBid:price,userOverride:!!o.guns.userOverride,priceSource:o.priceSource||'IB_OBSERVED',events:[{at:now,type:'ENTRY',price,qty:n,priceSource:o.priceSource||'IB_OBSERVED'}]});
   }else if(o.side==='SELL'){
     const matches=b.active.filter(x=>x.inst.conid===o.conid).sort((x,y)=>Number(y.id===o.guns?.parentId)-Number(x.id===o.guns?.parentId));let remaining=n;
     for(const x of matches){const sold=Math.min(x.qty,remaining);if(!sold)continue;remaining-=sold;x.qty-=sold;x.fees+=fee*sold/n;x.events.push({at:now,type:o.guns?.reason||'MANUAL EXIT',price,qty:sold,priceSource:o.priceSource||'IB_OBSERVED'});
-      if(x.qty===0){x.closedAt=now;x.net=x.events.filter(e=>e.type!=='ENTRY'&&e.qty).reduce((v,e)=>v+(e.price-x.entry)*e.qty,0)-x.fees;x.actualR=x.net/(x.initialR*x.originalQty);b.active=b.active.filter(y=>y!==x);b.journal.unshift(x);}}
+      if(x.qty===0){x.closedAt=now;x.net=x.events.filter(e=>e.type!=='ENTRY'&&e.qty).reduce((v,e)=>v+(e.price-x.entry)*e.qty,0)-x.fees;x.actualR=riskStats(x).budgetR;b.active=b.active.filter(y=>y!==x);b.journal.unshift(x);}}
     if(newQty===0)state().orders.forEach(other=>{if(other.status==='working'&&other.conid===o.conid&&other.side==='SELL')cancel(other,'Position flat; sibling exit cancelled');});
   }}
   function manage(cid){let changed=false;for(const b of [...book().active]){if(cid!=null&&b.inst.conid!==cid)continue;if(!a.usingTws()||!a.ready(b.inst.conid))continue;const q=a.quotes()[b.inst.conid];if(!(q.bid>0))continue;if(q.bid>b.maxBid||q.bid<b.minBid)changed=true;b.maxBid=Math.max(b.maxBid,q.bid);b.minBid=Math.min(b.minBid,q.bid);const decision=C.exit(b,q,a.now());if(decision.stop!==b.stop){b.stop=decision.stop;b.events.push({at:a.now(),type:'BREAKEVEN',price:b.stop});changed=true;}
     if(!decision.reason)continue;if(decision.reason==='STOP'&&!b.stopTriggered){b.stopTriggered=true;changed=true;b.events.push({at:a.now(),type:'STOP TRIGGER',price:q.bid});}
-    const held=a.position(b.inst.conid)?.qty||0,n=Math.min(b.qty,held,Math.floor(q.bidSize||0)),tick=q.receivedAt||q.at;
+    const held=a.position(b.inst.conid)?.qty||0,n=b.fillModel==='RISK_SIZED_PAPER'?(q.bidSize>0?Math.min(b.qty,held):0):Math.min(b.qty,held,Math.floor(q.bidSize||0)),tick=q.receivedAt||q.at;
     if(n<=0||b.lastExitTick===tick)continue;
-    const price=a.marketPrice(b.inst,'SELL',n);if(!Number.isFinite(price)||price<=0||(decision.reason==='TARGET'&&price<b.target))continue;
+    const price=b.fillModel==='RISK_SIZED_PAPER'?(decision.reason==='TARGET'?b.target:q.bid):a.marketPrice(b.inst,'SELL',n);if(!Number.isFinite(price)||price<=0||(decision.reason==='TARGET'&&price<b.target))continue;
     b.lastExitTick=tick;const o={...b.inst,id:a.uid(),ts:a.now(),day:a.today(),side:'SELL',qty:n,filledQty:0,type:'MKT',tif:'DAY',status:'working',commission:0,guns:{role:'exit',parentId:b.id,reason:decision.reason}};
     state().orders.push(o);a.fill(o,n,price);changed=true;
   }if(changed)a.save();return changed;}
+  function riskStats(b){
+    const perShare=Number.isFinite(b.entry)&&Number.isFinite(b.originalStop)?b.entry-b.originalStop:b.initialR;
+    const funded=perShare*b.originalQty,budget=Number.isFinite(b.correction?.riskBudget)?b.correction.riskBudget:Number.isFinite(b.budgetAtFill)&&b.budgetAtFill>0?b.budgetAtFill:null;
+    return {perShare,funded,budget,budgetR:budget?b.net/budget:null,positionR:funded>0?b.net/funded:null,stopBudgetR:budget?funded/budget:null};
+  }
+  function correctionPreview(id,spec){
+    const b=book().journal.find(x=>x.id===id),errors=[];
+    if(!b||b.qty!==0||!Number.isFinite(b.net))return {errors:['Select a closed trade with a valid recorded result']};
+    if(spec.bookId!==state().bookId)errors.push('Portfolio changed; reopen the correction');
+    if(Number(spec.revision)!==(b.corrections?.length||0))errors.push('Journal changed; reopen the correction');
+    const price=Number(spec.exitPrice),budget=Number(spec.riskBudget),risk=riskStats(b).perShare,mode=spec.mode;
+    if(!['budget','shares'].includes(mode)||!Number.isFinite(price)||price<=b.entry||!Number.isFinite(risk)||risk<=0)errors.push('TP must be above entry and original stop must be below entry');
+    if(!Number.isFinite(budget)||budget<=0)errors.push('Enter the original dollar risk budget (1R)');
+    if(!String(spec.reason||'').trim())errors.push('A correction reason is required');
+    const targetR=(price-b.entry)/risk,net=Math.round((mode==='budget'?budget*targetR:(price-b.entry)*b.originalQty-b.fees)*100)/100,delta=net-b.net;
+    if(![targetR,net,delta,state().cash,state().realized,state().cash+delta,state().realized+delta].every(Number.isFinite))errors.push('Invalid correction accounting');
+    return {errors,b,price,riskBudget:budget,targetR,net,delta,mode};
+  }
+  function correctJournal(id,spec){
+    const p=correctionPreview(id,spec);if(p.errors.length)return p;
+    const b=p.b,s=state(),now=a.now(),before=b.net;
+    const item={id:a.uid(),at:now,bookId:s.bookId,journalId:id,source:'USER_JOURNAL_CORRECTION',outcome:'TARGET',mode:p.mode,exitPrice:p.price,riskBudget:p.riskBudget,targetR:p.targetR,previousNet:before,net:p.net,delta:p.delta,reason:String(spec.reason).trim()};
+    if(!b.originalRecord)b.originalRecord=JSON.parse(JSON.stringify(b));
+    b.corrections=b.corrections||[];b.corrections.push(item);b.correction=item;b.net=p.net;b.actualR=p.net/p.riskBudget;
+    s.cash=Math.round((s.cash+p.delta)*1e6)/1e6;s.realized+=p.delta;
+    s.trades=s.trades||[];s.trades.unshift({id:item.id,ts:now,orderId:id,symbol:b.inst.symbol,conid:b.inst.conid,secType:'STK',side:'ADJUST',qty:0,price:p.price,commission:0,realized:p.delta,cashAfter:s.cash,mult:1,priceSource:item.source,combo:'Journal TP correction ('+p.mode+')',correction:item});
+    s.log=s.log||[];s.log.unshift({ts:now,text:b.inst.symbol+' manual journal TP correction: '+before.toFixed(2)+' → '+p.net.toFixed(2)+'; account delta '+p.delta.toFixed(2)});
+    a.snapshot?.();a.save();return {errors:[],correction:item};
+  }
+  function migrateRisk(){
+    const data=g();if(data.riskAccountingVersion===2)return;
+    data.config.breakeven=false;
+    for(const b of Object.values(data.books)){
+      for(const x of b.active||[]){x.breakeven=false;
+        if(x.stop===x.entry&&x.originalStop<x.entry&&(x.events||[]).some(e=>e.type==='BREAKEVEN')){
+          const trigger=(x.events||[]).filter(e=>e.type==='STOP TRIGGER').at(-1);
+          x.stop=x.originalStop;if(x.stopTriggered&&trigger?.price>x.originalStop)x.stopTriggered=false;
+          x.events.push({at:a.now(),type:'BREAKEVEN DISABLED',price:x.stop,detail:'Restored original SL by requested migration'});
+        }
+      }
+      for(const x of b.journal||[]){if(x.legacyPositionR===undefined)x.legacyPositionR=x.actualR;x.actualR=riskStats(x).budgetR;}
+    }
+    data.riskAccountingVersion=2;
+  }
+  migrateRisk();
   function pulse(){book().active.forEach(b=>depthGuard(b,true));manage();pending().forEach(fill);}
   function flatten(id){const b=book().active.find(x=>x.id===id);if(b){b.forceExit=true;a.save();manage(b.inst.conid);}}
-  return {state,cfg,g,book,pending,fresh,sizing,issues,orderIssues,arm,manualTrade,guard,fill,after,manage,pulse,flatten,exposure,depthItems,updateDepth,depthGuard,depthDecision};
+  return {state,cfg,g,book,pending,fresh,sizing,riskStats,correctionPreview,correctJournal,issues,orderIssues,arm,manualTrade,guard,fill,after,manage,pulse,flatten,exposure,depthItems,updateDepth,depthGuard,depthDecision};
 };
 });

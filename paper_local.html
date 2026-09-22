@@ -3376,7 +3376,7 @@ function connect(){
 if(window.GunsUI)guns=window.GunsUI.create({
   state:function(){return S;},quotes:function(){return Q;},account:function(){return acct();},
   position:posOf,ready:quoteReady,usingTws:usingTws,now:Date.now,uid:uid,today:today,
-  commission:commission,marketPrice:marketablePrice,fill:applyFill,save:save,sync:syncSubs,
+  commission:commission,marketPrice:marketablePrice,fill:applyFill,save:save,sync:syncSubs,snapshot:function(){snapshotEquity(true);},
   render:render,tab:function(){return tab;},esc:esc,px:px,money:money,cancel:cancelOrder
 });
 render();

@@ -1,6 +1,6 @@
 /* Pure GUNS rules and risk calculations; no broker order APIs. */
 (function(root,f){if(typeof module==='object'&&module.exports)module.exports=f();else root.Guns=f();})(globalThis,function(){'use strict';
-const VERSION='guns-1.5',defaults={riskPct:1,rewardR:2,maxSpread:.05,minVolume:30000,breakeven:true,atrPeriod:14,stopMode:'ATR',fixedStop:.2,hoverCandle:false,autoFrame:true,floatMode:'strict',maxFloat:100000000,openFrame:false,autoCharts:true,l2Enabled:true,l2AutoCancel:false,l2AskRatio:3,l2WallRatio:4};
+const VERSION='guns-1.5',defaults={riskPct:1,rewardR:2,maxSpread:.05,minVolume:30000,breakeven:false,atrPeriod:14,stopMode:'ATR',fixedStop:.2,hoverCandle:false,autoFrame:true,floatMode:'strict',maxFloat:100000000,openFrame:false,autoCharts:true,l2Enabled:true,l2AutoCancel:false,l2AskRatio:3,l2WallRatio:4};
 const names={1:'Premarket high breakout',2:'Premarket pivot',3:'Premarket bull flag',4:'First opening bull flag',5:'First bullish minute'};
 // Reviewed against the preserved Adam course notes; qualitative decisions remain human.
 const rules=[
