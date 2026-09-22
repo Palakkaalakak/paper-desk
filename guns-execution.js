@@ -146,7 +146,7 @@ return function(a){
       }
       for(const x of b.journal||[]){if(x.legacyPositionR===undefined)x.legacyPositionR=x.actualR;x.actualR=riskStats(x).budgetR;}
     }
-    data.riskAccountingVersion=2;
+    data.riskAccountingVersion=2;a.save();
   }
   migrateRisk();
   function pulse(){book().active.forEach(b=>depthGuard(b,true));manage();pending().forEach(fill);}
