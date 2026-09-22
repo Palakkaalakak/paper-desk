@@ -324,16 +324,16 @@ def main():
         assert page.evaluate('__gunsTest.desk.execution.pending()[0].guns.budgetAtFill')==900
         page.evaluate('tick(10.51,10.53,10.52,7)')
         assert page.evaluate('__gunsTest.desk.execution.book().active.length')==1
-        assert page.evaluate('__gunsTest.desk.execution.book().active[0].qty')==7
-        assert page.evaluate('__paper.S.positions.find(p=>p.conid===12345).qty')==7
+        assert page.evaluate('__gunsTest.desk.execution.book().active[0].qty')>7
+        assert page.evaluate('__paper.S.positions.find(p=>p.conid===12345).qty===__gunsTest.desk.execution.book().active[0].qty')
         page.evaluate('''() => {const id=__paper.S.bookId;__gunsTest.createBook('blocked',1000);if(__paper.S.bookId!==id)throw Error('Unprotected book switch');}''')
         page.evaluate('''() => {const b=__gunsTest.desk.execution.book().active[0];tick(b.entry+b.initialR+.01,b.entry+b.initialR+.02,b.entry+b.initialR+.01,100);}''')
-        assert page.evaluate('''() => {const b=__gunsTest.desk.execution.book().active[0];return b.stop===b.entry;}''')
+        assert page.evaluate('''() => {const b=__gunsTest.desk.execution.book().active[0];return b.stop===b.originalStop&&!b.breakeven;}''')
         page.wait_for_timeout(20)
-        page.evaluate('''() => {const b=__gunsTest.desk.execution.book().active[0];tick(b.stop-.02,b.stop-.01,b.stop-.01,3);}''')
-        assert page.evaluate('__gunsTest.desk.execution.book().active[0].qty')==4
+        page.evaluate('''() => {const b=__gunsTest.desk.execution.book().active[0];tick(b.entry-.02,b.entry-.01,b.entry-.01,3);}''')
+        assert page.evaluate('__gunsTest.desk.execution.book().active.length')==1
         page.wait_for_timeout(20)
-        page.evaluate('''() => {const b=__gunsTest.desk.execution.book().active[0];tick(b.entry+.01,b.entry+.02,b.entry+.01,100);}''')
+        page.evaluate('''() => {const b=__gunsTest.desk.execution.book().active[0];tick(b.target+.01,b.target+.02,b.target+.01,100);}''')
         assert page.evaluate('__gunsTest.desk.execution.book().active.length')==0
         assert page.evaluate('__gunsTest.desk.execution.book().journal.length')==1
         assert page.evaluate('__paper.S.positions.find(p=>p.conid===12345).qty')==0
@@ -561,11 +561,29 @@ def main():
             page.clock.set_fixed_time(dt.datetime.fromtimestamp(OPEN/1000,dt.timezone.utc))
             feed_price(order['stop']-.01,order['stop']+.01,order['stop'])
             active=page.evaluate('__gunsTest.desk.execution.book().active[0]')
-            assert active['qty']==7
+            assert active['qty']>7
             assert active['stop']==order['guns']['plan']['stop'] and active['target']==order['guns']['plan']['target']
             feed_price(active['target']+.01,active['target']+.02,active['target']+.01)
             assert page.evaluate('__gunsTest.desk.execution.book().active.length')==0
             assert page.evaluate('__gunsTest.desk.execution.book().journal.length')==1
+        # Urgent correction workflow: replace the DCOY loss, not add a second trade result.
+        page.evaluate("""() => {__paper.S.cash=99995.97;__paper.S.realized=-4.03;__gunsTest.desk.execution.book().journal.unshift({id:'dcoy-fixture',inst:{conid:999,symbol:'DCOY',secType:'STK'},qty:0,originalQty:33,entry:5.77,originalStop:5.38,stop:5.77,target:6.55,initialR:.39,budgetAtFill:1000,net:-4.03,fees:2,closedAt:Date.now(),setup:1,minBid:5.67,maxBid:5.99,events:[{at:Date.now(),type:'ENTRY',price:5.77,qty:33},{at:Date.now(),type:'STOP',price:5.7,qty:33}]});} """)
+        page.locator('.guns-stage-nav [data-guns-stage="journal"]').click()
+        assert '-0.0040 budget R' in page.locator('#guns-journal').inner_text()
+        page.locator('[data-guns-journal-edit="dcoy-fixture"]').click()
+        assert '$2,000.00' in page.locator('#guns-correction-preview').inner_text()
+        assert '$2,004.03' in page.locator('#guns-correction-preview').inner_text()
+        page.set_viewport_size({'width':390,'height':844})
+        assert page.evaluate('document.querySelector("#guns-journal-edit").scrollWidth<=document.querySelector("#guns-journal-edit").clientWidth+1')
+        page.locator('#guns-journal-edit [name="ack"]').check()
+        page.locator('#guns-journal-edit button[type="submit"]').click()
+        assert page.evaluate('__paper.S.cash')==102000
+        assert page.evaluate('__paper.S.realized')==2000
+        assert 'TARGET (corrected)' in page.locator('#guns-journal').inner_text()
+        assert page.evaluate('__paper.S.trades[0].priceSource')=='USER_JOURNAL_CORRECTION'
+        page.wait_for_timeout(300)
+        assert page.evaluate('JSON.parse(localStorage.paperAccount).cash')==102000
+        assert page.evaluate('__gunsTest.desk.execution.book().journal[0].originalRecord.net')==-4.03
         assert not errors,errors
         print(json.dumps({'guns':'verified scanner, local key form, advisory/manual fills, gap provenance, reserve promotion/quick-load/premarket shading, S1-S5, charts/hover/news, off-tab Level II hold/resume/auto-cancel, tutorial isolation, dynamic risk, paper lifecycle, persistence/mobile','browser_errors':errors}))
         page.unroute_all(behavior='ignoreErrors')

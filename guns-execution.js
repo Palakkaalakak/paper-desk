@@ -127,7 +127,7 @@ return function(a){
     const b=p.b,s=state(),now=a.now(),before=b.net;
     const item={id:a.uid(),at:now,bookId:s.bookId,journalId:id,source:'USER_JOURNAL_CORRECTION',outcome:'TARGET',mode:p.mode,exitPrice:p.price,riskBudget:p.riskBudget,targetR:p.targetR,previousNet:before,net:p.net,delta:p.delta,reason:String(spec.reason).trim()};
     if(!b.originalRecord)b.originalRecord=JSON.parse(JSON.stringify(b));
-    b.corrections=b.corrections||[];b.corrections.push(item);b.correction=item;b.net=p.net;b.actualR=p.net/p.riskBudget;
+    b.corrections=b.corrections||[];b.corrections.push(item);b.correction=item;b.outcome='TARGET';b.net=p.net;b.actualR=p.net/p.riskBudget;
     s.cash=Math.round((s.cash+p.delta)*1e6)/1e6;s.realized+=p.delta;
     s.trades=s.trades||[];s.trades.unshift({id:item.id,ts:now,orderId:id,symbol:b.inst.symbol,conid:b.inst.conid,secType:'STK',side:'ADJUST',qty:0,price:p.price,commission:0,realized:p.delta,cashAfter:s.cash,mult:1,priceSource:item.source,combo:'Journal TP correction ('+p.mode+')',correction:item});
     s.log=s.log||[];s.log.unshift({ts:now,text:b.inst.symbol+' manual journal TP correction: '+before.toFixed(2)+' → '+p.net.toFixed(2)+'; account delta '+p.delta.toFixed(2)});
