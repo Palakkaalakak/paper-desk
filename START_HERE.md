@@ -1,5 +1,18 @@
 # Paper Desk — local startup and GUNS user guide
 
+## Urgent risk / journal correction update
+
+This section supersedes older default-breakeven and partial-fill instructions.
+- Breakeven-at-1R defaults OFF. A one-time migration disables the old saved setting and active-bracket breakeven, restoring an original stop that had moved solely because of breakeven. Actual original-stop triggers are not erased. Future explicit opt-in remains possible.
+- Confirmed GUNS orders use **RISK_SIZED_PAPER**: whole shares sized from current equity/risk %, actual executable ask, original stop, fees and buying power. They no longer silently cap the entire entry at the first displayed ask size and cancel the remainder. This is an explicit full-size paper simulation, not a real liquidity guarantee. Positive live quote/size and entry limit remain required. TP exits fill at the saved target once executable bid reaches it; stops can slip on gaps. Legacy non-confirmed execution retains its older model.
+- Original entry-to-SL distance defines 1 price R. The journal now uses **budget R = net P&L / original dollar risk budget**, and shows that budget, original quantity, funded position risk, stop, TP and exit reason. At a $1,000 budget, -$4.03 is -0.00403 budget R, not -0.31 budget R. Whole shares, fees, buying-power limits and gaps can prevent an exact +/-1 budget R outcome.
+- **GUNS → Journal → Correct / edit TP outcome** replaces the active journal result and adjusts current paper cash, realized P&L, equity snapshot and account history by the difference. Choose Full risk budget for a normalized net TP result or Original filled shares for quantity-based profit minus original fees. Original fills/events are retained only as audit history, not counted as another journal result. Repeated submissions/reloads cannot credit the same revision twice.
+- DCOY example: entry 5.77, original SL 5.38, TP 6.55, 1R budget $1,000. Full risk budget correction sets **+$2,000 / +2R**, replacing -$4.03, and adds **$2,004.03** to current paper cash and realized P&L. This adjustment is applied only when you confirm it in the browser holding your paper account; source updates cannot directly edit another computer's localStorage.
+- Pull main, restart Python, reload http://localhost:8765 and confirm the correction on the intended portfolio. No broker orders or cloud storage were added.
+- Verified: **72 Python + 81 JavaScript tests**, plus both complete browser suites passed with zero browser errors, including the DCOY correction, account reconciliation, saved audit, mobile dialog and S1-S3 lifecycle.
+- Deferred until after this urgent completion report: portfolio GUNS/Trading/Custom modes, Trading timeframe ATR order setup, strategy tags, configurable 1-30 minute post-trade tracking and expanded general journaling. No work on those has started.
+
+
 ## Current scanner source — IBKR Top % Gainers
 
 This section supersedes older gap-filter and volume-ranking instructions below.
