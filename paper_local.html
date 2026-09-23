@@ -932,6 +932,10 @@ function buildDoc(){
 var BOOK_FIELDS = ['account','cash','realized','lastDay','positions','orders',
                    'trades','cashflows','equity','watchlist','log'];
 
+function bookMode(account){
+  var mode = (account || S.account || {}).mode;
+  return ['GUNS','Trading','Custom'].indexOf(mode)>=0 ? mode : 'GUNS';
+}
 function bookSnap(){
   var o = {};
   for(var i=0;i<BOOK_FIELDS.length;i++) o[BOOK_FIELDS[i]] = S[BOOK_FIELDS[i]];
@@ -949,6 +953,13 @@ function bookInit(){
     S.bookId = 'b1';
   }
   if(!bookOf(S.bookId)) S.bookId = S.books[0].id;
+  // Existing books keep the original GUNS workflow; never reset their money/history.
+  S.account.mode = bookMode(S.account);
+  S.books.forEach(function(b){
+    b.data = b.data || {};
+    b.data.account = b.data.account || {name:b.name, type:'margin', currency:'USD'};
+    b.data.account.mode = bookMode(b.data.account);
+  });
 }
 function bookOf(id){
   for(var i=0;i<S.books.length;i++) if(S.books[i].id===id) return S.books[i];
@@ -977,13 +988,13 @@ function bookSwitch(id){
   save(); render();
   setStatus('switched to '+b.name);
 }
-function bookCreate(name, start){
+function bookCreate(name, start, mode){
   if(guns && guns.execution.exposure()){ warn('Resolve GUNS exposure before creating another portfolio.'); return; }
   start = isFinite(start) ? start : 100000;
   var now = Date.now();
   var id = bookNewId();
   S.books.push({id:id, name:name || ('Portfolio '+(S.books.length+1)), data:{
-    account:{name:name||'Paper Desk', type:(S.account&&S.account.type)||'margin', currency:'USD'},
+    account:{name:name||'Paper Desk', type:(S.account&&S.account.type)||'margin', currency:'USD', mode:bookMode({mode:mode})},
     cash:start, realized:0, lastDay:'', positions:[], orders:[], trades:[],
     cashflows:[{ts:now, amount:start, note:'opening balance'}],
     equity:[{ts:now, equity:start, cash:start}],
@@ -2476,16 +2487,16 @@ function renderStats(){
   $('acctName').textContent = S.account.name;
   var bsel = $('bookSel');
   if(bsel){
-    var want = S.books.map(function(b){ return b.id+':'+b.name; }).join('|')+'#'+S.bookId;
+    var want = S.books.map(function(b){ return b.id+':'+b.name+':'+bookMode(b.data.account); }).join('|')+'#'+S.bookId;
     if(bsel.getAttribute('data-sig') !== want){
       bsel.innerHTML = S.books.map(function(b){
-        return '<option value="'+esc(b.id)+'"'+(b.id===S.bookId?' selected':'')+'>'+esc(b.name)+'</option>';
+        return '<option value="'+esc(b.id)+'"'+(b.id===S.bookId?' selected':'')+'>'+esc(b.name)+' · '+esc(bookMode(b.data.account))+'</option>';
       }).join('');
       bsel.setAttribute('data-sig', want);
     }
-    bsel.style.display = S.books.length>1 ? '' : 'none';
+    bsel.style.display = '';
   }
-  $('acctSub').textContent = S.account.type.toUpperCase()+' paper account'+(S.settings.allowShort?' · shorting on':'')+' · slippage '+S.settings.slippageBps+'bps';
+  $('acctSub').textContent = bookMode()+' · '+S.account.type.toUpperCase()+' paper account'+(S.settings.allowShort?' · shorting on':'')+' · slippage '+S.settings.slippageBps+'bps';
 }
 function updateTradeButtons(){
   var ready=!!sel&&quoteReady(sel.conid)&&!(sel.expiry&&sel.expiry<ymd());
@@ -2828,7 +2839,7 @@ function bookPanel(){
     var pl = nl - start;
     return '<tr'+(b.id===S.bookId?' style="background:var(--accent2)"':'')+'>'
      +'<td class="l">'+(b.id===S.bookId?'<b>'+esc(b.name)+'</b> <span class="pill">active</span>':esc(b.name))+'</td>'
-     +'<td>'+money(d.cash||0)+'</td>'
+     +'<td>'+esc(bookMode(d.account))+'</td><td>'+money(d.cash||0)+'</td>'
      +'<td>'+money(nl)+'</td>'
      +'<td class="'+(pl>=0?'up':'dn')+'">'+money(pl)+'</td>'
      +'<td>'+pos+'</td><td>'+live+'</td>'
@@ -2842,11 +2853,12 @@ function bookPanel(){
    +'<div class="note">Each portfolio is a separate account: its own cash, positions, orders, fills, cash flow and history. '
    +'Nothing crosses between them. Your data source, API keys, fee schedule and margin settings are shared, so switching does not make you set anything up again.</div>'
    +'<div class="tblwrap" style="margin-top:8px"><table style="min-width:600px"><thead><tr>'
-   +'<th class="l">Portfolio</th><th>Cash</th><th>Net liq</th><th>P&amp;L</th><th>Positions</th><th>Working</th><th></th>'
+   +'<th class="l">Portfolio</th><th>Mode</th><th>Cash</th><th>Net liq</th><th>P&amp;L</th><th>Positions</th><th>Working</th><th></th>'
    +'</tr></thead><tbody>'+rows+'</tbody></table></div>'
    +'<div class="row" style="margin-top:10px">'
    +'<div class="grow"><label>New portfolio name</label><input id="bkName" placeholder="Growth book"></div>'
    +'<div class="grow"><label>Starting cash</label><input id="bkCash" class="num" value="1000000"></div>'
+   +'<div class="grow"><label>Portfolio mode</label><select id="bkMode"><option>GUNS</option><option>Trading</option><option>Custom</option></select></div>'
    +'<button class="mini" id="bkAdd">Create portfolio</button></div>'
    +'<div class="note" style="margin-top:6px">A new portfolio starts flat with the cash you name here and becomes the active one.</div>'
    +'</div>';
@@ -3115,6 +3127,11 @@ document.addEventListener('click', function(e){
     var li=Number(t.getAttribute('data-side')); var lg=S.builder.legs[li];
     if(lg){ lg.side = lg.side==='BUY'?'SELL':'BUY'; render(); } return; }
   if(t.hasAttribute&&t.hasAttribute('data-rmleg')){ S.builder.legs.splice(Number(t.getAttribute('data-rmleg')),1); render(); return; }
+  if(id==='bkAdd'){
+    var initial=Number($('bkCash').value);
+    if(!$('bkCash').value.trim() || !Number.isFinite(initial) || initial<=0){warn('Starting cash must be a positive finite amount.');return;}
+    bookCreate($('bkName').value.trim(),initial,$('bkMode').value);return;
+  }
   if(id==='chainToggle'){
     S.chainOpen=!S.chainOpen;
     if(S.chainOpen && sel){ if(PARAMS[sel.conid] && S.builder.underConid===sel.conid){ render(); if(!CH[S.builder.expId]) loadStrikes(); } else loadChainFor(sel); }
