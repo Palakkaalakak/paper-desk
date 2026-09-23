@@ -2750,7 +2750,7 @@ function viewTrade(){
   +'<div class="grow"><label>Quantity</label><input id="oQty" class="num" value="'+esc(TICKET.qty||(isUnder?'100':'1'))+'"></div>'
   +'<div class="grow"><label>Type</label><select id="oType">'+opts(['MKT','LMT','STP','STPLMT'],TICKET.type)+'</select></div>'
   +'<div class="grow"><label>Limit</label><input id="oLimit" class="num" placeholder="-" value="'+esc(TICKET.limit)+'"></div>'
-  +'<div class="grow"><label>Stop</label><input id="oStop" class="num" placeholder="-" value="'+esc(TICKET.stop)+'"></div>'
+  +'<div class="grow"><label>Order trigger (not bracket SL)</label><input id="oStop" class="num" placeholder="-" value="'+esc(TICKET.stop)+'"></div>'
   +'<div class="grow"><label>TIF</label><select id="oTif">'+opts(['DAY','GTC'],TICKET.tif)+'</select></div>'
   +'</div>'
   +'<div class="quick-controls"><span class="dim">QUANTITY</span>'+ (isUnder?[10,100,500,1000]:[1,5,10,25]).map(function(n){return '<button class="mini" data-quickqty="'+n+'">'+n+'</button>';}).join('')
@@ -2803,7 +2803,9 @@ function viewOrd(){
     var isC = o.type==='COMBO';
     var desc = isC
       ? (o.legs||[]).map(function(l){ return (l.side==='BUY'?'+':'-')+(l.ratio>1?l.ratio:'')+px(l.strike)+l.right; }).join(' ')
-      : o.type+(o.limit?(' @'+px(o.limit)):'')+(o.stop?(' stp '+px(o.stop)):'');
+      : o.type+(o.limit?(' limit '+px(o.limit)):'')+(o.stop?(' entry/stop trigger '+px(o.entryTrigger??o.stop)):'');
+    var plan=o.guns?.role==='entry'?o.guns.plan:o.desk?.role==='entry'?o.desk.plan:null;
+    if(plan)desc+=' | ENTRY '+px(plan.entry)+' | SL '+(plan.stop==null?'none':px(plan.stop))+' | TP '+(plan.target==null?'later':px(plan.target));
     if(isC) desc += o.limit!=null ? (' net '+(o.limit>=0?'dr ':'cr ')+money(Math.abs(o.limit))) : ' at market';
     return '<tr><td class="l">'+ts(o.ts)+'</td><td class="l"><b>'+esc(o.symbol)+'</b></td>'
      +'<td class="l '+(isC?'dim':(o.side==='BUY'?'up':'dn'))+'">'+(isC?'SPREAD':o.side)+'</td><td>'+qty(o.qty)+'</td>'

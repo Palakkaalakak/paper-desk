@@ -38,6 +38,16 @@ function studies(rows){return [average(rows,9,true),average(rows,20,true),averag
 function above(rows){return rows.length>=200&&studies(rows).every(s=>rows.at(-1).c>s.at(-1));}
 function atr(rows,n){if(rows.length<n+1)return null;let values=rows.slice(1).map((b,i)=>Math.max(b.h-b.l,Math.abs(b.h-rows[i].c),Math.abs(b.l-rows[i].c)));let v=values.slice(0,n).reduce((s,x)=>s+x,0)/n;values.slice(n).forEach(x=>v=(v*(n-1)+x)/n);return v;}
 function validBar(b){return b&&['o','h','l','c'].every(k=>finite(b[k])&&b[k]>0)&&b.h>=Math.max(b.o,b.c)&&b.l<=Math.min(b.o,b.c)&&b.h>=b.l;}
+// Select the wick HIGH of an actual minute bar in today's 04:00–regular-open window.
+// Include the observed forming PM bar, never a regular/overnight/future bar or close/quote.
+function premarketHigh(rows,session,now){
+ if(!session||!finite(session.start)||!finite(now)||day(session.start)!==day(now))return null;
+ const start=session.start-19800000;let high=null,count=0;
+ for(const b of rows||[]){if(!finite(b.t)||!validBar(b)||b.t<start||b.t>=session.start||b.t>now||day(b.t)!==day(now))continue;
+  count++;if(!high||b.h>high.h||(b.h===high.h&&b.t<high.t))high=b;
+ }
+ return high?{price:high.h,bar:{...high},start,end:session.start,observedBars:count,source:'premarket minute TRADES bar high'}:null;
+}
 function aggregate(rows,n){const groups=new Map();for(const b of rows){if(!finite(b.t)||!validBar(b))continue;const t=Math.floor(b.t/(n*60000))*n*60000;if(!groups.has(t))groups.set(t,[]);groups.get(t).push(b);}
  return [...groups].sort((a,b)=>a[0]-b[0]).map(([t,rs])=>{rs.sort((a,b)=>a.t-b.t);return {t,o:rs[0].o,h:Math.max(...rs.map(b=>b.h)),l:Math.min(...rs.map(b=>b.l)),c:rs.at(-1).c,v:rs.every(b=>finite(b.v)&&b.v>=0)?rs.reduce((v,b)=>v+b.v,0):null,complete:rs.length===n&&rs.every((b,i)=>b.t===t+i*60000),observedMinutes:rs.length};});
 }
@@ -45,7 +55,7 @@ function flag(rows){if(rows.length<2)return null;let i=rows.length-1;while(i>0&&
 // Shared numerical placement used by the desk and isolated candle tutorial.
 // This calculates levels; it does not approve chart quality or bypass execution guards.
 function placement(data,cfg,setup,human){cfg=Object.assign({},defaults,cfg);setup=Number(setup);
- const {pre=[],pre5=[],regular=[],tick,atr:a}=data,pmHigh=pre.length?Math.max(...pre.map(b=>b.h)):null;
+ const {pre=[],pre5=[],regular=[],tick,atr:a}=data,pmHigh=data.pmHighEvidence?.price??(pre.length?Math.max(...pre.map(b=>b.h)):null);
  let trigger=null,stop=setup<=2?null:undefined,pattern=null;
  if(setup===1)trigger=pmHigh;
  if(setup===2)for(let i=1;i<pre5.length-1;i++)if(pre5[i].h>=pre5[i-1].h&&pre5[i].h>pre5[i+1].h&&pre5[i].h<pmHigh)trigger=pre5[i].h;
@@ -72,7 +82,7 @@ function analyze(data,q,cfg,setup,notes,now){cfg=Object.assign({},defaults,cfg);
  const pre=closed.filter(b=>sess&&b.t>=sess.start-19800000&&b.t<sess.start),regular=closed.filter(b=>sess&&b.t>=sess.start&&b.t<sess.end);
  const preObserved=observed.filter(b=>sess&&b.t>=sess.start-19800000&&b.t<sess.start);
  const price=q&&Object.hasOwn(q,'tradeLast')?q.tradeLast:q?.last,tick=data.minTick;
- const pmHigh=preObserved.length?Math.max(...preObserved.map(b=>b.h)):null,volume=pre.length&&pre.every(b=>finite(b.v)&&b.v>=0)?pre.reduce((s,b)=>s+b.v,0):null,gapInfo=gapEvidence(q,data,now),gap=gapInfo.value;
+ const pmHighEvidence=premarketHigh(raw,sess,now),pmHigh=pmHighEvidence?.price??null,volume=pre.length&&pre.every(b=>finite(b.v)&&b.v>=0)?pre.reduce((s,b)=>s+b.v,0):null,gapInfo=gapEvidence(q,data,now),gap=gapInfo.value;
  const period=Math.max(2,Math.min(100,Number(cfg.atrPeriod)||14)),a=atr(closed,period),preAtr=atr(pre,period);
  check('Verified penny-or-finer tick',finite(tick)&&tick>0&&tick<=.01);
  check('Corporate common stock verified',data.stockType==='COMMON'||notes.common===true);
@@ -89,7 +99,7 @@ function analyze(data,q,cfg,setup,notes,now){cfg=Object.assign({},defaults,cfg);
   human=valid?{mode:'hover',candle:h.candle}:null;
  }
  if(cfg.floatMode==='strict'){const f=data.float,t=Date.parse(f?.date),count=f?.basis==='outstanding-upper-bound'?f.upperBoundShares:f?.floatShares;check('Dated float or conservative share-count bound below cap',finite(count)&&count>0&&count<cfg.maxFloat&&typeof f.source==='string'&&finite(t)&&t<=now+86400000&&now-t<45*86400000);}
- const levels=placement({pre:preObserved,pre5,regular,tick,atr:a},cfg,setup,human);
+ const levels=placement({pre:preObserved,pre5,regular,tick,atr:a,pmHighEvidence},cfg,setup,human);
  const {trigger,entry,limit,stop,target,risk,pattern:f}=levels;
  if(setup===1)advise('Within 5% of premarket high',pmHigh&&price>=pmHigh*.95&&price<=pmHigh*1.01);
  if(setup===2)advise('Suggested lower pivot identified',trigger!==null);
@@ -111,7 +121,7 @@ function analyze(data,q,cfg,setup,notes,now){cfg=Object.assign({},defaults,cfg);
  if(![entry,limit,stop,target].every(finite)||!(stop>0&&entry>stop&&limit>=entry&&target>entry))calculationErrors.push(setup<=2&&cfg.stopMode==='ATR'&&!finite(a)?'Not enough completed minute candles to calculate ATR':'Cannot calculate valid entry, stop and target from the strategy candles');
  return {setup,checks,errors,advisories,calculationErrors,chartAt:data.updatedAt,chartSymbol:data.symbol,chartConid:data.conid,tick,levelSource:levels.levelSource,trigger,pattern:f,firstCandle:regular.find(b=>b.t===sess?.start),preAtr,
  contextCurrent:checks.filter(c=>['Valid ordered broker OHLC bars','Latest completed minute available','Chart stream current','Current exchange session known'].includes(c.label)).every(c=>c.ok),
- entry,limit,stop,target,risk,atr:a,pmHigh,gap,gapInfo,volume,session:sess,
+ entry,entryTrigger:entry,limit,stop,protectiveStop:stop,target,risk,atr:a,pmHigh,pmHighEvidence,gap,gapInfo,volume,session:sess,
  expiresAt:sess?Math.min(sess.end,sess.start+(setup<=3?300000:setup===5?120000:3600000)):null};
 }
 // Informational context only: uses the same analyzed levels as execution, never changes orders.
@@ -160,5 +170,5 @@ function depthRisk(d,inst,p,cfg,now){
 function premarketBands(rows,frame,sessions){if(frame==='d')return [];const duration=Number(frame)*60000;if(!finite(duration)||duration<=0)return [];const clock=new Intl.DateTimeFormat('en-US',{timeZone:'America/New_York',hour:'2-digit',minute:'2-digit',hourCycle:'h23'}),windows=(sessions||[]).filter(s=>finite(s.start)).map(s=>{const parts=Object.fromEntries(clock.formatToParts(new Date(s.start)).map(p=>[p.type,p.value]));return {start:s.start-((Number(parts.hour)-4)*60+Number(parts.minute))*60000,end:s.start};});return rows.flatMap((b,index)=>{if(!finite(b.t))return [];const s=windows.find(s=>b.t<s.end&&b.t+duration>s.start);if(!s)return [];return [{index,from:Math.max(0,(s.start-b.t)/duration),to:Math.min(1,(s.end-b.t)/duration)}];});}
 function size(equity,pct,entry,stop,bp,fees){const budget=equity*pct/100,d=entry-stop;const zero={equity,budget:finite(budget)?budget:0,qty:0,risk:0,fees:0,unused:finite(budget)?budget:0};if(![equity,pct,entry,stop,bp].every(finite)||equity<=0||pct<=0||pct>100||entry<=0||stop<=0||d<=0||bp<=0)return zero;fees=fees||(()=>0);let lo=0,hi=Math.floor(Math.min(budget/d,bp/entry));while(lo<hi){const n=Math.ceil((lo+hi)/2),f=fees(n);if(finite(f)&&f>=0&&n*d+f<=budget+1e-8&&n*entry+f<=bp+1e-8)lo=n;else hi=n-1;}const f=lo?fees(lo):0;return {equity,budget,qty:lo,risk:lo*d+f,fees:f,unused:budget-lo*d-f};}
 function exit(b,q,now){if(b.forceExit||b.stopTriggered||q.bid<=b.stop)return {reason:b.forceExit?'MANUAL FLATTEN':'STOP',stop:b.stop};if(finite(b.sessionEnd)&&now>=b.sessionEnd-60000)return {reason:'SESSION CLOSE',stop:b.stop};if(q.bid>=b.target)return {reason:'TARGET',stop:b.stop};return {reason:null,stop:b.breakeven&&q.bid>=b.entry+b.initialR?Math.max(b.stop,b.entry):b.stop};}
-return {VERSION,defaults,names,rules,validBar,day,gapEvidence,round,average,studies,atr,aggregate,flag,placement,analyze,strategyHint,depthRisk,premarketBands,size,exit};
+return {VERSION,defaults,names,rules,validBar,day,premarketHigh,gapEvidence,round,average,studies,atr,aggregate,flag,placement,analyze,strategyHint,depthRisk,premarketBands,size,exit};
 });

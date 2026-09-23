@@ -17,13 +17,15 @@ return function(a){
     if(!inst?.conid||inst.secType!=='STK')out.push('Select a stock');
     if(p?.chartConid!=null&&(Number(p.chartConid)!==Number(inst?.conid)||p.chartSymbol!==inst?.symbol))out.push('Chart contract does not match selected stock');
     if(![p?.entry,p?.limit,p?.stop,p?.target,p?.tick].every(Number.isFinite)||!(p.stop>0&&p.entry>p.stop&&p.limit>=p.entry&&p.target>p.entry&&p.tick>0))out.push('Strategy price levels are not calculable yet');
+    if(p?.entryTrigger!=null&&p.entryTrigger!==p.entry||p?.protectiveStop!=null&&p.protectiveStop!==p.stop)out.push('Entry trigger / protective SL mapping is inconsistent');
+    if(p?.setup===1&&p.levelSource==='automatic'&&p.pmHighEvidence&&p.entry!==C.round(p.pmHighEvidence.price+.01,p.tick,true))out.push('S1 entry must use the detected premarket bar high plus entry buffer');
     if(!Number.isFinite(p?.session?.start)||!Number.isFinite(p?.session?.end)||p.session.end<=p.session.start||C.day(p.session.start)!==C.day(now)||now>=p.session.end)out.push('Current regular-market session required');
     const qty=sizing(p||{},inst).qty;if(!Number.isSafeInteger(qty)||qty<=0)out.push('Risk / buying power permits no whole shares');
     if(inst&&(a.position(inst.conid)?.qty||state().orders.some(o=>o.status==='working'&&(o.conid===inst.conid||o.legs?.some(l=>l.conid===inst.conid)))))out.push('Symbol already has a position or working order');
     return [...new Set(out)];
   }
   function cancel(o,note){o.status='cancelled';o.note=note;a.save();return true;}
-  function arm(p,inst,notes,confirmedPlan=false){const errors=confirmedPlan?orderIssues(p,inst):issues(p,inst);if(errors.length)return {errors};const r=sizing(p,inst),s=state();const o={...inst,id:a.uid(),ts:a.now(),day:a.today(),side:'BUY',qty:r.qty,filledQty:0,type:'STPLMT',stop:p.entry,limit:p.limit,tif:'DAY',status:'working',commission:0,guns:{role:'entry',version:C.VERSION,confirmedPlan,setup:p.setup,plan:JSON.parse(JSON.stringify(confirmedPlan?{...p,expiresAt:p.setup<=3?p.session.end:p.expiresAt}:p)),notes:JSON.parse(JSON.stringify(confirmedPlan?{...notes,warnings:issues(p,inst)}:notes||{})),bookId:s.bookId,equityAtArm:r.equity,budgetAtArm:r.budget}};s.orders.push(o);a.save();a.sync();return {order:o,errors:[]};}
+  function arm(p,inst,notes,confirmedPlan=false){const errors=confirmedPlan?orderIssues(p,inst):issues(p,inst);if(errors.length)return {errors};const r=sizing(p,inst),s=state();const o={...inst,id:a.uid(),ts:a.now(),day:a.today(),side:'BUY',qty:r.qty,filledQty:0,type:'STPLMT',entryTrigger:p.entry,protectiveStop:p.stop,stop:p.entry,limit:p.limit,tif:'DAY',status:'working',commission:0,guns:{role:'entry',version:C.VERSION,confirmedPlan,setup:p.setup,plan:JSON.parse(JSON.stringify(confirmedPlan?{...p,expiresAt:p.setup<=3?p.session.end:p.expiresAt}:p)),notes:JSON.parse(JSON.stringify(confirmedPlan?{...notes,warnings:issues(p,inst)}:notes||{})),bookId:s.bookId,equityAtArm:r.equity,budgetAtArm:r.budget}};s.orders.push(o);a.save();a.sync();return {order:o,errors:[]};}
   function manualTrade(inst,spec,plan={},notes={}){
     const side=spec.side,price=Number(spec.price),qty=Number(spec.qty),errors=[];
     if(!inst?.conid||inst.secType!=='STK')errors.push('Select a stock');
@@ -62,7 +64,7 @@ return function(a){
     if(b)b.events.push({at:a.now(),type:'LEVEL II ACKNOWLEDGED',detail:s.finding});a.save();return true;
   }
   function guard(o){if(o.guns)return true;const owned=new Set([...book().active.map(b=>b.inst.conid),...pending().map(p=>p.conid)]);const legs=o.legs||[o];for(const l of legs){if(!owned.has(l.conid))continue;const held=a.position(l.conid)?.qty||0,remaining=(o.qty-o.filledQty)*(l.ratio||1);if(o.legs||l.side!=='SELL'||remaining>held||held<=0){o.status='rejected';o.note='GUNS owns this symbol; cancel entry / flatten bracket first';a.save();return false;}}return true;}
-  function fill(o){if(!o.guns)return null;if(o.guns.role!=='entry'||o.status!=='working')return false;const p=o.guns.plan,now=a.now();if(o.guns.bookId!==state().bookId)return cancel(o,'Portfolio changed');if(now>=p.expiresAt)return cancel(o,'Paper entry expired');if(now<p.session.start)return false;if(!depthGuard(o))return false;if(!a.usingTws()||!a.ready(o.conid)||!fresh())return false;if(a.position(o.conid)?.qty)return cancel(o,'Symbol exposure changed');const q=a.quotes()[o.conid],r=sizing(p,o);const changed=o.qty!==r.qty||o.guns.budgetAtFill!==r.budget;o.qty=r.qty;o.guns.equityAtFill=r.equity;o.guns.budgetAtFill=r.budget;if(!r.qty)return cancel(o,'Current equity / buying power permits no whole shares');if(changed)a.save();
+  function fill(o){if(!o.guns)return null;if(o.guns.role!=='entry'||o.status!=='working')return false;const p=o.guns.plan,now=a.now();if(o.guns.bookId!==state().bookId)return cancel(o,'Portfolio changed');if(now>=p.expiresAt)return cancel(o,'Paper entry expired');if(now<p.session.start)return false;if((o.entryTrigger!=null&&o.entryTrigger!==p.entry)||(o.protectiveStop!=null&&o.protectiveStop!==p.stop))return cancel(o,'Entry / SL mapping changed; preview again');if(!depthGuard(o))return false;if(!a.usingTws()||!a.ready(o.conid)||!fresh())return false;if(a.position(o.conid)?.qty)return cancel(o,'Symbol exposure changed');const q=a.quotes()[o.conid],r=sizing(p,o);const changed=o.qty!==r.qty||o.guns.budgetAtFill!==r.budget;o.qty=r.qty;o.guns.equityAtFill=r.equity;o.guns.budgetAtFill=r.budget;if(!r.qty)return cancel(o,'Current equity / buying power permits no whole shares');if(changed)a.save();
     // Revalidate the setup with current bars before any trigger. A changed pattern
     // requires explicit re-arming instead of silently moving an approved entry.
     if(!o.guns.confirmedPlan){
@@ -75,7 +77,7 @@ return function(a){
     // Confirmed prices are immutable; a changing chart is not a new order.
     if(!Number.isFinite(q.bid)||!Number.isFinite(q.ask)||q.bid<=0||q.ask<q.bid)return false;
     const last=Object.hasOwn(q,'tradeLast')?q.tradeLast:q.last;
-    if(!o.guns.confirmedPlan||!o.triggered){if(!Number.isFinite(last)||last<o.stop)return false;if(o.guns.confirmedPlan){o.triggered=true;a.save();}}
+    if(!o.guns.confirmedPlan||!o.triggered){if(!Number.isFinite(last)||last<(o.entryTrigger??o.stop))return false;if(o.guns.confirmedPlan){o.triggered=true;a.save();}}
     if(q.ask>o.limit)return o.guns.confirmedPlan?false:cancel(o,'No chase: ask exceeded stop-limit cap');
     // Full risk-sized paper simulation: displayed size is evidence, not a silent order-size cap.
     const full=!!o.guns.confirmedPlan;

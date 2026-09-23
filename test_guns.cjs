@@ -129,6 +129,20 @@ test('tutorial chart rejection skips, and separate models do not share progress'
 });
 
 
+test('premarket high is the highest bar wick inside session boundaries, not close or regular high',()=>{
+ const start=Date.parse('2026-09-10T13:30:00Z'),mk=(t,h,c=5)=>({t,o:5,h,l:4,c});
+ const rows=[mk(start-19800000-60000,100),mk(start-19800000,7),mk(start-120000,9),mk(start-60000,8),mk(start,99),mk(start-86400000,200),mk(start+60000,300)];
+ const h=C.premarketHigh(rows,{start},start+30000);assert.equal(h.price,9);assert.equal(h.bar.c,5);assert.equal(h.bar.t,start-120000);assert.equal(h.observedBars,3);
+ assert.equal(C.premarketHigh(rows,{start},start-180000).price,7);
+ assert.equal(C.premarketHigh(rows,{start:start+86400000},start),null);
+ const f=chartFixture();const p=C.analyze(f.data,f.q,{stopMode:'FIXED',fixedStop:.2},1,{...f.notes,chartSetup:1},f.now);
+ assert.equal(p.entry,C.round(p.pmHighEvidence.bar.h+.01,p.tick,true));assert.equal(p.entryTrigger,p.entry);assert.equal(p.protectiveStop,p.stop);assert.ok(p.stop<p.pmHigh);
+});
+test('confirmed GUNS entry trigger and protective SL remain separate fields',()=>{
+ const f=fixture(),p={...f.plan,target:10.43,entryTrigger:f.plan.entry,protectiveStop:f.plan.stop};
+ const bad=f.E.orderIssues({...p,protectiveStop:p.entry},f.inst);assert.ok(bad.some(x=>x.includes('mapping')));
+ const o=f.E.arm(p,f.inst,{},true).order;assert.equal(o.entryTrigger,p.entry);assert.equal(o.stop,p.entry);assert.equal(o.protectiveStop,p.stop);assert.notEqual(o.protectiveStop,o.entryTrigger);
+});
 test('S1 always uses the premarket high, never a pivot or saved override',()=>{
  const data={pre:[{h:10},{h:9.8}],pre5:[{h:9.5},{h:9.8},{h:9.6}],tick:.001,atr:.2};
  const one=C.placement(data,{stopMode:'ATR'},1,{trigger:9.8});
