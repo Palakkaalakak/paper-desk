@@ -75,5 +75,95 @@ function observe(b,q,ready,now){
   if(t.samples&&positive(exit)){t.favorable=Math.max(0,long?t.max-exit:exit-t.min);t.adverse=Math.max(0,long?exit-t.min:t.max-exit);t.extraR=positive(risk)?t.favorable/risk:null;}
   return changedSample||t.status!=='observing'||!valid;
 }
-return {defaults,atrFor,calculate,beginTracking,observe};
+function create(a){
+  const state=()=>a.state();
+  function book(){const s=state();return s.desk||(s.desk={settings:{},active:[],journal:[]});}
+  const settings=()=>Object.assign({},defaults,book().settings);
+  const pending=()=>state().orders.filter(o=>o.status==='working'&&o.desk?.role==='entry');
+  const exposure=()=>book().active.some(b=>b.managed)||pending().length>0;
+  function plan(inst,spec,data){const acc=a.account();return calculate({mode:a.mode(),inst,spec,data,equity:acc.netLiq,bp:Math.max(0,acc.bp),fee:(n,p,side)=>a.commission(inst,n,p,side),now:a.now()});}
+  function arm(inst,p,bookId){
+    if(bookId!==state().bookId||p.mode!==a.mode())throw Error('Portfolio changed; reopen the preview');
+    if(a.position(inst.conid)?.qty||state().orders.some(o=>o.status==='working'&&(o.conid===inst.conid||o.legs?.some(l=>l.conid===inst.conid))))throw Error('This stock already has a position or working order');
+    if(!a.usingTws()||!a.ready(inst.conid))throw Error('Fresh live IB Gateway quote required');
+    if(state().positions.some(x=>x.qty&&!a.ready(x.conid)))throw Error('Held positions need fresh marks for risk sizing');
+    const o={...inst,id:a.uid(),ts:a.now(),day:a.today(),side:'BUY',qty:p.qty,filledQty:0,avgFill:0,commission:0,
+      type:p.type,limit:p.entry,stop:p.type==='STPLMT'?p.entry:null,tif:'DAY',status:'working',triggered:false,
+      strategyType:p.strategy,priceSource:'FULL_SIZE_PAPER',desk:{role:'entry',bookId,plan:JSON.parse(JSON.stringify(p))}};
+    state().orders.unshift(o);a.save();a.sync();return o;
+  }
+  function guard(o){
+    if(o.desk)return true;
+    const owned=new Set([...book().active.filter(b=>b.managed).map(b=>b.inst.conid),...pending().map(o=>o.conid)]);
+    if((o.legs||[o]).some(l=>owned.has(l.conid)&&(o.legs||l.side!=='SELL'||o.qty-o.filledQty>(a.position(l.conid)?.qty||0)))){
+      o.status='rejected';o.note='Managed paper bracket owns this stock; close or cancel it first';a.save();return false;
+    }return true;
+  }
+  function fill(o){
+    if(!o.desk)return null;if(o.desk.role!=='entry'||o.status!=='working')return false;
+    if(o.desk.bookId!==state().bookId){o.status='cancelled';return true;}
+    if(!a.usingTws()||!a.ready(o.conid)||state().positions.some(x=>x.qty&&!a.ready(x.conid)))return false;
+    const q=a.quotes()[o.conid],p=o.desk.plan;
+    if(q?.status!=='LIVE'||!(q.askSize>0)||!(q.bid>0)||q.ask<q.bid||!positive(q.ask))return false;
+    if(o.type==='STPLMT'&&!o.triggered){const last=Object.hasOwn(q,'tradeLast')?q.tradeLast:q.last;if(!positive(last)||last<p.entry)return false;o.triggered=true;a.save();}
+    if(q.ask>p.entry||(p.stop!==null&&q.ask<=p.stop)||(p.target!==null&&q.ask>=p.target))return false;
+    if(a.position(o.conid)?.qty){o.status='cancelled';o.note='Position changed';return true;}
+    let qty=p.qty;
+    if(p.mode==='Trading'){const acc=a.account();qty=Math.min(qty,C.size(acc.netLiq,p.riskPct,q.ask,p.stop,Math.max(0,acc.bp),n=>a.commission(o,n,q.ask,'BUY')+a.commission(o,n,p.stop,'SELL')).qty);}
+    if(qty<=0){o.status='cancelled';o.note='Risk / buying power exhausted';return true;}
+    o.qty=qty;o.desk.budgetAtFill=p.mode==='Trading'?a.account().netLiq*p.riskPct/100:null;
+    a.fill(o,qty,q.ask);a.save();return true;
+  }
+  function after(o,n,price,oldQty,newQty,realized,fee,oldCost){
+    if(o.guns)return;
+    const d=book(),now=a.now(),signed=o.side==='BUY'?n:-n,dir=oldQty===0?Math.sign(signed):Math.sign(oldQty);
+    let b=d.active.find(x=>x.inst.conid===o.conid);
+    if(!b&&oldQty!==0){
+      b={id:a.uid(),inst:{conid:o.conid,symbol:o.symbol,secType:o.secType,mult:o.mult||1,exch:o.exch,brokerId:o.brokerId},direction:dir,entry:oldCost,qty:Math.abs(oldQty),originalQty:Math.abs(oldQty),openedAt:null,
+        stop:null,target:null,fees:0,gross:0,net:0,exitValue:0,exitQty:0,events:[],strategy:'Unknown (pre-existing position)',managed:false,coverage:'Opening fills/fees unavailable',trackMinutes:settings().trackMinutes};d.active.push(b);
+    }
+    function open(count,allocatedFee){
+      const p=o.desk?.plan||{},managed=o.desk?.role==='entry';
+      const row={id:a.uid(),inst:{conid:o.conid,symbol:o.symbol,secType:o.secType,mult:o.mult||1,exch:o.exch,brokerId:o.brokerId},
+        direction:Math.sign(signed),entry:price,qty:count,originalQty:count,openedAt:now,stop:p.stop??null,originalStop:p.stop??null,target:p.target??null,originalTarget:p.target??null,
+        priceR:p.stop==null?null:price-p.stop,budget:o.desk?.budgetAtFill??null,timeframe:p.timeframe??null,atr:p.atr??null,
+        strategy:o.strategyType||p.strategy||'Untagged',mode:a.mode(),managed,trackMinutes:p.trackMinutes||settings().trackMinutes,
+        fees:allocatedFee,gross:0,net:-allocatedFee,exitValue:0,exitQty:0,coverage:'Recorded from entry',events:[{at:now,type:'ENTRY',price,qty:count,fee:allocatedFee}]};
+      d.active.push(row);return row;
+    }
+    if(oldQty===0){open(n,fee);return;}
+    if(Math.sign(signed)===dir){
+      b.entry=(b.entry*b.qty+price*n)/(b.qty+n);b.qty+=n;b.originalQty+=n;b.fees+=fee;b.net=b.gross-b.fees;
+      b.events.push({at:now,type:'ADD',price,qty:n,fee,strategy:o.strategyType||null});return;
+    }
+    const closed=Math.min(Math.abs(oldQty),n),exitFee=fee*closed/n;
+    b.gross+=(price-oldCost)*closed*dir*(o.mult||1);b.fees+=exitFee;b.qty-=closed;b.exitQty+=closed;b.exitValue+=price*closed;b.net=b.gross-b.fees;
+    b.events.push({at:now,type:o.desk?.reason||'MANUAL EXIT',price,qty:closed,fee:exitFee});
+    if(b.qty<=0){b.qty=0;b.closedAt=now;b.exitPrice=b.exitValue/b.exitQty;b.outcome=o.desk?.reason||'MANUAL EXIT';b.budgetR=positive(b.budget)?b.net/b.budget:null;
+      d.active=d.active.filter(x=>x!==b);d.journal.unshift(b);beginTracking(b,now,b.trackMinutes);a.sync();
+      state().orders.forEach(x=>{if(x!==o&&x.status==='working'&&x.conid===o.conid&&x.side===o.side){x.status='cancelled';x.note='Position closed; sibling exit cancelled';}});
+    }
+    if(n>closed)open(n-closed,fee-exitFee);
+  }
+  function manage(cid){let changed=false;for(const b of [...book().active]){
+    if(!b.managed||(cid!=null&&cid!==b.inst.conid)||!a.usingTws()||!a.ready(b.inst.conid))continue;
+    const q=a.quotes()[b.inst.conid];if(q?.status!=='LIVE'||!positive(q.bid)||!positive(q.ask)||q.ask<q.bid)continue;
+    const reason=b.forceExit?'MANUAL FLATTEN':b.stopTriggered||(b.stop!==null&&q.bid<=b.stop)?'STOP':b.target!==null&&q.bid>=b.target?'TARGET':null;
+    if(!reason)continue;if(reason==='STOP'&&!b.stopTriggered){b.stopTriggered=true;changed=true;}
+    if(!(q.bidSize>0))continue;
+    const count=Math.min(b.qty,Math.max(0,a.position(b.inst.conid)?.qty||0));if(!count)continue;
+    const o={...b.inst,id:a.uid(),ts:a.now(),day:a.today(),side:'SELL',qty:count,filledQty:0,type:'MKT',tif:'DAY',status:'working',commission:0,
+      strategyType:b.strategy,priceSource:'FULL_SIZE_PAPER',desk:{role:'exit',bookId:state().bookId,reason}};
+    state().orders.unshift(o);a.fill(o,count,reason==='TARGET'?b.target:q.bid);changed=true;
+  }if(changed)a.save();return changed;}
+  function setTarget(id,value){const b=book().active.find(b=>b.id===id&&b.managed);if(!b)throw Error('Position is no longer open');const price=Number(value);if(!positive(price)||price<=b.entry)throw Error('TP must be above entry');
+    b.events.push({at:a.now(),type:'TARGET EDIT',previous:b.target,price});b.target=price;a.save();manage(b.inst.conid);}
+  function flatten(id){const b=book().active.find(b=>b.id===id&&b.managed);if(b){b.forceExit=true;a.save();manage(b.inst.conid);}}
+  function tracked(){const s=state(),out=[...book().journal];for(const other of s.books||[])if(other.id!==s.bookId)out.push(...(other.data?.desk?.journal||[]));for(const gb of Object.values(s.guns?.books||{}))out.push(...(gb.journal||[]));return out.filter(b=>b.tracking?.status==='observing');}
+  function track(){let changed=false;for(const b of tracked())changed=observe(b,a.quotes()[b.inst.conid],a.usingTws()&&a.ready(b.inst.conid),a.now())||changed;if(changed)a.save();}
+  function instruments(){return tracked().map(b=>({...b.inst,priority:30}));}
+  function onGunsClose(b){beginTracking(b,a.now(),settings().trackMinutes);a.sync();}
+  return {book,settings,plan,arm,guard,fill,after,manage,setTarget,flatten,pending,exposure,track,instruments,onGunsClose};
+}
+return {defaults,atrFor,calculate,beginTracking,observe,create};
 });
