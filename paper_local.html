@@ -198,6 +198,8 @@ h1{font-size:20px;letter-spacing:-.5px} h2{letter-spacing:.09em;font-size:11px}
 <script src="/assets/guns-workflow.js"></script>
 <script src="/assets/guns-tutorial.js"></script>
 <script src="/assets/guns-ui.js"></script>
+<script src="/assets/trading.js"></script>
+<script src="/assets/trading-ui.js"></script>
 <script>
 var PAPER_LOCAL = true;
 (function(){
@@ -848,7 +850,7 @@ var S = JSON.parse(document.getElementById('st').textContent);
 var Q = {};            // conid -> quote
 var mcp = null, artifact = null, server = IBKR_FALLBACK, readOnly = false;
 var DIAG = {cap:'checking', storage:'checking', servers:[], server:'', tools:0, lastErr:'', lastTool:''};
-var guns = null;
+var guns = null, trading = null, tradingUI = null;
 var tab = 'trade', sel = null, dirty = false, pubTimer = null, busy = 0;
 var LOCAL = (typeof PAPER_LOCAL!=='undefined' && PAPER_LOCAL);
 function errText(e){
@@ -930,7 +932,7 @@ function buildDoc(){
    function already reads them. Switching snapshots the current one into
    S.books and loads the target over the top, so nothing else had to change. */
 var BOOK_FIELDS = ['account','cash','realized','lastDay','positions','orders',
-                   'trades','cashflows','equity','watchlist','log'];
+                   'trades','cashflows','equity','watchlist','log','desk'];
 
 function bookMode(account){
   var mode = (account || S.account || {}).mode;
@@ -941,7 +943,9 @@ function bookSnap(){
   for(var i=0;i<BOOK_FIELDS.length;i++) o[BOOK_FIELDS[i]] = S[BOOK_FIELDS[i]];
   return JSON.parse(JSON.stringify(o));
 }
+function paperExposure(){return !!((guns && guns.execution.exposure()) || (trading && trading.exposure()));}
 function bookApply(d){
+  S.desk = d.desk || {settings:{},active:[],journal:[]};
   for(var i=0;i<BOOK_FIELDS.length;i++){
     var k = BOOK_FIELDS[i];
     if(d[k]!==undefined) S[k] = d[k];
@@ -976,7 +980,7 @@ function bookNewId(){
 }
 function bookSwitch(id){
   if(id===S.bookId) return;
-  if(guns && guns.execution.exposure()){ warn('Cancel pending GUNS entries and flatten protected positions before switching portfolios.'); render(); return; }
+  if(paperExposure()){ warn('Cancel pending managed entries and flatten protected positions before switching portfolios.'); render(); return; }
   var b = bookOf(id);
   if(!b) return;
   bookSync();
@@ -989,7 +993,7 @@ function bookSwitch(id){
   setStatus('switched to '+b.name);
 }
 function bookCreate(name, start, mode){
-  if(guns && guns.execution.exposure()){ warn('Resolve GUNS exposure before creating another portfolio.'); return; }
+  if(paperExposure()){ warn('Resolve managed paper exposure before creating another portfolio.'); return; }
   start = isFinite(start) ? start : 100000;
   var now = Date.now();
   var id = bookNewId();
@@ -1004,7 +1008,7 @@ function bookCreate(name, start, mode){
   return id;
 }
 function bookDelete(id){
-  if(guns && guns.execution.exposure()){ warn('Resolve GUNS exposure before deleting portfolios.'); return false; }
+  if(paperExposure()){ warn('Resolve managed paper exposure before deleting portfolios.'); return false; }
   if(S.books.length<2) return false;      /* never leave zero portfolios */
   var was = (id===S.bookId);
   S.books = S.books.filter(function(b){ return b.id!==id; });
@@ -1286,6 +1290,7 @@ function onTick(conid, patch){
   if(chainAwaitSpot && S.builder.expId===chainAwaitSpot && conid===S.builder.underConid && (q.last>0||q.mid>0)){chainAwaitSpot='';loadStrikes();}
   /* a tick can make a resting order marketable - check straight away */
   var filled = guns ? guns.execution.manage(conid) : false;
+  if(trading){filled=trading.manage(conid)||filled;trading.track();}
   var candidates = ordersFor(conid);
   for(var i=0;i<candidates.length;i++){
     var o=candidates[i];
@@ -1409,6 +1414,7 @@ function universe(){
     (b.watchlist||[]).forEach(add);
   }
   if(guns)guns.instruments().forEach(add);
+  if(trading)trading.instruments().forEach(add);
   add(sel); S.builder.legs.forEach(add); book(S);
   if(S.chainOpen){
     var d=CH[S.builder.expId];
@@ -1779,6 +1785,7 @@ function tryFill(o){
     var handled=guns.execution.fill(o);
     if(handled!==null)return handled;
   }
+  if(trading){if(!trading.guard(o))return true;var deskHandled=trading.fill(o);if(deskHandled!==null)return deskHandled;}
   if(o.type==='COMBO'){
     if((o.legs||[]).some(function(l){return !quoteReady(l.conid)||(l.expiry&&l.expiry<ymd());}))return false;
     return tryFillCombo(o);
@@ -1867,6 +1874,7 @@ function fillRiskAllowed(fills,order){
 function applyFill(o, fq, price, leg){
   if(!Number.isFinite(fq)||fq<=0||!Number.isFinite(price)||price<=0)return false;
   if(guns && !leg && !guns.execution.guard(o))return false;
+  if(trading && !leg && !trading.guard(o))return false;
   var inst = leg || {conid:o.conid, symbol:o.symbol, secType:o.secType, mult:o.mult, exch:o.exch, brokerId:o.brokerId};
   var side = leg ? leg.side : o.side;
   var mult = inst.mult||1;
@@ -1878,7 +1886,8 @@ function applyFill(o, fq, price, leg){
     right:inst.right, strike:inst.strike, expiry:inst.expiry, underConid:inst.underConid, root:inst.root, brokerId:inst.brokerId,
     qty:0, avgCost:0, openedToday:true, opened:Date.now()}; S.positions.push(p); }
   var realized = 0;
-  var oldQty = p.qty;
+  var oldQty = p.qty, oldCost = p.avgCost;
+  var gunsOwned = !!o.guns || !!(guns && guns.execution.book().active.some(function(b){return b.inst.conid===inst.conid;}));
   if(oldQty===0 || (oldQty>0)===(signed>0)){
     p.avgCost = (p.avgCost*Math.abs(oldQty) + price*fq) / (Math.abs(oldQty)+fq);
     p.qty = oldQty + signed;
@@ -1902,18 +1911,19 @@ function applyFill(o, fq, price, leg){
   o.commission = n(o.commission)+comm;
   S.trades.unshift({id:uid(), ts:Date.now(), orderId:o.id, symbol:inst.symbol, conid:inst.conid, secType:inst.secType,
     side:side, qty:fq, price:price, commission:Math.round(comm*100)/100, realized:Math.round(realized*100)/100,
-    cashAfter:S.cash, mult:mult, priceSource:o.priceSource||'MARKET_DATA',userOverride:!!o.guns?.userOverride,
+    cashAfter:S.cash, mult:mult, strategyType:o.strategyType||null, portfolioMode:bookMode(), priceSource:o.priceSource||'MARKET_DATA',userOverride:!!o.guns?.userOverride,
     warnings:o.guns?.userOverride?(o.guns.notes?.warnings||[]):[],combo: leg? (o.strategy||'spread') : null});
   say(side+' '+qty(fq)+' '+inst.symbol+' @ '+px(price)+' (comm '+money(comm)+')'+(!leg&&o.status!=='filled'?' [partial]':''));
   if(!leg) snapshotEquity(true);
   if(guns && !leg) guns.execution.after(o,fq,price,oldQty,p.qty,realized,comm);
+  if(trading && !leg && !gunsOwned)trading.after(o,fq,price,oldQty,p.qty,realized,comm,oldCost);
 }
 /* Between polls, price can trade through a resting order and come back. In the
    standalone build we pull 1-minute bars and check whether it actually did. */
 function barSweep(){
   if(!LOCAL) return Promise.resolve(false);
   var working = S.orders.filter(function(o){
-    return !o.guns && o.status==='working' && o.type!=='MKT' && o.type!=='COMBO' && o.conid;
+    return !o.guns && !o.desk && o.status==='working' && o.type!=='MKT' && o.type!=='COMBO' && o.conid;
   });
   if(!working.length) return Promise.resolve(false);
   var ids={}; working.forEach(function(o){ ids[o.conid]=1; });
@@ -2016,6 +2026,7 @@ function submit(side){
     right:sel.right, strike:sel.strike, expiry:sel.expiry, underConid:sel.underConid, root:sel.root,
     side:side, qty:q, type:type, limit:isFinite(lim)?lim:null, stop:isFinite(stp)?stp:null,
     tif: $('oTif').value, status:'working', filledQty:0, avgFill:0, commission:0, triggered:false};
+  if(trading && bookMode()!=='GUNS')o.strategyType=trading.settings().strategy;
   S.orders.unshift(o);
   // Keep ticket values for repeated quick trades; do not erase a user's price.
   say('Order '+side+' '+qty(q)+' '+sel.symbol+' '+type+(o.limit?(' @'+px(o.limit)):'')+(o.stop?(' stop '+px(o.stop)):''));
@@ -2731,6 +2742,7 @@ function viewTrade(){
   +'<div style="margin-top:8px;display:flex;gap:5px;flex-wrap:wrap">'+(wl||'<span class="dim note">Watchlist empty - search for a symbol above.</span>')+'</div>'
   +'<div style="margin-top:10px" id="qbox">'+quoteBox()+'</div>'
   +'</div>';
+  if(tradingUI && bookMode()!=='GUNS')h+=tradingUI.panel();
   if(!sel) return h;
   var isUnder = sel.secType!=='OPT' && sel.secType!=='FOP';
   h += '<div class="panel order-ticket"><h2>Order entry · '+esc(sel.symbol)+'</h2>'
@@ -2814,7 +2826,7 @@ function sparkline(){
 }
 function viewHist(){
   var tr = S.trades.slice(0,400).map(function(t){
-    return '<tr><td class="l">'+ts(t.ts)+'</td><td class="l"><b>'+esc(t.symbol)+'</b>'+(t.combo?' <span class="pill">'+esc(t.combo)+'</span>':'')+'</td>'
+    return '<tr><td class="l">'+ts(t.ts)+'</td><td class="l"><b>'+esc(t.symbol)+'</b>'+(t.strategyType?' <span class="pill">'+esc(t.strategyType)+'</span>':'')+(t.combo?' <span class="pill">'+esc(t.combo)+'</span>':'')+'</td>'
      +'<td class="l '+(t.side==='BUY'?'up':'dn')+'">'+t.side+'</td><td>'+qty(t.qty)+'</td><td>'+px(t.price)+'</td>'
      +'<td>'+money(t.qty*t.price*(t.mult||(t.secType==='OPT'?100:1)))+'</td><td>'+money(t.commission)+'</td>'
      +'<td class="'+cls(t.realized)+'">'+(t.realized?money(t.realized):'-')+'</td><td>'+money(t.cashAfter)+'</td></tr>';
@@ -2823,7 +2835,7 @@ function viewHist(){
     return '<tr><td class="l">'+ts(c.ts)+'</td><td class="l">'+esc(c.note)+'</td><td class="'+cls(c.amount)+'">'+money(c.amount)+'</td></tr>';
   }).join('');
   var lg = S.log.slice(0,200).map(function(l){ return '<div><span class="dim">'+ts(l.ts)+'</span> '+esc(l.text)+'</div>'; }).join('');
-  return '<div class="panel"><h2>Equity curve</h2>'+sparkline()+'<button class="mini" id="markBtn" style="margin-top:6px">Mark to market now</button></div>'
+  return (tradingUI?tradingUI.journal():'')+'<div class="panel"><h2>Equity curve</h2>'+sparkline()+'<button class="mini" id="markBtn" style="margin-top:6px">Mark to market now</button></div>'
    +'<div class="panel"><h2>Fills ('+S.trades.length+')</h2><div class="tblwrap"><table><thead><tr><th class="l">Time</th><th class="l">Symbol</th><th class="l">Side</th><th>Qty</th><th>Price</th><th>Notional</th><th>Comm</th><th>Realized</th><th>Cash after</th></tr></thead><tbody>'+(tr||'<tr><td class="l dim" colspan="9">No fills yet.</td></tr>')+'</tbody></table></div></div>'
    +'<div class="panel"><h2>Cash flows</h2><div class="tblwrap"><table style="min-width:320px"><thead><tr><th class="l">Time</th><th class="l">Note</th><th>Amount</th></tr></thead><tbody>'+cf+'</tbody></table></div></div>'
    +'<div class="panel"><h2>Activity log</h2><div class="log">'+(lg||'<span class="dim">Nothing yet.</span>')+'</div></div>';
@@ -3187,11 +3199,12 @@ document.addEventListener('click', function(e){
   if(id==='dFlat'){ S.positions.slice().forEach(function(p){ if(p.qty) closePos(p.conid); }); return; }
   if(id==='dClearWl'){ S.watchlist=[]; sel=null; save(); return; }
   if(id==='dReset'){
-    if(guns && guns.execution.exposure()){warn('Cancel pending GUNS entries and flatten positions before reset.');return;}
+    if(paperExposure()){warn('Cancel pending GUNS entries and flatten positions before reset.');return;}
     var start=parseFloat(($('cAmt')||{}).value);
     if(!isFinite(start)){ warn('Type the starting cash into the Amount box above, then press Reset account again.'); return; }
     if(!resetArm){ resetArm=true; warn('Press Reset account once more to wipe everything and restart with '+money(start)+'.'); setTimeout(function(){resetArm=false;},6000); return; }
     resetArm=false; warn('');
+    S.desk={settings:S.desk?.settings||{},active:[],journal:[]};
     S.positions=[]; S.orders=[]; S.trades=[]; S.equity=[]; S.cashflows=[{ts:Date.now(),amount:start,note:'account reset'}];
     S.cash=start; S.realized=0; S.log=[]; say('Account reset with '+money(start));
     snapshotEquity(); save(); return; }
@@ -3239,8 +3252,8 @@ document.addEventListener('change', function(e){
     loadStrikes(); return; }
   if(e.target.id==='spanIn'){ S.builder.span=Math.max(2,Math.min(15,parseFloat(e.target.value)||6)); loadStrikes(); return; }
   if(e.target.id==='bookSel'){ bookSwitch(e.target.value); return; }
-  if(['dsMode','dsKind','dsProv','dsOptProv'].indexOf(e.target.id)>=0 && guns && guns.execution.exposure()){
-    warn('Resolve GUNS exposure before changing data source.');render();return;
+  if(['dsMode','dsKind','dsProv','dsOptProv'].indexOf(e.target.id)>=0 && paperExposure()){
+    warn('Resolve managed paper exposure before changing data source.');render();return;
   }
   if(e.target.id==='dsMode'){ S.settings.dataSource=e.target.value; DIAG.gwUp=null; DIAG.fellBack=false; save(); connect(); return; }
   if(e.target.id==='dsKind'){
@@ -3297,6 +3310,7 @@ function startAuto(){
       }
       renderDiag(); updateTradeButtons();
       if(sweepOrders())save();
+      if(trading){trading.manage();trading.track();}
     }
   },1000);
 }
@@ -3394,8 +3408,20 @@ if(window.GunsUI)guns=window.GunsUI.create({
   state:function(){return S;},quotes:function(){return Q;},account:function(){return acct();},
   position:posOf,ready:quoteReady,usingTws:usingTws,now:Date.now,uid:uid,today:today,
   commission:commission,marketPrice:marketablePrice,fill:applyFill,save:save,sync:syncSubs,snapshot:function(){snapshotEquity(true);},
-  render:render,tab:function(){return tab;},esc:esc,px:px,money:money,cancel:cancelOrder
+  render:render,tab:function(){return tab;},esc:esc,px:px,money:money,cancel:cancelOrder,
+  mode:bookMode,deskPanel:function(){return tradingUI?tradingUI.panel():'';},
+  deskJournal:function(){return tradingUI?tradingUI.journal():'';},
+  onClosed:function(b){if(trading)trading.onGunsClose(b);}
 });
+if(window.PaperTrading){
+  trading=window.PaperTrading.create({state:function(){return S;},mode:bookMode,quotes:function(){return Q;},
+    account:acct,position:posOf,ready:quoteReady,usingTws:usingTws,now:Date.now,uid:uid,today:today,
+    commission:commission,fill:applyFill,save:save,sync:syncSubs});
+  tradingUI=window.PaperTradingUI({state:function(){return S;},mode:bookMode,quotes:function(){return Q;},
+    context:function(){return tab==='guns'?guns?.context():{inst:sel,frame:trading.settings().timeframe};},
+    bars:async function(inst){var r=await fetch('/data/guns_bars?provider=tws&symbol='+encodeURIComponent(inst.symbol),{signal:AbortSignal.timeout(40000)});if(!r.ok)throw Error('Chart HTTP '+r.status);var d=await r.json();if(d.error)throw Error(d.error);return d;},
+    gunsJournal:function(){return guns?guns.execution.book().journal:[];},save:save,render:render,warn:warn,cancel:cancelOrder,esc:esc,money:money,px:px},trading);
+}
 render();
 connect();
 })();

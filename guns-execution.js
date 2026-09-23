@@ -93,7 +93,7 @@ return function(a){
   }else if(o.side==='SELL'){
     const matches=b.active.filter(x=>x.inst.conid===o.conid).sort((x,y)=>Number(y.id===o.guns?.parentId)-Number(x.id===o.guns?.parentId));let remaining=n;
     for(const x of matches){const sold=Math.min(x.qty,remaining);if(!sold)continue;remaining-=sold;x.qty-=sold;x.fees+=fee*sold/n;x.events.push({at:now,type:o.guns?.reason||'MANUAL EXIT',price,qty:sold,priceSource:o.priceSource||'IB_OBSERVED'});
-      if(x.qty===0){x.closedAt=now;x.net=x.events.filter(e=>e.type!=='ENTRY'&&e.qty).reduce((v,e)=>v+(e.price-x.entry)*e.qty,0)-x.fees;x.actualR=riskStats(x).budgetR;b.active=b.active.filter(y=>y!==x);b.journal.unshift(x);}}
+      if(x.qty===0){x.closedAt=now;x.net=x.events.filter(e=>e.type!=='ENTRY'&&e.qty).reduce((v,e)=>v+(e.price-x.entry)*e.qty,0)-x.fees;x.actualR=riskStats(x).budgetR;b.active=b.active.filter(y=>y!==x);b.journal.unshift(x);a.onClosed?.(x);}}
     if(newQty===0)state().orders.forEach(other=>{if(other.status==='working'&&other.conid===o.conid&&other.side==='SELL')cancel(other,'Position flat; sibling exit cancelled');});
   }}
   function manage(cid){let changed=false;for(const b of [...book().active]){if(cid!=null&&b.inst.conid!==cid)continue;if(!a.usingTws()||!a.ready(b.inst.conid))continue;const q=a.quotes()[b.inst.conid];if(!(q.bid>0))continue;if(q.bid>b.maxBid||q.bid<b.minBid)changed=true;b.maxBid=Math.max(b.maxBid,q.bid);b.minBid=Math.min(b.minBid,q.bid);const decision=C.exit(b,q,a.now());if(decision.stop!==b.stop){b.stop=decision.stop;b.events.push({at:a.now(),type:'BREAKEVEN',price:b.stop});changed=true;}

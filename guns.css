@@ -1,4 +1,20 @@
 /* Scoped styles preserve all existing Paper Desk views. */
+#desk-order-preview{box-sizing:border-box;background:#142130;color:#e3edf6;border:1px solid #426883;border-radius:10px;padding:22px;width:min(760px,94vw);max-height:92vh;overflow:auto;font:14px/1.5 system-ui}
+#desk-order-preview::backdrop{background:#050b13dc}
+#desk-order-preview *{box-sizing:border-box;min-width:0}
+#desk-order-preview label{display:block;margin:8px 0}
+#desk-order-preview input,#desk-order-preview select{display:block;width:100%;padding:8px;background:#0e1823;color:#dce7f1;border:1px solid #426883;border-radius:4px;font:inherit}
+#desk-order-preview button{padding:10px;border:1px solid #527594;background:#233b52;color:#e3edf6;border-radius:5px;cursor:pointer;font:inherit;white-space:normal}
+#desk-order-preview button:disabled{opacity:.45;cursor:not-allowed}
+#desk-order-preview footer{display:flex;flex-wrap:wrap;gap:8px;margin-top:14px}
+#desk-confirm{background:#246a96!important}
+#desk-preview-error{color:#ffb1a6}
+#desk-preview-result{padding:12px;background:#102636;border:1px solid #426883}
+.desk-journal article,#desk-active article{border-top:1px solid #426883;padding:14px 0;overflow-wrap:anywhere}
+.desk-panel .guns-fields{margin-top:12px;grid-template-columns:repeat(2,minmax(0,1fr))}
+#desk-order-preview .guns-fields{grid-template-columns:repeat(2,minmax(0,1fr))}
+@media(max-width:550px){#desk-order-preview{padding:14px}#desk-order-preview .guns-fields,.desk-panel .guns-fields{grid-template-columns:1fr}}
+
 #guns-entry-buttons{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:12px 0}#guns-workspace .guns-candidate small{white-space:normal;overflow-wrap:anywhere}#guns-article{white-space:pre-wrap;overflow-wrap:anywhere;max-height:360px;overflow:auto;font:12px/1.6 system-ui}#guns-evidence,#guns-news-meta{overflow-wrap:anywhere;font-size:11px}#guns-workspace details{margin-top:12px}#guns-workspace summary{cursor:pointer;color:#80c9ff}
 #guns-tutorial{box-sizing:border-box;background:#142130;color:#e3edf6;border:1px solid #426883;border-radius:10px;padding:24px;width:min(1000px,94vw);max-height:92vh;overflow:auto;font:14px/1.55 system-ui;text-align:left}#guns-tutorial *{box-sizing:border-box}#guns-tutorial::backdrop{background:#050b13dc}#guns-tutorial header{display:flex;align-items:center;justify-content:space-between;gap:16px}#guns-tutorial h2{font-size:21px;margin:0 0 12px}#guns-tutorial h3{font-size:16px}#guns-tutorial button,#guns-tutorial select{background:#233b52;color:#e3edf6;border:1px solid #527594;border-radius:5px;padding:10px;font:inherit;cursor:pointer}#guns-tutorial button:disabled{opacity:.4;cursor:not-allowed}#guns-tutorial button:focus-visible,#guns-workspace button:focus-visible{outline:2px solid #80c9ff;outline-offset:2px}#guns-tutorial nav{display:flex;flex-wrap:wrap;gap:6px;font-size:12px}#guns-tutorial nav span{padding:5px;color:#9caec0}#guns-tutorial nav .current{background:#215678;color:white;border-radius:4px}#guns-tutorial .lesson-guide{padding:14px;border-left:3px solid #80c9ff;background:#1c3247}#guns-tutorial .lesson-candidates{display:grid;grid-template-columns:repeat(4,1fr);gap:8px}#guns-tutorial small{display:block;color:#a4bbcf;font-size:11px}#guns-tutorial .lesson-body{display:grid;grid-template-columns:1fr 1fr;gap:24px}#guns-tutorial svg{width:100%;max-height:200px;background:#101923;border-radius:6px}#guns-tutorial .lesson-actions{display:flex;flex-wrap:wrap;gap:8px}#guns-tutorial blockquote{margin:12px 0;padding:12px;border-left:2px solid #edc572}#guns-tutorial .lesson-result{color:#edc572}
 @media(max-width:650px){#guns-tutorial{padding:14px}#guns-tutorial header{align-items:flex-start}#guns-tutorial .lesson-candidates{grid-template-columns:1fr 1fr}#guns-tutorial .lesson-body{grid-template-columns:1fr}#guns-tutorial nav{gap:2px}}

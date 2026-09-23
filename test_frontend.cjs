@@ -14,7 +14,7 @@ test('entire inline application compiles', () => {
 function portfolioFixture(saved) {
   const S = saved || {account:{name:'Original',type:'margin'},cash:99995,realized:-5,
     positions:[],orders:[],trades:[{realized:-5}],cashflows:[],equity:[],watchlist:[],log:[]};
-  const ctx = vm.createContext({S, guns:null, WHATIF:null, sel:null, CHAIN_SEQ:0,
+  const ctx = vm.createContext({S, guns:null, trading:null, WHATIF:null, sel:null, CHAIN_SEQ:0,
     chainBusy:false, PARAMS:{}, CH:{}, OPTMETA:{}, money:String,
     save(){},render(){},setStatus(){},warn(){}});
   vm.runInContext(source.slice(source.indexOf('var BOOK_FIELDS'),source.indexOf('var renderPending')),ctx);
