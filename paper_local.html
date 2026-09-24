@@ -3412,7 +3412,7 @@ if(window.GunsUI)guns=window.GunsUI.create({
   commission:commission,marketPrice:marketablePrice,fill:applyFill,save:save,sync:syncSubs,snapshot:function(){snapshotEquity(true);},
   render:render,tab:function(){return tab;},esc:esc,px:px,money:money,cancel:cancelOrder,
   mode:bookMode,deskPanel:function(){return tradingUI?tradingUI.panel():'';},
-  deskJournal:function(){return tradingUI?tradingUI.journal():'';},
+  trackingView:function(b){return tradingUI?tradingUI.tracking(b):'';},
   onClosed:function(b){if(trading)trading.onGunsClose(b);}
 });
 if(window.PaperTrading){

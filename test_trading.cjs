@@ -41,6 +41,8 @@ test('confirmed Trading order fills full risk size, preserves SL and closes at T
   assert.equal(o.qty,998);f.E.fill(o);assert.equal(f.S.positions[0].qty,998);assert.equal(f.E.book().active[0].stop,19);
   f.Q[123].bid=21;f.Q[123].ask=21.01;f.E.manage();assert.equal(f.E.book().active[0].stop,19);
   f.Q[123].bid=22.2;f.Q[123].ask=22.21;f.E.manage();const b=f.E.book().journal[0];assert.equal(b.outcome,'TARGET');assert.equal(b.exitPrice,22);assert.equal(b.net,1994);assert.equal(b.budgetR,1.994);assert.equal(b.strategy,'Breakout');assert.equal(b.tracking.status,'observing');
+  assert.deepEqual(f.E.instruments().map(x=>[x.conid,x.priority]),[[123,1]],'Post-exit tracking has lower priority than active execution');
+  assert.deepEqual(f.E.instruments().map(i=>[i.conid,i.priority]),[[123,1]]);
   const cash=f.S.cash;f.E.manage();assert.equal(f.S.cash,cash);
 });
 test('TP can be supplied later and closed exactly once; stale data never fills',()=>{

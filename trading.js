@@ -161,7 +161,8 @@ function create(a){
   function flatten(id){const b=book().active.find(b=>b.id===id&&b.managed);if(b){b.forceExit=true;a.save();manage(b.inst.conid);}}
   function tracked(){const s=state(),out=[...book().journal];for(const other of s.books||[])if(other.id!==s.bookId)out.push(...(other.data?.desk?.journal||[]));for(const gb of Object.values(s.guns?.books||{}))out.push(...(gb.journal||[]));return out.filter(b=>b.tracking?.status==='observing');}
   function track(){let changed=false;for(const b of tracked())changed=observe(b,a.quotes()[b.inst.conid],a.usingTws()&&a.ready(b.inst.conid),a.now())||changed;if(changed)a.save();}
-  function instruments(){return tracked().map(b=>({...b.inst,priority:30}));}
+  // Post-exit observation must not displace active execution (priority 3).
+  function instruments(){return tracked().map(b=>({...b.inst,priority:1}));}
   function onGunsClose(b){beginTracking(b,a.now(),settings().trackMinutes);a.sync();}
   return {book,settings,plan,arm,guard,fill,after,manage,setTarget,flatten,pending,exposure,track,instruments,onGunsClose};
 }

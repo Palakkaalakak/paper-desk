@@ -397,8 +397,10 @@ def main():
             else:
                 page.locator('[data-guns-cancel]').click()
         page.wait_for_timeout(250)
-        before=page.evaluate('JSON.stringify(__paper.S)')
-        account_storage=page.evaluate('localStorage.paperAccount')
+        # Real post-exit observation continues during the isolated tutorial. Only
+        # tracking metadata may change; money, orders, fills and settings must not.
+        before=page.evaluate("JSON.stringify(__paper.S,(k,v)=>k==='tracking'?undefined:v)")
+        account_storage=page.evaluate("JSON.stringify(JSON.parse(localStorage.paperAccount),(k,v)=>k==='tracking'?undefined:v)")
         page.locator('[data-guns="tutorial"]').click()
         page.keyboard.press('/')
         assert page.locator('#guns-workspace').count()==1
@@ -419,8 +421,8 @@ def main():
                 advance=page.locator('[data-lesson="advance"]')
                 if advance.count():advance.click()
             assert ('TARGET:','STOP:','CANCELLED:','BREAKEVEN STOP:')[lesson] in page.locator('#guns-tutorial').inner_text()
-            assert page.evaluate('JSON.stringify(__paper.S)')==before
-            assert page.evaluate('localStorage.paperAccount')==account_storage
+            assert page.evaluate("JSON.stringify(__paper.S,(k,v)=>k==='tracking'?undefined:v)")==before
+            assert page.evaluate("JSON.stringify(JSON.parse(localStorage.paperAccount),(k,v)=>k==='tracking'?undefined:v)")==account_storage
             if lesson<3:page.locator('[data-lesson="next"]').click()
         page.locator('#guns-tutorial').evaluate('(e)=>e.dataset.testChecked="true"')
         assert page.locator('#guns-tutorial .candle-body').count()==7
