@@ -1,5 +1,26 @@
 # Paper Desk — local startup and GUNS user guide
 
+## New modes and journal workflow — 2026-09-24
+
+These controls are implemented, superseding older deferred-work notes. Architecture remains local Python + vanilla JavaScript, read-only IB Gateway data and browser-local simulated orders only. No cloud migration or brokerage order route was added.
+
+1. **Create a portfolio:** open Portfolios, enter its name/starting cash and choose **GUNS / Trading / Custom**. Existing portfolios remain GUNS and keep their money/history. Each book has separate settings and journals. Managed exposure must be closed/cancelled before switching or resetting.
+2. **Trading preview:** select a stock in the normal ticket or click its chart; press **1** or **Prepare selected stock**. Enter your maximum entry price. Blank SL means **1 ATR(14)** of the selected **1m / 5m / 15m / daily** timeframe; only completed broker candles are used. Missing/stale/incomplete inputs are reported, not invented. Automatic TP defaults to 2R; change it or enter explicit SL/TP. Risk sizing includes equity risk %, fees and buying power, rounded to whole shares.
+3. **Entry + SL now, TP later:** check that option in preview. Once filled, click **Set / edit TP** on the position. The confirmed SL stays fixed; Trading adds no automatic breakeven. A TP already reached by the live executable bid may close immediately.
+4. **Custom:** enter your own whole-share quantity, optional SL and optional TP. Nothing supplies automatic ATR, quantity or protective levels. No chart history is requested merely to open this preview.
+5. **Review then place:** after changing inputs click **Update preview** (or Enter to calculate). **Enter confirms; Esc cancels.** A shortcut alone never orders. Changed context or sizing needs another review. These assisted brackets support **long stocks only**; the existing ordinary manual ticket remains available for other supported sides/instruments.
+6. **Limit versus breakout:** LMT waits for live executable ask at/below entry. STPLMT first needs an actual trade at/above entry; that trigger latches. Both use the selected entry as the maximum buy price. Live Gateway quote and positive size are required. The full-size paper simulation does not cap the fill to the first displayed size and is not a real-liquidity guarantee; Trading can reduce quantity at fill for current risk/buying power. No historical-bar fallback fills. Stops can slip at bid; targets use the confirmed target once bid reaches it.
+7. **Strategy and observation settings:** enter a strategy tag for Trading/Custom orders/fills/journals, and select **1–30 post-exit minutes**. For GUNS tracking settings, open **GUNS → Journal**; GUNS retains keys 1–5 and its own setup labels. Settings apply to new trades/closes.
+8. **Read results:** **History → Detailed trade journal** includes new general position lifecycles and GUNS results. Inspect partial exits, fees, entry/exit times, levels, known risk budget, strategy and audit events. GUNS → Journal shows post-exit observations directly on its own cards, with the existing correction editor. No new non-GUNS retroactive correction editor is included.
+
+**Tracking is observation, not money.** It records distinct live bid samples for longs / ask samples for shorts, favorable/adverse movement, additional price R (excluding fees), and later observed TP. It continues across portfolio switches and never alters cash or P&L. Missing intervals, disconnections, sleeping tabs and reload gaps remain unknown; samples do not reconstruct the complete market path. “TP not observed” does not mean it never hit. Tracking subscriptions have lower priority than active execution. Historical trades without observations stay unobserved.
+
+**Premarket high:** automatic S1 chooses the highest actual same-day premarket **bar wick high**, including an observed forming PM bar, excluding overnight, regular-session and future bars. Preview shows source bar/time/count and refreshes stale inputs. Entry is high + $0.01, rounded up to tick; explicit valid hovered-bar overrides remain separately labeled. Orders display **ENTRY / SL / TP** separately: the old stop-limit `stop` field means entry trigger, not protective SL. Mapping guards are in place, but the exact cause of the reported historical trade has not been established.
+
+**Run locally:** update source, install `requirements.txt`, restart `python serve.py`, then reload http://localhost:8765. Keep browser, Python and Gateway running; bracket protection is browser-local, not broker-held. Accounts stay in `localStorage['paperAccount']` (`account.mode`, per-book `desk`, journal `tracking`). No new credentials/storage services are needed. Live Gateway entitlement/timing acceptance still needs the user's machine; offline regression results are not a live reliability guarantee. Full implementation scope and routes are in [README.md](README.md).
+
+**Verified 2026-09-24:** 95 JavaScript tests, 72 Python tests, and all three complete offline browser suites (general, Trading/Custom, GUNS) passed, with zero browser errors. These results do not claim live Gateway acceptance.
+
 ## Urgent risk / journal correction update
 
 This section supersedes older default-breakeven and partial-fill instructions.
@@ -10,7 +31,7 @@ This section supersedes older default-breakeven and partial-fill instructions.
 - DCOY example: entry 5.77, original SL 5.38, TP 6.55, 1R budget $1,000. Full risk budget correction sets **+$2,000 / +2R**, replacing -$4.03, and adds **$2,004.03** to current paper cash and realized P&L. This adjustment is applied only when you confirm it in the browser holding your paper account; source updates cannot directly edit another computer's localStorage.
 - Pull main, restart Python, reload http://localhost:8765 and confirm the correction on the intended portfolio. No broker orders or cloud storage were added.
 - Verified: **72 Python + 81 JavaScript tests**, plus both complete browser suites passed with zero browser errors, including the DCOY correction, account reconciliation, saved audit, mobile dialog and S1-S3 lifecycle.
-- Deferred until after this urgent completion report: portfolio GUNS/Trading/Custom modes, Trading timeframe ATR order setup, strategy tags, configurable 1-30 minute post-trade tracking and expanded general journaling. No work on those has started.
+- The previously deferred modes, Trading/Custom workflow, tags, post-exit tracking and general journals are now implemented; see the current section above. Verification counts in this urgent section describe its historical checkpoint.
 
 
 ## Current scanner source — IBKR Top % Gainers
