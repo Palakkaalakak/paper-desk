@@ -19,6 +19,10 @@ return function(a){
     if(![p?.entry,p?.limit,p?.stop,p?.target,p?.tick].every(Number.isFinite)||!(p.stop>0&&p.entry>p.stop&&p.limit>=p.entry&&p.target>p.entry&&p.tick>0))out.push('Strategy price levels are not calculable yet');
     if(p?.entryTrigger!=null&&p.entryTrigger!==p.entry||p?.protectiveStop!=null&&p.protectiveStop!==p.stop)out.push('Entry trigger / protective SL mapping is inconsistent');
     if(p?.setup===1&&p.levelSource==='automatic'&&p.pmHighEvidence&&p.entry!==C.round(p.pmHighEvidence.price+.01,p.tick,true))out.push('S1 entry must use the detected premarket bar high plus entry buffer');
+    if(p?.setup===1&&Object.hasOwn(p,'entryEvidence')){
+      const ev=p.entryEvidence,w=C.premarketWindow(p.session),duration=Number(ev?.timeframe||1)*60000;
+      if(!ev||!w||!C.validBar(ev.bar)||!Number.isFinite(ev.bar.t)||ev.bar.t<w.start||ev.bar.t+duration>w.end||ev.bar.t>now||![60000,300000,900000].includes(duration)||ev.price!==ev.bar.h||p.entry!==C.round(ev.price+.01,p.tick,true))out.push('S1 entry source must be a same-day PREMARKET bar high; regular-session highs are forbidden');
+    }
     if(!Number.isFinite(p?.session?.start)||!Number.isFinite(p?.session?.end)||p.session.end<=p.session.start||C.day(p.session.start)!==C.day(now)||now>=p.session.end)out.push('Current regular-market session required');
     const qty=sizing(p||{},inst).qty;if(!Number.isSafeInteger(qty)||qty<=0)out.push('Risk / buying power permits no whole shares');
     if(inst&&(a.position(inst.conid)?.qty||state().orders.some(o=>o.status==='working'&&(o.conid===inst.conid||o.legs?.some(l=>l.conid===inst.conid)))))out.push('Symbol already has a position or working order');

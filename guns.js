@@ -4,7 +4,7 @@ const VERSION='guns-1.5',defaults={riskPct:1,rewardR:2,maxSpread:.05,minVolume:3
 const names={1:'Premarket high breakout',2:'Premarket pivot',3:'Premarket bull flag',4:'First opening bull flag',5:'First bullish minute'};
 // Reviewed against the preserved Adam course notes; qualitative decisions remain human.
 const rules=[
- {id:1,formation:'Premarket-high breakout: a rising 5-minute premarket chart consolidates just beneath its highest premarket print, ideally less than 5% below. Judge freshness of the move, extension and daily overhead resistance.',entry:'1 previews a buy stop-limit at the observed premarket high + $0.01; Enter queues the paper order. AUTO always uses the actual high. Explicit HOVER mode can instead use your selected completed premarket candle, labeled as a user override. Queue whenever the chart levels are calculable in premarket; execution waits until the regular open.',stop:'Default SL distance is ATR of completed 1-minute broker candles (app default period 14). PRICE/FIXED are explicit optional presets, never an automatic fallback when ATR is missing.',target:'TP = entry + 2R or 2.5R; R = entry minus SL. Limit cap is entry + $0.03 below $20, otherwise + $0.05 (app interpretation of the source range).',invalid:'Missing price references, invalid numbers or uncalculable sizing need data recovery. Screening warnings are advisory. Confirmed orders wait below their limit cap without chasing and expire at regular-session close unless cancelled or filled. Switching to another strategy is YOUR decision.',source:'Part II, Setup One, paragraphs 213–219. Adam emphasizes S1 as his dominant premarket setup.'},
+ {id:1,formation:'Premarket-high breakout: a rising 5-minute premarket chart consolidates just beneath its highest premarket print, ideally less than 5% below. Judge freshness of the move, extension and daily overhead resistance.',entry:'1 previews a buy stop-limit at the observed premarket high + $0.01; Enter queues the paper order. AUTO always uses the actual high. Explicit HOVER mode can instead use an observed 1m/5m/15m premarket candle; partial/forming bars are labeled, never padded. Queue whenever the chart levels are calculable in premarket; execution waits until the regular open.',stop:'Default SL distance is ATR of completed 1-minute broker candles (app default period 14). PRICE/FIXED are explicit optional presets, never an automatic fallback when ATR is missing.',target:'TP = entry + 2R or 2.5R; R = entry minus SL. Limit cap is entry + $0.03 below $20, otherwise + $0.05 (app interpretation of the source range).',invalid:'Missing price references, invalid numbers or uncalculable sizing need data recovery. Screening warnings are advisory. Confirmed orders wait below their limit cap without chasing and expire at regular-session close unless cancelled or filled. Switching to another strategy is YOUR decision.',source:'Part II, Setup One, paragraphs 213–219. Adam emphasizes S1 as his dominant premarket setup.'},
  {id:2,formation:'After a premarket high, a pullback forms a distinct LOWER local pivot/consolidation. Price should retain moving-average support. This is not S1.',entry:'2 uses the most recent completed 5-minute lower pivot + $0.01. No pivot means no automatic placement; never substitute the premarket high.',stop:'1-minute ATR by default, or your explicitly selected price/fixed preset, below entry.',target:'2R or 2.5R. At least 1R of room from ENTRY to the premarket high is a screening recommendation, not a placement veto.',invalid:'Review overhead resistance; it does not force manual price entry. A real completed pivot and calculable stop/sizing are required. The app never changes S2 to S1 for you.',source:'Part II, Setup Two, paragraphs 239–245.'},
  {id:3,formation:'On the 5-minute premarket chart, impulse candles make higher highs, then one or more pullback candles make lower highs/inside bars. Judge support at EMA9/20 (at worst SMA50), extension and room to resistance.',entry:'3 uses the FINAL completed premarket flag candle high + $0.01, not the premarket high.',stop:'SL = that same final flag candle low - $0.01, rounded to the valid tick. No ATR fallback for a missing flag candle.',target:'2R or 2.5R. The checklist recommends 1R of room to premarket resistance; confirmed paper orders are not vetoed by that assessment.',invalid:'If too close to the premarket high, Adam suggests considering S1; YOU must choose 1. The software will not substitute strategies. Pattern hints do not replace your support/formation judgment.',source:'Part II, Setup Three, paragraphs 249–259.'},
  {id:4,formation:'FIRST opening bull flag after 09:30 ET: rising impulse followed by completed lower-high/inside pullback candle(s), usually on 1-minute candles within the first hour. Judge EMA9/20 support and pullback no deeper than roughly 50–60%.',entry:'4 uses the latest completed OPENING flag candle high + $0.01. It never uses a premarket pivot. App uses 1-minute bars.',stop:'SL = the SAME flag candle low - $0.01. Confirmed prices remain fixed as later candles close. Cancel and preview again if you want new prices.',target:'2R or 2.5R; inspect premarket/daily resistance and real Level II ask walls. Breakeven setting moves SL to actual entry at +1R, before fees.',invalid:'App enforces a maximum $0.05 spread for S4. First-flag/retracement/support interpretation remains your judgment. Source also mentions wider spread examples; app adopts the stricter S4 rule.',source:'Part II, Setup Four, paragraphs 287–299.'},
@@ -38,15 +38,25 @@ function studies(rows){return [average(rows,9,true),average(rows,20,true),averag
 function above(rows){return rows.length>=200&&studies(rows).every(s=>rows.at(-1).c>s.at(-1));}
 function atr(rows,n){if(rows.length<n+1)return null;let values=rows.slice(1).map((b,i)=>Math.max(b.h-b.l,Math.abs(b.h-rows[i].c),Math.abs(b.l-rows[i].c)));let v=values.slice(0,n).reduce((s,x)=>s+x,0)/n;values.slice(n).forEach(x=>v=(v*(n-1)+x)/n);return v;}
 function validBar(b){return b&&['o','h','l','c'].every(k=>finite(b[k])&&b[k]>0)&&b.h>=Math.max(b.o,b.c)&&b.l<=Math.min(b.o,b.c)&&b.h>=b.l;}
-// Select the wick HIGH of an actual minute bar in today's 04:00–regular-open window.
+// US premarket is 04:00–09:30 ET, not 5.5 hours before a delayed stock open.
+const nyClock=new Intl.DateTimeFormat('en-US',{timeZone:'America/New_York',hour:'2-digit',minute:'2-digit',second:'2-digit',hourCycle:'h23'});
+function premarketWindow(session){
+ if(!finite(session?.start))return null;
+ const p=Object.fromEntries(nyClock.formatToParts(new Date(session.start)).map(x=>[x.type,x.value]));
+ const midnight=session.start-((Number(p.hour)*60+Number(p.minute))*60+Number(p.second))*1000-session.start%1000;
+ const start=midnight+4*3600000,end=Math.min(session.start,midnight+9.5*3600000);
+ return end>start?{start,end}:null;
+}
+// Select an observed wick high strictly inside today's premarket window.
 // Include the observed forming PM bar, never a regular/overnight/future bar or close/quote.
 function premarketHigh(rows,session,now){
  if(!session||!finite(session.start)||!finite(now)||day(session.start)!==day(now))return null;
- const start=session.start-19800000;let high=null,count=0;
- for(const b of rows||[]){if(!finite(b.t)||!validBar(b)||b.t<start||b.t>=session.start||b.t>now||day(b.t)!==day(now))continue;
+ const w=premarketWindow(session);if(!w)return null;
+ const {start,end}=w;let high=null,count=0;
+ for(const b of rows||[]){if(!finite(b.t)||!validBar(b)||b.t<start||b.t>=end||b.t>now||day(b.t)!==day(now))continue;
   count++;if(!high||b.h>high.h||(b.h===high.h&&b.t<high.t))high=b;
  }
- return high?{price:high.h,bar:{...high},start,end:session.start,observedBars:count,source:'premarket minute TRADES bar high'}:null;
+ return high?{price:high.h,bar:{...high},start,end,observedBars:count,source:'premarket minute TRADES bar high'}:null;
 }
 function aggregate(rows,n){const groups=new Map();for(const b of rows){if(!finite(b.t)||!validBar(b))continue;const t=Math.floor(b.t/(n*60000))*n*60000;if(!groups.has(t))groups.set(t,[]);groups.get(t).push(b);}
  return [...groups].sort((a,b)=>a[0]-b[0]).map(([t,rs])=>{rs.sort((a,b)=>a.t-b.t);return {t,o:rs[0].o,h:Math.max(...rs.map(b=>b.h)),l:Math.min(...rs.map(b=>b.l)),c:rs.at(-1).c,v:rs.every(b=>finite(b.v)&&b.v>=0)?rs.reduce((v,b)=>v+b.v,0):null,complete:rs.length===n&&rs.every((b,i)=>b.t===t+i*60000),observedMinutes:rs.length};});
@@ -79,8 +89,9 @@ function analyze(data,q,cfg,setup,notes,now){cfg=Object.assign({},defaults,cfg);
  const raw=data.minute||[],observed=raw.filter(b=>finite(b.t)&&b.t<=now&&validBar(b)),closed=observed.filter(b=>b.t+60000<=now),m5=aggregate(closed,5).filter(b=>b.complete&&b.t+300000<=now);
  check('Valid ordered broker OHLC bars',raw.every((b,i)=>finite(b.t)&&validBar(b)&&(!i||b.t>raw[i-1].t)));
  check('Latest completed minute available',closed.at(-1)?.t===Math.floor(now/60000)*60000-60000);
- const pre=closed.filter(b=>sess&&b.t>=sess.start-19800000&&b.t<sess.start),regular=closed.filter(b=>sess&&b.t>=sess.start&&b.t<sess.end);
- const preObserved=observed.filter(b=>sess&&b.t>=sess.start-19800000&&b.t<sess.start);
+ const pmWindow=premarketWindow(sess),inPremarket=b=>pmWindow&&b.t>=pmWindow.start&&b.t<pmWindow.end;
+ const pre=closed.filter(inPremarket),regular=closed.filter(b=>sess&&b.t>=sess.start&&b.t<sess.end);
+ const preObserved=observed.filter(inPremarket);
  const price=q&&Object.hasOwn(q,'tradeLast')?q.tradeLast:q?.last,tick=data.minTick;
  const pmHighEvidence=premarketHigh(raw,sess,now),pmHigh=pmHighEvidence?.price??null,volume=pre.length&&pre.every(b=>finite(b.v)&&b.v>=0)?pre.reduce((s,b)=>s+b.v,0):null,gapInfo=gapEvidence(q,data,now),gap=gapInfo.value;
  const period=Math.max(2,Math.min(100,Number(cfg.atrPeriod)||14)),a=atr(closed,period),preAtr=atr(pre,period);
@@ -90,17 +101,30 @@ function analyze(data,q,cfg,setup,notes,now){cfg=Object.assign({},defaults,cfg);
  check('Premarket volume threshold',finite(volume)&&volume>=cfg.minVolume);check('Favorable catalyst reviewed; no fixed-price buyout',notes.catalyst===true);
  check('Chart and setup reviewed by user',notes.chartSetup===setup);check('Daily overhead resistance reviewed',notes.room===true);check('Chart stream current',finite(data.updatedAt)&&data.updatedAt<=now+1000&&now-data.updatedAt<15000);
  check('Current exchange session known',!!sess);check('Spread within configured limit',q&&finite(q.bid)&&finite(q.ask)&&q.bid>0&&q.ask>=q.bid&&q.ask-q.bid<=Math.min(cfg.maxSpread,setup===4?.05:.10)+1e-9);
- const pre5=m5.filter(b=>sess&&b.t>=sess.start-19800000&&b.t<sess.start),basis=setup<=3?m5:closed;
+ const pre5=m5.filter(b=>inPremarket(b)&&b.t+300000<=pmWindow.end),basis=setup<=3?m5:closed;
  if(setup===2||setup===3)check('Latest completed 5-minute premarket candle available',pre5.at(-1)?.t===Math.floor(Math.min(now,sess?.start||now)/300000)*300000-300000);
- let human=notes.levels?.[setup];
- if(notes.hover?.enabled){const h=notes.hover,frame=String(h.timeframe),pool=frame==='5'?pre5:setup<=3?pre:regular,b=pool.find(b=>b.t===h.candle?.t);
-  const valid=h.symbol===data.symbol&&Number(h.conid)===Number(data.conid)&&['1','5'].includes(frame)&&(setup!==3||frame==='5')&&(setup<4||frame==='1')&&b&&validBar(h.candle)&&['o','h','l','c'].every(k=>b[k]===h.candle[k])&&(setup!==5||b.t===sess?.start);
-  check('Hover candle matches this contract, completed strategy timeframe and session',valid);
-  human=valid?{mode:'hover',candle:h.candle}:null;
+ let human=notes.levels?.[setup],hoverStatus=null;
+ if(notes.hover?.enabled){const h=notes.hover,frame=String(h.timeframe),duration=Number(frame)*60000;
+  // S1 needs the observed high, not fabricated missing minute prints. Other
+  // strategies retain their completed-candle requirements.
+  const pool=!['1','5','15'].includes(frame)?[]:setup===1?(frame==='1'?observed:aggregate(observed,Number(frame))):frame==='5'?pre5:setup<=3?pre:regular;
+  const b=pool.find(b=>b.t===h.candle?.t);let reason='';
+  if(h.symbol!==data.symbol||Number(h.conid)!==Number(data.conid))reason='Hovered candle belongs to another stock';
+  else if(!(setup===1?['1','5','15']:setup===3?['5']:setup>=4?['1']:['1','5']).includes(frame))reason='Unsupported hover timeframe for S'+setup;
+  else if(setup<=3&&(!pmWindow||!finite(h.candle?.t)||h.candle.t<pmWindow.start||h.candle.t+duration>pmWindow.end))reason='S'+setup+' requires a same-day PREMARKET candle (04:00–09:30 ET, before regular open)';
+  else if(!b)reason='Hovered candle is unavailable or not completed for this strategy';
+  else if(!validBar(h.candle)||!['o','h','l','c'].every(k=>b[k]===h.candle[k]))reason='Hovered candle changed; move over the refreshed candle again';
+  else if(setup===5&&b.t!==sess?.start)reason='S5 requires the first regular-session minute';
+  const valid=!reason;hoverStatus={valid,reason,frame,bar:valid?{...b}:null,forming:valid&&b.t+duration>now,partial:valid&&frame!=='1'&&!b.complete};
+  check('Hover candle matches this contract, strategy timeframe and session',valid);
+  human=valid?{mode:'hover',candle:b}:null;
  }
  if(cfg.floatMode==='strict'){const f=data.float,t=Date.parse(f?.date),count=f?.basis==='outstanding-upper-bound'?f.upperBoundShares:f?.floatShares;check('Dated float or conservative share-count bound below cap',finite(count)&&count>0&&count<cfg.maxFloat&&typeof f.source==='string'&&finite(t)&&t<=now+86400000&&now-t<45*86400000);}
  const levels=placement({pre:preObserved,pre5,regular,tick,atr:a,pmHighEvidence},cfg,setup,human);
+ // Invalid hover must not silently fall back to the unchanged AUTO plan.
+ if(hoverStatus&&!hoverStatus.valid)Object.assign(levels,{trigger:null,entry:null,limit:null,stop:null,target:null,risk:null,levelSource:'invalid-hover'});
  const {trigger,entry,limit,stop,target,risk,pattern:f}=levels;
+ const entryEvidence=setup===1?(hoverStatus?.valid?{price:trigger,bar:hoverStatus.bar,timeframe:hoverStatus.frame,start:pmWindow.start,end:pmWindow.end,source:'selected premarket bar high'}:hoverStatus?null:pmHighEvidence):null;
  if(setup===1)advise('Within 5% of premarket high',pmHigh&&price>=pmHigh*.95&&price<=pmHigh*1.01);
  if(setup===2)advise('Suggested lower pivot identified',trigger!==null);
  if(setup===3||setup===4){advise('Heuristic completed lower-high bull flag',!!f);if(f){advise('Estimated retracement no deeper than 60%',f.retracement<=.6);if(setup===4)advise('Heuristic first flag',f.first);const e=average(basis,20,true).at(-1);advise('Estimated flag holds 20 EMA',finite(e)&&f.low>=e);}}
@@ -115,11 +139,11 @@ function analyze(data,q,cfg,setup,notes,now){cfg=Object.assign({},defaults,cfg);
  if(!checks.find(c=>c.label==='Valid ordered broker OHLC bars')?.ok)calculationErrors.push('Invalid or unordered chart candles');
  if(!finite(tick)||tick<=0)calculationErrors.push('Contract price increment unavailable');
  if(!sess||!finite(sess.start)||!finite(sess.end)||sess.end<=sess.start||now>=sess.end)calculationErrors.push('Current regular-market session unavailable or already closed');
- if(notes.hover?.enabled&&!checks.find(c=>c.label.startsWith('Hover candle matches'))?.ok)calculationErrors.push('Selected hover candle does not match the stock / strategy');
+ if(hoverStatus&&!hoverStatus.valid)calculationErrors.push(hoverStatus.reason);
  if(!finite(trigger)||trigger<=0)calculationErrors.push(['','Premarket high unavailable','No completed lower premarket pivot found','No completed premarket flag candle found','No completed opening flag candle found','First regular-market minute has not completed'][setup]||'Unknown strategy');
  if(setup===5&&regular[0]?.t!==sess?.start)calculationErrors.push('First regular-market minute is missing; later candles cannot replace it');
  if(![entry,limit,stop,target].every(finite)||!(stop>0&&entry>stop&&limit>=entry&&target>entry))calculationErrors.push(setup<=2&&cfg.stopMode==='ATR'&&!finite(a)?'Not enough completed minute candles to calculate ATR':'Cannot calculate valid entry, stop and target from the strategy candles');
- return {setup,checks,errors,advisories,calculationErrors,chartAt:data.updatedAt,chartSymbol:data.symbol,chartConid:data.conid,tick,levelSource:levels.levelSource,trigger,pattern:f,firstCandle:regular.find(b=>b.t===sess?.start),preAtr,
+ return {setup,checks,errors,advisories,calculationErrors,chartAt:data.updatedAt,chartSymbol:data.symbol,chartConid:data.conid,tick,levelSource:levels.levelSource,hoverStatus,entryEvidence,trigger,pattern:f,firstCandle:regular.find(b=>b.t===sess?.start),preAtr,
  contextCurrent:checks.filter(c=>['Valid ordered broker OHLC bars','Latest completed minute available','Chart stream current','Current exchange session known'].includes(c.label)).every(c=>c.ok),
  entry,entryTrigger:entry,limit,stop,protectiveStop:stop,target,risk,atr:a,pmHigh,pmHighEvidence,gap,gapInfo,volume,session:sess,
  expiresAt:sess?Math.min(sess.end,sess.start+(setup<=3?300000:setup===5?120000:3600000)):null};
@@ -167,8 +191,8 @@ function depthRisk(d,inst,p,cfg,now){
  if(wall)flags.push({code:'wall',text:'Nearby ask wall at $'+wall.price.toFixed(4)+' · '+(wall.size/median).toFixed(2)+'× median bid level'});
  return {valid:true,flags,key:flags.map(f=>f.code).sort().join('|'),at:d.updatedAt,revision:d.revision,stream:d.stream,metrics:{bidSize,askSize,ratio,spread},reason:flags.length?'Adverse displayed depth':'No configured depth flag'};
 }
-function premarketBands(rows,frame,sessions){if(frame==='d')return [];const duration=Number(frame)*60000;if(!finite(duration)||duration<=0)return [];const clock=new Intl.DateTimeFormat('en-US',{timeZone:'America/New_York',hour:'2-digit',minute:'2-digit',hourCycle:'h23'}),windows=(sessions||[]).filter(s=>finite(s.start)).map(s=>{const parts=Object.fromEntries(clock.formatToParts(new Date(s.start)).map(p=>[p.type,p.value]));return {start:s.start-((Number(parts.hour)-4)*60+Number(parts.minute))*60000,end:s.start};});return rows.flatMap((b,index)=>{if(!finite(b.t))return [];const s=windows.find(s=>b.t<s.end&&b.t+duration>s.start);if(!s)return [];return [{index,from:Math.max(0,(s.start-b.t)/duration),to:Math.min(1,(s.end-b.t)/duration)}];});}
+function premarketBands(rows,frame,sessions){if(frame==='d')return [];const duration=Number(frame)*60000;if(!finite(duration)||duration<=0)return [];const windows=(sessions||[]).map(premarketWindow).filter(Boolean);return rows.flatMap((b,index)=>{if(!finite(b.t))return [];const s=windows.find(s=>b.t<s.end&&b.t+duration>s.start);if(!s)return [];return [{index,from:Math.max(0,(s.start-b.t)/duration),to:Math.min(1,(s.end-b.t)/duration)}];});}
 function size(equity,pct,entry,stop,bp,fees){const budget=equity*pct/100,d=entry-stop;const zero={equity,budget:finite(budget)?budget:0,qty:0,risk:0,fees:0,unused:finite(budget)?budget:0};if(![equity,pct,entry,stop,bp].every(finite)||equity<=0||pct<=0||pct>100||entry<=0||stop<=0||d<=0||bp<=0)return zero;fees=fees||(()=>0);let lo=0,hi=Math.floor(Math.min(budget/d,bp/entry));while(lo<hi){const n=Math.ceil((lo+hi)/2),f=fees(n);if(finite(f)&&f>=0&&n*d+f<=budget+1e-8&&n*entry+f<=bp+1e-8)lo=n;else hi=n-1;}const f=lo?fees(lo):0;return {equity,budget,qty:lo,risk:lo*d+f,fees:f,unused:budget-lo*d-f};}
 function exit(b,q,now){if(b.forceExit||b.stopTriggered||q.bid<=b.stop)return {reason:b.forceExit?'MANUAL FLATTEN':'STOP',stop:b.stop};if(finite(b.sessionEnd)&&now>=b.sessionEnd-60000)return {reason:'SESSION CLOSE',stop:b.stop};if(q.bid>=b.target)return {reason:'TARGET',stop:b.stop};return {reason:null,stop:b.breakeven&&q.bid>=b.entry+b.initialR?Math.max(b.stop,b.entry):b.stop};}
-return {VERSION,defaults,names,rules,validBar,day,premarketHigh,gapEvidence,round,average,studies,atr,aggregate,flag,placement,analyze,strategyHint,depthRisk,premarketBands,size,exit};
+return {VERSION,defaults,names,rules,validBar,day,premarketWindow,premarketHigh,gapEvidence,round,average,studies,atr,aggregate,flag,placement,analyze,strategyHint,depthRisk,premarketBands,size,exit};
 });

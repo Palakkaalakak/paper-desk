@@ -138,6 +138,32 @@ test('premarket high is the highest bar wick inside session boundaries, not clos
  const f=chartFixture();const p=C.analyze(f.data,f.q,{stopMode:'FIXED',fixedStop:.2},1,{...f.notes,chartSetup:1},f.now);
  assert.equal(p.entry,C.round(p.pmHighEvidence.bar.h+.01,p.tick,true));assert.equal(p.entryTrigger,p.entry);assert.equal(p.protectiveStop,p.stop);assert.ok(p.stop<p.pmHigh);
 });
+test('delayed stock opens never move premarket past 09:30 ET, including winter DST offset',()=>{
+ for(const [open,start,end] of [['2026-09-10T16:00Z','2026-09-10T08:00Z','2026-09-10T13:30Z'],['2026-12-10T17:00Z','2026-12-10T09:00Z','2026-12-10T14:30Z']]){
+  const s={start:Date.parse(open)},a=Date.parse(start),z=Date.parse(end),mk=(t,h)=>({t,o:5,h,l:4,c:5});
+  assert.deepEqual(C.premarketWindow(s),{start:a,end:z});const rows=[mk(a-60000,100),mk(a,8),mk(z-60000,9),mk(z,200),mk(s.start-60000,300)];
+  assert.equal(C.premarketHigh(rows,s,s.start).price,9);assert.deepEqual(C.premarketBands(rows,'1',[s]).map(b=>b.index),[1,2]);
+ }
+});
+test('sparse/forming S1 hover changes entry SL and TP on 1m 5m and 15m without padding',()=>{
+ const f=chartFixture(),start=f.data.sessions[0].start;Object.assign(f.data,{symbol:'SPARSE',conid:1});f.now=start-90000;f.data.minute=f.data.minute.filter((b,i)=>b.t<=f.now&&i%5!==2);f.data.updatedAt=f.now;
+ for(const frame of ['1','5','15']){
+  const bars=frame==='1'?f.data.minute:C.aggregate(f.data.minute,Number(frame)),candle=bars.at(-1),hover={enabled:true,symbol:'SPARSE',conid:1,timeframe:frame,candle};
+  const p=C.analyze(f.data,f.q,{stopMode:'FIXED',fixedStop:.2},1,{hover},f.now);
+  assert.deepEqual(p.calculationErrors,[]);assert.equal(p.levelSource,'hover');assert.equal(p.entry,C.round(candle.h+.01,.01,true));assert.equal(p.hoverStatus.partial,frame!=='1');
+  const q=C.analyze(f.data,f.q,{stopMode:'FIXED',fixedStop:.2},1,{hover:{...hover,candle:bars.find(b=>b.t>=start-19800000)}},f.now);
+  for(const k of ['entry','stop','target'])assert.notEqual(p[k],q[k]);
+ }
+});
+test('regular and overnight S1 hover is rejected without stale AUTO levels',()=>{
+ const f=chartFixture(),start=f.data.sessions[0].start;Object.assign(f.data,{symbol:'TEST',conid:1});f.data.minute.push({t:start,o:20,h:50,l:19,c:21,v:100});f.now=start+61000;f.data.updatedAt=f.now;
+ for(const candle of [f.data.minute.at(-1),f.data.minute[0]]){
+  const p=C.analyze(f.data,f.q,{stopMode:'FIXED',fixedStop:.2},1,{hover:{enabled:true,symbol:'TEST',conid:1,timeframe:'1',candle}},f.now);
+  assert.match(p.hoverStatus.reason,/PREMARKET/);for(const k of ['entry','stop','target','entryEvidence'])assert.equal(p[k],null);assert.ok(fixture().E.orderIssues(p,{conid:1,symbol:'TEST',secType:'STK'}).length);
+ }
+ const p=C.analyze(f.data,f.q,{stopMode:'FIXED',fixedStop:.2},1,{},f.now);assert.ok(p.entry<20);
+ const bad={...p,entryEvidence:{...p.entryEvidence,bar:f.data.minute.at(-1),price:50}};assert.ok(fixture().E.orderIssues(bad,{conid:1,symbol:'TEST',secType:'STK'}).some(s=>s.includes('PREMARKET')));
+});
 test('confirmed GUNS entry trigger and protective SL remain separate fields',()=>{
  const f=fixture(),p={...f.plan,target:10.43,entryTrigger:f.plan.entry,protectiveStop:f.plan.stop};
  const bad=f.E.orderIssues({...p,protectiveStop:p.entry},f.inst);assert.ok(bad.some(x=>x.includes('mapping')));
