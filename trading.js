@@ -17,6 +17,12 @@ function atrFor(data,frame,now,period=14){
   const value=C.atr(rows,period);if(!positive(value))throw Error('Need at least '+(period+1)+' completed '+frame+' candles for ATR');
   return {value,period,lastAt:rows.at(-1).t,bars:rows.length};
 }
+function sessionFor(rows,now){
+ const s=(rows||[]).find(s=>Number.isFinite(s.start)&&Number.isFinite(s.end)&&C.day(s.start)===C.day(now)&&s.end>s.start),w=s&&C.premarketWindow(s);
+ if(!s||!w||s.end<=now)return null;
+ const start=Math.max(s.start,w.start+5.5*3600000),end=Math.min(s.end,w.start+12*3600000);
+ return end>start?{start,end,day:C.day(now),source:'IB regular-session schedule'}:null;
+}
 function calculate({mode,inst,spec,data,equity,bp,fee,now}){
   if(!['Trading','Custom'].includes(mode))throw Error('Use this preview in a Trading or Custom portfolio');
   if(!inst?.conid||inst.secType!=='STK'||(inst.mult||1)!==1)throw Error('This preview supports long stocks; use the manual ticket for other instruments');
@@ -42,7 +48,8 @@ function calculate({mode,inst,spec,data,equity,bp,fee,now}){
   if(!Number.isSafeInteger(qty)||qty<=0)throw Error(mode==='Custom'?'Enter a positive whole-share quantity':'Risk / buying power permits no whole shares');
   const cost=qty*entry+fee(qty,entry,'BUY');
   if(!Number.isFinite(cost)||fee(qty,entry,'BUY')<0||cost>bp+1e-8)throw Error('Insufficient buying power');
-  return {mode,entry,stop,target,qty,budget,riskPct:mode==='Trading'?riskPct:null,priceR:stop===null?null:entry-stop,
+  const session=sessionFor(spec.sessions||data?.sessions,now);if(!session)throw Error('Verified current regular-market session required; no extended-hours entry');
+  return {mode,entry,stop,target,qty,budget,session,sessionPolicy:'RTH_ONLY_V1',riskPct:mode==='Trading'?riskPct:null,priceR:stop===null?null:entry-stop,
     fundedRisk:stop===null?null:qty*(entry-stop),timeframe:String(spec.timeframe),atr,trackMinutes,type:spec.type,
     strategy:String(spec.strategy||'').trim().slice(0,120),targetLater:target===null,tick,fees:fee(qty,entry,'BUY')+(stop===null?0:fee(qty,stop,'SELL'))};
 }
@@ -85,12 +92,25 @@ function create(a){
   function arm(inst,p,bookId){
     if(bookId!==state().bookId||p.mode!==a.mode())throw Error('Portfolio changed; reopen the preview');
     if(a.position(inst.conid)?.qty||state().orders.some(o=>o.status==='working'&&(o.conid===inst.conid||o.legs?.some(l=>l.conid===inst.conid))))throw Error('This stock already has a position or working order');
-    if(!a.usingTws()||!a.ready(inst.conid))throw Error('Fresh live IB Gateway quote required');
+    if(p.sessionPolicy!=='RTH_ONLY_V1'||!sessionFor([p.session],a.now()))throw Error('Regular session changed; reopen the preview');
+    if(a.now()>=p.session.start&&(!a.usingTws()||!a.ready(inst.conid)))throw Error('Fresh live IB Gateway quote required');
     if(state().positions.some(x=>x.qty&&!a.ready(x.conid)))throw Error('Held positions need fresh marks for risk sizing');
     const o={...inst,id:a.uid(),ts:a.now(),day:a.today(),side:'BUY',qty:p.qty,filledQty:0,avgFill:0,commission:0,
       type:p.type,limit:p.entry,stop:p.type==='STPLMT'?p.entry:null,tif:'DAY',status:'working',triggered:false,
-      strategyType:p.strategy,priceSource:'FULL_SIZE_PAPER',desk:{role:'entry',bookId,plan:JSON.parse(JSON.stringify(p))}};
+      strategyType:p.strategy,priceSource:'FULL_SIZE_PAPER',desk:{role:'entry',bookId,paused:true,plan:JSON.parse(JSON.stringify(p))}};
     state().orders.unshift(o);a.save();a.sync();return o;
+  }
+  function startEntry(id){const o=pending().find(o=>o.id===id);if(!o)return;
+    if(o.desk.plan.sessionPolicy!=='RTH_ONLY_V1'||!sessionFor([o.desk.plan.session],a.now()))throw Error('Cancel this old entry and prepare again with a verified regular session');
+    o.desk.paused=false;a.save();
+  }
+  function pauseEntry(id){const o=pending().find(o=>o.id===id);if(o){o.desk.paused=true;a.save();}}
+  function cancelEntry(id){const o=pending().find(o=>o.id===id);if(!o)return false;o.status='cancelled';o.note='Cancelled by user before fill';a.save();a.sync();return true;}
+  function entryStatus(o){const p=o.desk.plan;
+    if(p.sessionPolicy!=='RTH_ONLY_V1'||!p.session)return 'Old entry blocked — cancel and prepare again';
+    if(o.desk.paused)return 'PAUSED — Start entry or Cancel entry';
+    if(a.now()<p.session.start)return 'QUEUED — waiting for regular open (no premarket trigger/fill)';
+    return o.triggered?'TRIGGERED — waiting within limit':'WORKING — waiting for trigger/limit and a safe live spread';
   }
   function guard(o){
     if(o.desk)return true;
@@ -102,17 +122,22 @@ function create(a){
   function fill(o){
     if(!o.desk)return null;if(o.desk.role!=='entry'||o.status!=='working')return false;
     if(o.desk.bookId!==state().bookId){o.status='cancelled';return true;}
+    const p=o.desk.plan,now=a.now();
+    if(p.sessionPolicy!=='RTH_ONLY_V1'||!p.session)return false;
+    if(now>=p.session.end||C.day(now)!==p.session.day){o.status='cancelled';o.note='Expired at regular-session close (DAY)';a.save();return true;}
+    if(o.desk.paused||now<p.session.start)return false;
     if(!a.usingTws()||!a.ready(o.conid)||state().positions.some(x=>x.qty&&!a.ready(x.conid)))return false;
-    const q=a.quotes()[o.conid],p=o.desk.plan;
-    if(q?.status!=='LIVE'||!(q.askSize>0)||!(q.bid>0)||q.ask<q.bid||!positive(q.ask))return false;
+    const q=a.quotes()[o.conid];
+    if(q?.status!=='LIVE'||q.error||q.halted||!Number.isFinite(q.at)||q.at>now||now-q.at>=15000||!(q.askSize>0)||!(q.bid>0)||q.ask<q.bid||!positive(q.ask))return false;
+    if(p.stop!==null&&q.bid<=p.stop)return false; // no entry when this spread already trips its SL
     if(o.type==='STPLMT'&&!o.triggered){const last=Object.hasOwn(q,'tradeLast')?q.tradeLast:q.last;if(!positive(last)||last<p.entry)return false;o.triggered=true;a.save();}
     if(q.ask>p.entry||(p.stop!==null&&q.ask<=p.stop)||(p.target!==null&&q.ask>=p.target))return false;
     if(a.position(o.conid)?.qty){o.status='cancelled';o.note='Position changed';return true;}
     let qty=p.qty;
     if(p.mode==='Trading'){const acc=a.account();qty=Math.min(qty,C.size(acc.netLiq,p.riskPct,q.ask,p.stop,Math.max(0,acc.bp),n=>a.commission(o,n,q.ask,'BUY')+a.commission(o,n,p.stop,'SELL')).qty);}
-    if(qty<=0){o.status='cancelled';o.note='Risk / buying power exhausted';return true;}
+    if(qty<=0||qty*q.ask+a.commission(o,qty,q.ask,'BUY')>a.account().bp){o.status='cancelled';o.note='Risk / buying power exhausted';a.save();return true;}
     o.qty=qty;o.desk.budgetAtFill=p.mode==='Trading'?a.account().netLiq*p.riskPct/100:null;
-    a.fill(o,qty,q.ask);a.save();return true;
+    if(a.fill(o,qty,q.ask)===false)return false;a.save();return true;
   }
   function after(o,n,price,oldQty,newQty,realized,fee,oldCost){
     if(o.guns)return;
@@ -164,7 +189,7 @@ function create(a){
   // Post-exit observation must not displace active execution (priority 3).
   function instruments(){return tracked().map(b=>({...b.inst,priority:1}));}
   function onGunsClose(b){beginTracking(b,a.now(),settings().trackMinutes);a.sync();}
-  return {book,settings,plan,arm,guard,fill,after,manage,setTarget,flatten,pending,exposure,track,instruments,onGunsClose};
+  return {book,settings,plan,arm,startEntry,pauseEntry,cancelEntry,entryStatus,guard,fill,after,manage,setTarget,flatten,pending,exposure,track,instruments,onGunsClose};
 }
-return {defaults,atrFor,calculate,beginTracking,observe,create};
+return {defaults,sessionFor,atrFor,calculate,beginTracking,observe,create};
 });

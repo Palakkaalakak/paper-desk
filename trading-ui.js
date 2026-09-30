@@ -4,9 +4,17 @@ root.PaperTradingUI=function(a,E){
   const esc=a.esc,money=x=>Number.isFinite(x)?a.money(x):'unknown',px=x=>Number.isFinite(x)?a.px(x):'—';
   const frames=value=>[['1','1 minute'],['5','5 minutes'],['15','15 minutes'],['d','Daily']].map(([v,label])=>'<option value="'+v+'" '+(v===value?'selected':'')+'>'+label+'</option>').join('');
   const input=(id,label,value,extra='')=>'<label>'+label+'<input id="desk-'+id+'" value="'+esc(value??'')+'" '+extra+'></label>';
-  function active(){return E.book().active.filter(b=>b.managed).map(b=>'<article><b>'+esc(b.inst.symbol)+'</b> · '+b.qty+' shares · '+esc(b.strategy)+' · Entry '+px(b.entry)+' / SL '+px(b.stop)+' / TP '+(b.target===null?'not set':px(b.target))+' <button data-desk-target="'+esc(b.id)+'">Set / edit TP</button> <button data-desk-flat="'+esc(b.id)+'">Flatten at live quote</button></article>').join('')+E.pending().map(o=>'<article>'+esc(o.symbol)+' · pending '+o.qty+' shares @ '+px(o.limit)+' · '+esc(o.strategyType)+' <button data-desk-cancel="'+esc(o.id)+'">Cancel</button></article>').join('');}
+  function active(){
+    const pending=E.pending().map(o=>'<article><b>'+esc(o.symbol)+' · UNFILLED ENTRY</b> · '+o.qty+' shares · Entry '+px(o.limit)+' / SL '+px(o.desk.plan.stop)+' / TP '+px(o.desk.plan.target)+'<p>'+esc(E.entryStatus(o))+'</p><button data-desk-cancel="'+esc(o.id)+'">Cancel entry</button> '+(o.desk.paused?'<button data-desk-start="'+esc(o.id)+'">Start entry · regular session only</button>':'<button data-desk-pause="'+esc(o.id)+'">Pause entry</button>')+'</article>').join('');
+    const open=E.book().active.filter(b=>b.managed).map(b=>'<article><b>'+esc(b.inst.symbol)+' · FILLED / OPEN</b> · '+b.qty+' shares · '+esc(b.strategy)+' · Entry '+px(b.entry)+' / SL '+px(b.stop)+' / TP '+(b.target===null?'not set':px(b.target))+' <button data-desk-target="'+esc(b.id)+'">Set / edit TP</button> <button data-desk-flat="'+esc(b.id)+'">Close position · sell at live bid</button><p>'+(b.forceExit?'Close requested — waiting for a valid live bid. Protection remains active.':'Already filled: entry cannot be cancelled. Closing sells the shares and realizes P&L.')+'</p></article>').join('');
+    const closed=E.book().journal.slice(0,5).map(b=>'<article><b>'+esc(b.inst.symbol)+' · '+(b.voided?'REVERSED':'CLOSED')+'</b> · '+esc(b.outcome)+' · '+money(b.net)+' · see History for audit</article>').join('');
+    const cancelled=a.state().orders.filter(o=>o.desk?.role==='entry'&&['cancelled','rejected'].includes(o.status)).slice(0,5).map(o=>'<article><b>'+esc(o.symbol)+' · '+esc(o.status.toUpperCase())+'</b> · '+esc(o.note||'')+'</article>').join('');
+    return '<h3>All stocks — pending, open and recently closed</h3>'+pending+open+closed+cancelled+(pending||open||closed||cancelled?'':'<p>No managed orders or trades.</p>');
+  }
+  function live(){const el=document.getElementById('desk-active');if(el){const html=active();if(el.innerHTML!==html)el.innerHTML=html;}}
+  function levels(inst){const b=E.book().active.find(b=>b.managed&&b.inst.conid===inst?.conid),o=E.pending().find(o=>o.conid===inst?.conid),p=b||o?.desk.plan;return p?{entry:p.entry,stop:p.stop,target:p.target}:{};}
   function panel(){const s=E.settings(),mode=a.mode();return '<section class="panel desk-panel"><h2>'+esc(mode)+' paper workspace</h2>'+
-    (mode==='GUNS'?'<p>GUNS keys remain 1–5. Tracking below also applies to newly closed GUNS trades.</p>':'<p>Selected stock → <b>1</b> prepares → <b>Enter</b> confirms → <b>Esc</b> cancels. '+(mode==='Trading'?'Blank SL = 1 ATR of the selected timeframe; automatic TP defaults to 2R, or choose TP later.':'No automatic ATR, quantity or target calculations. Enter your quantity and optional SL/TP.')+'</p><button id="desk-prepare">Prepare selected stock · 1</button>')+
+    (mode==='GUNS'?'<p>GUNS keys remain 1–5. Tracking below also applies to newly closed GUNS trades.</p>':'<p>Selected stock → <b>1</b> previews → <b>Enter</b> saves a PAUSED entry → <b>Start entry</b> enables regular-session execution. <b>Cancel entry</b> removes an unfilled order. No premarket entries. '+(mode==='Trading'?'Blank SL = 1 ATR of the selected timeframe; automatic TP defaults to 2R, or choose TP later.':'No automatic ATR, quantity or target calculations. Enter your quantity and optional SL/TP.')+'</p><button id="desk-prepare">Prepare selected stock · 1</button>')+
     '<div class="guns-fields">'+input('strategy','Strategy type / tag (manual ticket & next preview)',s.strategy,'maxlength="120" data-desk-setting="strategy"')+
     input('tracking','Post-exit observation minutes (1–30)',s.trackMinutes,'type="number" min="1" max="30" step="1" data-desk-setting="trackMinutes"')+'</div><p class="note">Keep browser and Gateway running. Only observed live quotes are recorded; no reconstruction through disconnections. Tracking continues across portfolio switches in this browser.</p><div id="desk-active">'+active()+'</div></section>';}
   function tracking(b){const t=b.tracking;if(!t)return '<p>Post-exit observations not recorded for this historical trade.</p>';
@@ -27,23 +35,25 @@ root.PaperTradingUI=function(a,E){
     if(a.mode()==='GUNS'||document.querySelector('dialog[open]'))return;
     const ctx=a.context(),inst=ctx?.inst;if(!inst){a.warn('Select a stock in the ticket or click a chart first.');return;}
     const bookId=a.state().bookId,mode=a.mode(),s=E.settings(),q=a.quotes()[inst.conid],d=document.createElement('dialog');d.id='desk-order-preview';
-    d.innerHTML='<form><h2>'+esc(mode)+' · '+esc(inst.symbol)+' · paper preview</h2><p>Nothing is placed until you confirm. Long stocks only; full paper fills do not guarantee real liquidity.</p><div class="guns-fields">'+
+    d.innerHTML='<form><h2>'+esc(mode)+' · '+esc(inst.symbol)+' · paper preview</h2><p>Confirmation saves a PAUSED, cancellable entry. Click Start entry when ready; no trigger/fill before regular open. Full paper size is not a liquidity guarantee.</p><div class="guns-fields">'+
       input('entry','Selected entry / maximum buy price',q?.ask,'type="number" step="any" min="0" required')+
-      '<label>Entry behavior<select id="desk-type"><option value="LMT">Limit (ask at or below entry)</option><option value="STPLMT">Breakout stop-limit (trigger at entry)</option></select></label>'+
+      '<label>Entry behavior<select id="desk-type"><option value="STPLMT">Breakout stop-limit (trade must trigger at entry)</option><option value="LMT">Limit (may fill immediately after Start entry)</option></select></label>'+
       '<label>Chart timeframe<select id="desk-frame">'+frames(ctx.frame||s.timeframe)+'</select></label>'+
       input('sl',mode==='Trading'?'SL (blank = 1 ATR)':'SL (optional, no auto calculation)','','type="number" step="any" min="0"')+
       input('tp','TP price (optional)','','type="number" step="any" min="0"')+
       (mode==='Trading'?input('risk','Risk / equity %',s.riskPct,'type="number" min="0.01" max="100" step="0.01" required')+input('reward','Automatic TP in R',s.rewardR,'type="number" min="0.1" step="0.1" required')+'<label class="guns-check"><input id="desk-later" type="checkbox">Entry + SL only; set TP later</label>':input('qty','Shares (required)','','type="number" min="1" step="1" required'))+
       input('tag','Strategy type / tag',s.strategy,'maxlength="120"')+input('minutes','Track after exit (minutes)',s.trackMinutes,'type="number" min="1" max="30" step="1" required')+
-      '</div><p id="desk-preview-error" role="alert"></p><section id="desk-preview-result" aria-live="polite">Calculating…</section><footer><button type="button" id="desk-recalculate">Update preview</button><button type="submit" id="desk-confirm" disabled>Confirm paper order · Enter</button><button type="button" id="desk-dismiss">Cancel · Esc</button></footer></form>';
+      '</div><p id="desk-preview-error" role="alert"></p><section id="desk-preview-result" aria-live="polite">Calculating…</section><footer><button type="button" id="desk-recalculate">Update preview</button><button type="submit" id="desk-confirm" disabled>Save paused entry · Enter</button><button type="button" id="desk-dismiss">Cancel · Esc</button></footer></form>';
     document.body.append(d);d.showModal();const get=id=>d.querySelector('#desk-'+id),error=t=>get('preview-error').textContent=t;
-    let data=ctx.data,plan=null,signature='',version=0,sent=false;
+    let data=ctx.data,sessions=null,plan=null,signature='',version=0,sent=false;
     const spec=()=>({entry:get('entry').value,type:get('type').value,timeframe:get('frame').value,stop:get('sl').value,target:get('tp').value,
-      riskPct:get('risk')?.value,rewardR:get('reward')?.value,qty:get('qty')?.value,targetLater:!!get('later')?.checked,strategy:get('tag').value,trackMinutes:Number(get('minutes').value)});
+      riskPct:get('risk')?.value,rewardR:get('reward')?.value,qty:get('qty')?.value,targetLater:!!get('later')?.checked,strategy:get('tag').value,trackMinutes:Number(get('minutes').value),sessions});
     const validContext=()=>{const c=a.context();return bookId===a.state().bookId&&mode===a.mode()&&Number(c?.inst?.conid)===Number(inst.conid)&&c?.inst?.symbol===inst.symbol;};
     function show(p){get('preview-result').innerHTML='<h3>'+p.qty+' shares · '+esc(p.strategy||'Untagged')+'</h3><p>Entry '+px(p.entry)+' · SL '+px(p.stop)+' · TP '+(p.target===null?'set later':px(p.target))+'</p><p>1 budget R '+money(p.budget)+' · Funded price risk '+money(p.fundedRisk)+' · ATR '+px(p.atr?.value)+' ('+esc(p.timeframe)+') · estimated round-trip fees '+money(p.fees)+'</p>';}
     async function prepare(){const v=++version;plan=null;get('confirm').disabled=true;error('');try{
       if(!d.querySelector('form').reportValidity())return;if(!validContext())throw Error('Selection or portfolio changed; reopen the preview');
+      if(!sessions||!root.PaperTrading.sessionFor(sessions,Date.now())){const schedule=await a.schedule();sessions=schedule.sessions;}
+      if(v!==version||!d.open)return;
       const sp=spec(),key=JSON.stringify(sp);
       if(mode==='Trading'&&!sp.stop){get('preview-result').textContent='Loading broker candles for '+inst.symbol+'…';if(!data||data.updatedAt>Date.now()||Date.now()-data.updatedAt>15000)data=await a.bars(inst);}
       if(v!==version||!d.open)return;if(!validContext())throw Error('Selection or portfolio changed; reopen the preview');
@@ -64,12 +74,15 @@ root.PaperTradingUI=function(a,E){
     d.addEventListener('keydown',e=>{if(e.key==='Enter'&&e.repeat)e.preventDefault();if(e.key==='Enter'&&!e.repeat&&!plan){e.preventDefault();prepare();}});
     get('recalculate').onclick=prepare;get('dismiss').onclick=()=>d.close();d.addEventListener('close',()=>{version++;d.remove();});if(mode==='Trading')prepare();else get('preview-result').textContent='Enter your share quantity and optional levels, then update preview.';
   }
-  document.addEventListener('click',e=>{if(e.target.closest('#desk-prepare')){open();return;}const t=e.target.closest('[data-desk-target],[data-desk-flat],[data-desk-cancel]');if(!t)return;
-    if(t.dataset.deskCancel){a.cancel(t.dataset.deskCancel);a.render();return;}if(t.dataset.deskFlat){E.flatten(t.dataset.deskFlat);a.render();return;}
+  document.addEventListener('click',e=>{if(e.target.closest('#desk-prepare')){open();return;}const t=e.target.closest('[data-desk-target],[data-desk-flat],[data-desk-cancel],[data-desk-start],[data-desk-pause]');if(!t)return;
+    if(t.dataset.deskCancel){if(!E.cancelEntry(t.dataset.deskCancel))a.warn('Entry already filled or closed; inspect the position below.');live();return;}
+    if(t.dataset.deskStart){try{E.startEntry(t.dataset.deskStart);}catch(err){a.warn(err.message);}live();return;}
+    if(t.dataset.deskPause){E.pauseEntry(t.dataset.deskPause);live();return;}
+    if(t.dataset.deskFlat){const b=E.book().active.find(b=>b.id===t.dataset.deskFlat);if(b&&confirm('SELL '+b.qty+' '+b.inst.symbol+' at the next valid live bid? This CLOSES a filled position and realizes P&L; it does not cancel the entry.'))E.flatten(b.id);live();return;}
     const b=E.book().active.find(b=>b.id===t.dataset.deskTarget);if(!b)return;const value=prompt('Take-profit for '+b.inst.symbol+' (above entry '+b.entry+')',b.target??'');if(value===null)return;try{E.setTarget(b.id,value);a.render();}catch(err){a.warn(err.message);}
   });
   document.addEventListener('change',e=>{const k=e.target.dataset?.deskSetting;if(!k)return;let value=e.target.value;if(k==='trackMinutes'){value=Number(value);if(!Number.isInteger(value)||value<1||value>30){a.warn('Tracking must be 1–30 whole minutes.');return;}}E.book().settings[k]=value;a.save();});
   document.addEventListener('keydown',e=>{if(e.defaultPrevented||e.repeat||e.altKey||e.ctrlKey||e.metaKey||e.shiftKey||e.key!=='1'||document.hidden||document.querySelector('dialog[open]')||a.mode()==='GUNS')return;if(e.target.closest?.('input,textarea,select,button,[contenteditable]:not([contenteditable="false"])'))return;e.preventDefault();open();});
-  return {panel,journal,tracking,open,active};
+  return {panel,journal,tracking,open,active,live,levels};
 };
 })(globalThis);

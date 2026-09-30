@@ -649,7 +649,7 @@ function feedSync(force){
 function quoteReady(conid){
   var q=Q[conid];
   if(!q||q.error||q.halted||q.bid==null||q.ask==null||!(q.bid>=0)||!(q.ask>0)||q.ask<q.bid) return false;
-  if(usingTws()) return FEED.connected && Date.now()-FEED.lastEvent<15000 && q.status==='LIVE' && Date.now()-q.at<15000;
+  if(usingTws()) return !/10197|competing live session/i.test(FEED.problem||'') && FEED.connected && Date.now()-FEED.lastEvent<15000 && q.status==='LIVE' && Date.now()-q.at<15000;
   return Date.now()-q.at<60000;
 }
 function orderNotice(message){
@@ -2445,6 +2445,7 @@ function putHTML(el,html){if(el&&HTML_CACHE.get(el)!==html){el.innerHTML=html;HT
 function renderLive(){
   if(document.hidden)return;
   renderStats(); renderDiag(); updateTradeButtons();
+  if(tradingUI)tradingUI.live();
   document.querySelectorAll('[data-wl]').forEach(function(el){
     var cid=Number(el.getAttribute('data-wl')),w=S.watchlist.find(function(x){return x.conid===cid;}),q=Q[cid];
     if(w)putHTML(el,esc(w.symbol)+(q&&q.last!=null?' <span class="mono">'+px(q.last)+'</span>':''));
@@ -3412,6 +3413,7 @@ if(window.GunsUI)guns=window.GunsUI.create({
   commission:commission,marketPrice:marketablePrice,fill:applyFill,save:save,sync:syncSubs,snapshot:function(){snapshotEquity(true);},
   render:render,tab:function(){return tab;},esc:esc,px:px,money:money,cancel:cancelOrder,
   mode:bookMode,deskPanel:function(){return tradingUI?tradingUI.panel():'';},
+  deskLevels:function(inst){return tradingUI?tradingUI.levels(inst):{};},deskLive:function(){if(tradingUI)tradingUI.live();},
   trackingView:function(b){return tradingUI?tradingUI.tracking(b):'';},
   onClosed:function(b){if(trading)trading.onGunsClose(b);}
 });
@@ -3421,6 +3423,7 @@ if(window.PaperTrading){
     commission:commission,fill:applyFill,save:save,sync:syncSubs});
   tradingUI=window.PaperTradingUI({state:function(){return S;},mode:bookMode,quotes:function(){return Q;},
     context:function(){return tab==='guns'?guns?.context():{inst:sel,frame:trading.settings().timeframe};},
+    schedule:async function(){var r=await fetch('/data/guns_schedule?provider=tws',{signal:AbortSignal.timeout(20000)});if(!r.ok)throw Error('Session schedule unavailable');var d=await r.json();if(d.error)throw Error(d.error);return d;},
     bars:async function(inst){var r=await fetch('/data/guns_bars?provider=tws&symbol='+encodeURIComponent(inst.symbol),{signal:AbortSignal.timeout(40000)});if(!r.ok)throw Error('Chart HTTP '+r.status);var d=await r.json();if(d.error)throw Error(d.error);return d;},
     gunsJournal:function(){return guns?guns.execution.book().journal:[];},save:save,render:render,warn:warn,cancel:cancelOrder,esc:esc,money:money,px:px},trading);
 }
