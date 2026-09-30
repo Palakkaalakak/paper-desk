@@ -191,8 +191,18 @@ function depthRisk(d,inst,p,cfg,now){
  if(wall)flags.push({code:'wall',text:'Nearby ask wall at $'+wall.price.toFixed(4)+' · '+(wall.size/median).toFixed(2)+'× median bid level'});
  return {valid:true,flags,key:flags.map(f=>f.code).sort().join('|'),at:d.updatedAt,revision:d.revision,stream:d.stream,metrics:{bidSize,askSize,ratio,spread},reason:flags.length?'Adverse displayed depth':'No configured depth flag'};
 }
+// Count actual aggregated buckets, not minute-count divided by timeframe.
+function chartRows(data,frame,now){
+ if(frame==='d')return (data?.daily||[]).filter(validBar);
+ const rows=(data?.minute||[]).filter(b=>finite(b.t)&&b.t<=now&&validBar(b));
+ return frame==='1'?rows:aggregate(rows,Number(frame));
+}
+function chartViewport(rows,range={}){
+ const count=Math.max(20,Math.min(300,Number(range.count)||80)),maxOffset=Math.max(0,rows.length-count),offset=Math.max(0,Math.min(maxOffset,Number(range.offset)||0)),end=rows.length-offset,start=Math.max(0,end-count);
+ return {count,offset,maxOffset,start,end,rows:rows.slice(start,end),atOldest:start===0,atLatest:offset===0};
+}
 function premarketBands(rows,frame,sessions){if(frame==='d')return [];const duration=Number(frame)*60000;if(!finite(duration)||duration<=0)return [];const windows=(sessions||[]).map(premarketWindow).filter(Boolean);return rows.flatMap((b,index)=>{if(!finite(b.t))return [];const s=windows.find(s=>b.t<s.end&&b.t+duration>s.start);if(!s)return [];return [{index,from:Math.max(0,(s.start-b.t)/duration),to:Math.min(1,(s.end-b.t)/duration)}];});}
 function size(equity,pct,entry,stop,bp,fees){const budget=equity*pct/100,d=entry-stop;const zero={equity,budget:finite(budget)?budget:0,qty:0,risk:0,fees:0,unused:finite(budget)?budget:0};if(![equity,pct,entry,stop,bp].every(finite)||equity<=0||pct<=0||pct>100||entry<=0||stop<=0||d<=0||bp<=0)return zero;fees=fees||(()=>0);let lo=0,hi=Math.floor(Math.min(budget/d,bp/entry));while(lo<hi){const n=Math.ceil((lo+hi)/2),f=fees(n);if(finite(f)&&f>=0&&n*d+f<=budget+1e-8&&n*entry+f<=bp+1e-8)lo=n;else hi=n-1;}const f=lo?fees(lo):0;return {equity,budget,qty:lo,risk:lo*d+f,fees:f,unused:budget-lo*d-f};}
 function exit(b,q,now){if(b.forceExit||b.stopTriggered||q.bid<=b.stop)return {reason:b.forceExit?'MANUAL FLATTEN':'STOP',stop:b.stop};if(finite(b.sessionEnd)&&now>=b.sessionEnd-60000)return {reason:'SESSION CLOSE',stop:b.stop};if(q.bid>=b.target)return {reason:'TARGET',stop:b.stop};return {reason:null,stop:b.breakeven&&q.bid>=b.entry+b.initialR?Math.max(b.stop,b.entry):b.stop};}
-return {VERSION,defaults,names,rules,validBar,day,premarketWindow,premarketHigh,gapEvidence,round,average,studies,atr,aggregate,flag,placement,analyze,strategyHint,depthRisk,premarketBands,size,exit};
+return {VERSION,defaults,names,rules,validBar,day,premarketWindow,premarketHigh,gapEvidence,round,average,studies,atr,aggregate,flag,placement,analyze,strategyHint,depthRisk,chartRows,chartViewport,premarketBands,size,exit};
 });
