@@ -3355,8 +3355,11 @@ if(LOCAL && saved && window.PaperTrading){
       if(!accountWriterLocked)throw Error('Use localhost in a browser supporting Web Locks for the safe account update');
       if(localStorage.getItem('paperAccount')!==saved)throw Error('Account changed in another tab; close other tabs and reload');
       var ownerBackup='paperAccount.backup.'+ownerChange.report.id;
-      // Preserve the exact original stored account, including the active PAM state.
+      // Preserve prior backups as well as this exact pre-update account.
+      var previousOwnerBackup=localStorage.getItem(ownerBackup);
+      if(previousOwnerBackup!==null && previousOwnerBackup!==saved)ownerBackup+='.'+crypto.randomUUID();
       if(localStorage.getItem(ownerBackup)===null)localStorage.setItem(ownerBackup,saved);
+      ownerChange.report.backupKey=ownerBackup;
       S=ownerChange.state;
       snapshotEquity(true);bookSync();
       localStorage.setItem('paperAccount',JSON.stringify(S));

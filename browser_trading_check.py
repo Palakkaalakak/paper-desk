@@ -151,16 +151,17 @@ def owner_checks(browser,route,state,errors):
                desk={'settings':{},'active':[],'journal':[]})
     original.update(pam);original.update(bookId='pam',books=[{'id':'desk','name':'Paper-Desk','data':desk},{'id':'pam','name':'PAM','data':pam}],guns={'config':{},'books':{'desk':{'notes':{},'active':[],'journal':[]},'pam':{'notes':{},'active':[],'journal':[{'id':'pam-journal'}]}}})
     seed=json.dumps(original);backup='paperAccount.backup.paperdesk-owner-results-20260930-v1'
-    for failure in (None,'backup','account'):
+    for failure in (None,'backup','account','old-backup'):
         context=browser.new_context();context.route('**/*',route)
         script='if(!localStorage.paperAccount)localStorage.paperAccount='+json.dumps(seed)+';'
-        if failure:
+        if failure=='old-backup':script+='if(!localStorage.getItem('+json.dumps(backup)+'))localStorage.setItem('+json.dumps(backup)+',"prior backup retained");'
+        if failure in ('backup','account'):
             condition="k.startsWith('paperAccount.backup.')" if failure=='backup' else "k==='paperAccount'"
             script+="const originalSet=Storage.prototype.setItem;Storage.prototype.setItem=function(k,v){if("+condition+")throw new DOMException('fixture storage failure','QuotaExceededError');return originalSet.call(this,k,v);};"
         context.add_init_script(script)
         page=context.new_page();page.on('pageerror',lambda e:errors.append(str(e)))
         page.goto('http://localhost:8765/',wait_until='domcontentloaded')
-        if failure:
+        if failure in ('backup','account'):
             page.wait_for_function("document.querySelector('#banner').textContent.includes('Account update NOT applied')")
             assert page.evaluate('localStorage.paperAccount')==seed
             assert page.evaluate('__paper.S.bookId')=='pam' and page.evaluate('__deskTest.engine') is None
@@ -175,7 +176,9 @@ def owner_checks(browser,route,state,errors):
             assert page.evaluate('__paper.S.positions.length+__paper.S.orders.length')==0
             assert page.evaluate('__paper.S.books.map(b=>b.name)')==['Paper-Desk']
             assert page.evaluate('__paper.S.equity.at(-1).equity')==87314.5
-            assert page.evaluate('(key)=>localStorage.getItem(key)',backup)==seed
+            saved_backup=page.evaluate("__paper.S.ownerAccountUpdates['paperdesk-owner-results-20260930-v1'].backupKey")
+            assert page.evaluate('(key)=>localStorage.getItem(key)',saved_backup)==seed
+            if failure=='old-backup':assert saved_backup!=backup and page.evaluate('(key)=>localStorage.getItem(key)',backup)=='prior backup retained'
             page.locator('[data-tab="hist"]').click();journal=page.locator('.desk-journal').inner_text()
             for symbol in ('JAGX','USDE','CYPH'):assert symbol in journal
             assert '20:55 Asia/Bangkok; date not supplied' in journal
@@ -183,7 +186,7 @@ def owner_checks(browser,route,state,errors):
             assert 'OWNER-REQUESTED CREDIT' in page.locator('.desk-journal').text_content()
             page.reload(wait_until='domcontentloaded');page.wait_for_function('window.__deskTest && __deskTest.engine')
             assert page.evaluate('__paper.S.cash')==87314.5 and page.evaluate('__paper.S.trades.length')==3
-            assert page.evaluate('(key)=>localStorage.getItem(key)',backup)==seed
+            assert page.evaluate('(key)=>localStorage.getItem(key)',saved_backup)==seed
             other=context.new_page();other.goto('http://localhost:8765/',wait_until='domcontentloaded')
             other.wait_for_function("document.querySelector('#banner').textContent.includes('already open in another tab')")
             assert other.evaluate('__deskTest.engine') is None
