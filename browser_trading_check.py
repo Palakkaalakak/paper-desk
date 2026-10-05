@@ -110,7 +110,58 @@ def main():
         assert page.evaluate('__deskTest.engine.book().journal[0].strategy')=='Discretionary'
         page.evaluate('(id)=>__paper.bookSwitch(id)',book)
         assert page.evaluate('__paper.S.account.mode')=='Trading' and page.evaluate('__deskTest.engine.book().journal[0].tracking.status')=='finished with gaps'
+        owner_checks(browser,route,state,errors)
         assert not errors,errors
         print(json.dumps({'Trading_Custom_ATR_TP_later_tracking_mobile_persistence':'passed','browser_errors':errors}))
         browser.close()
+def owner_checks(browser,route,state,errors):
+    fields=['account','cash','realized','lastDay','positions','orders','trades','cashflows','equity','watchlist','log','desk']
+    original=json.loads(json.dumps(state))
+    base={k:original[k] for k in fields if k in original}
+    desk=json.loads(json.dumps(base));pam=json.loads(json.dumps(base))
+    desk.update(account={'name':'Paper-Desk','mode':'Trading','type':'margin','currency':'USD'},cash=81234.5,realized=234.5,
+                positions=[],orders=[],trades=[],watchlist=[],log=[],equity=[],desk={'settings':{},'active':[],'journal':[]})
+    pam.update(account={'name':'PAM','mode':'Trading','type':'margin','currency':'USD'},cash=98566.8,realized=-1433.2,
+               positions=[{'conid':999,'symbol':'PAMONLY','qty':1,'avgCost':12,'secType':'STK','mult':1}],
+               orders=[{'id':'pam-order','conid':999,'status':'working'}],trades=[{'symbol':'AVAT','realized':-1662.21}],
+               desk={'settings':{},'active':[],'journal':[]})
+    original.update(pam);original.update(bookId='pam',books=[{'id':'desk','name':'Paper-Desk','data':desk},{'id':'pam','name':'PAM','data':pam}],guns={'books':{'desk':{'journal':[]},'pam':{'journal':[{'id':'pam-journal'}]}}})
+    seed=json.dumps(original);backup='paperAccount.backup.paperdesk-owner-results-20260930-v1'
+    for failure in (None,'backup','account'):
+        context=browser.new_context();context.route('**/*',route)
+        script='if(!localStorage.paperAccount)localStorage.paperAccount='+json.dumps(seed)+';'
+        if failure:
+            condition="k.startsWith('paperAccount.backup.')" if failure=='backup' else "k==='paperAccount'"
+            script+="const originalSet=Storage.prototype.setItem;Storage.prototype.setItem=function(k,v){if("+condition+")throw new DOMException('fixture storage failure','QuotaExceededError');return originalSet.call(this,k,v);};"
+        context.add_init_script(script)
+        page=context.new_page();page.on('pageerror',lambda e:errors.append(str(e)))
+        page.goto('http://paper.test/',wait_until='domcontentloaded')
+        if failure:
+            page.wait_for_function("document.querySelector('#banner').textContent.includes('Account update NOT applied')")
+            assert page.evaluate('localStorage.paperAccount')==seed
+            assert page.evaluate('__paper.S.bookId')=='pam' and page.evaluate('__deskTest.engine') is None
+            assert page.evaluate('(key)=>localStorage.getItem(key)',backup)==(None if failure=='backup' else seed)
+        else:
+            page.wait_for_function('window.__deskTest && __deskTest.engine')
+            assert page.evaluate('__paper.S.bookId')=='desk'
+            assert page.evaluate('__paper.S.cash')==87314.5 and page.evaluate('__paper.S.realized')==6314.5
+            assert page.evaluate('__paper.S.positions.length+__paper.S.orders.length')==0
+            assert page.evaluate('__paper.S.books.map(b=>b.name)')==['Paper-Desk']
+            assert page.evaluate('__paper.S.equity.at(-1).equity')==87314.5
+            assert page.evaluate('(key)=>localStorage.getItem(key)',backup)==seed
+            page.locator('[data-tab="hist"]').click();journal=page.locator('.desk-journal').inner_text()
+            for symbol in ('JAGX','USDE','CYPH'):assert symbol in journal
+            assert '20:55 Asia/Bangkok; date not supplied' in journal
+            assert 'Exit time unknown' in journal and '1970' not in journal and 'unknown quantity' in journal
+            assert 'OWNER-REQUESTED CREDIT' in page.locator('.desk-journal').text_content()
+            page.reload(wait_until='domcontentloaded');page.wait_for_function('window.__deskTest && __deskTest.engine')
+            assert page.evaluate('__paper.S.cash')==87314.5 and page.evaluate('__paper.S.trades.length')==3
+            assert page.evaluate('(key)=>localStorage.getItem(key)',backup)==seed
+            other=context.new_page();other.goto('http://paper.test/',wait_until='domcontentloaded')
+            other.wait_for_function("document.querySelector('#banner').textContent.includes('already open in another tab')")
+            assert other.evaluate('__deskTest.engine') is None
+            assert other.evaluate('JSON.parse(localStorage.paperAccount).cash')==87314.5
+        context.close()
+    print('Owner boot: backup, credits, PAM isolation, equity, reload, storage failures and single writer passed')
+
 if __name__=='__main__':main()
