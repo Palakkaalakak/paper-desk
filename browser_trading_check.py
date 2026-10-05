@@ -126,7 +126,7 @@ def owner_checks(browser,route,state,errors):
                positions=[{'conid':999,'symbol':'PAMONLY','qty':1,'avgCost':12,'secType':'STK','mult':1}],
                orders=[{'id':'pam-order','conid':999,'status':'working'}],trades=[{'symbol':'AVAT','realized':-1662.21}],
                desk={'settings':{},'active':[],'journal':[]})
-    original.update(pam);original.update(bookId='pam',books=[{'id':'desk','name':'Paper-Desk','data':desk},{'id':'pam','name':'PAM','data':pam}],guns={'books':{'desk':{'notes':{},'active':[],'journal':[]},'pam':{'notes':{},'active':[],'journal':[{'id':'pam-journal'}]}}})
+    original.update(pam);original.update(bookId='pam',books=[{'id':'desk','name':'Paper-Desk','data':desk},{'id':'pam','name':'PAM','data':pam}],guns={'config':{},'books':{'desk':{'notes':{},'active':[],'journal':[]},'pam':{'notes':{},'active':[],'journal':[{'id':'pam-journal'}]}}})
     seed=json.dumps(original);backup='paperAccount.backup.paperdesk-owner-results-20260930-v1'
     for failure in (None,'backup','account'):
         context=browser.new_context();context.route('**/*',route)
