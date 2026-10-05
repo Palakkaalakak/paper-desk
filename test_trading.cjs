@@ -2,7 +2,7 @@ const test=require('node:test'),assert=require('node:assert/strict');
 const T=require('./trading.js');
 const now=Date.parse('2026-09-10T14:30:00Z'),inst={conid:123,symbol:'TEST',secType:'STK',mult:1};
 function history(){return {...inst,minTick:.01,updatedAt:now,minute:Array.from({length:450},(_,i)=>({t:now-(450-i)*60000,o:10+i*.01,h:10.1+i*.01,l:9.9+i*.01,c:10+i*.01,v:100})),daily:Array.from({length:20},(_,i)=>({t:new Date(Date.parse('2026-08-20')+i*86400000).toISOString().slice(0,10),o:10,h:11,l:9,c:10}))};}
-function args(spec={},extra={}){return {mode:'Trading',inst,spec:{entry:20,stop:'',target:'',timeframe:'5',riskPct:1,rewardR:2,trackMinutes:5,type:'LMT',...spec},data:history(),equity:100000,bp:200000,fee:()=>1,now,...extra};}
+function args(spec={},extra={}){return {mode:'Trading',inst,spec:{entry:20,stop:'',target:'',timeframe:'5',riskPct:1,rewardR:2,trackMinutes:5,type:'LMT',sessions:[{start:now-3600000,end:now+19800000}],...spec},data:history(),equity:100000,bp:200000,fee:()=>1,now,...extra};}
 test('ATR follows selected completed timeframe, not an unfinished candle',()=>{
   const h=history();const one=T.atrFor(h,'1',now),five=T.atrFor(h,'5',now),fifteen=T.atrFor(h,'15',now);
   assert.ok(five.value>one.value);assert.ok(fifteen.value>five.value);
@@ -38,7 +38,7 @@ function fixture(mode='Trading'){
 }
 test('confirmed Trading order fills full risk size, preserves SL and closes at TP with budget R',()=>{
   const f=fixture(),p=f.E.plan(inst,args({stop:19,strategy:'Breakout'}).spec,null),o=f.E.arm(inst,p,'b1');
-  assert.equal(o.qty,998);f.E.fill(o);assert.equal(f.S.positions[0].qty,998);assert.equal(f.E.book().active[0].stop,19);
+  assert.equal(o.qty,998);f.E.startEntry(o.id);f.E.fill(o);assert.equal(f.S.positions[0].qty,998);assert.equal(f.E.book().active[0].stop,19);
   f.Q[123].bid=21;f.Q[123].ask=21.01;f.E.manage();assert.equal(f.E.book().active[0].stop,19);
   f.Q[123].bid=22.2;f.Q[123].ask=22.21;f.E.manage();const b=f.E.book().journal[0];assert.equal(b.outcome,'TARGET');assert.equal(b.exitPrice,22);assert.equal(b.net,1994);assert.equal(b.budgetR,1.994);assert.equal(b.strategy,'Breakout');assert.equal(b.tracking.status,'observing');
   assert.deepEqual(f.E.instruments().map(x=>[x.conid,x.priority]),[[123,1]],'Post-exit tracking has lower priority than active execution');
@@ -46,12 +46,12 @@ test('confirmed Trading order fills full risk size, preserves SL and closes at T
   const cash=f.S.cash;f.E.manage();assert.equal(f.S.cash,cash);
 });
 test('TP can be supplied later and closed exactly once; stale data never fills',()=>{
-  const f=fixture(),p=f.E.plan(inst,args({stop:19,targetLater:true}).spec,null),o=f.E.arm(inst,p,'b1');f.ready(false);assert.equal(f.E.fill(o),false);f.ready(true);f.E.fill(o);
+  const f=fixture(),p=f.E.plan(inst,args({stop:19,targetLater:true}).spec,null),o=f.E.arm(inst,p,'b1');f.E.startEntry(o.id);f.ready(false);assert.equal(f.E.fill(o),false);f.ready(true);f.E.fill(o);
   const b=f.E.book().active[0];assert.equal(b.target,null);f.Q[123].bid=25;f.Q[123].ask=25.01;f.E.manage();assert.equal(f.E.book().active.length,1);
   f.E.setTarget(b.id,24);assert.equal(f.E.book().active.length,0);assert.equal(f.E.book().journal[0].exitPrice,24);
 });
 test('stop latches with missing displayed size, guards duplicate entry and account changes',()=>{
-  const f=fixture(),p=f.E.plan(inst,args({stop:19}).spec,null);assert.throws(()=>f.E.arm(inst,p,'other'),/Portfolio/);const o=f.E.arm(inst,p,'b1');assert.throws(()=>f.E.arm(inst,p,'b1'),/already/);f.E.fill(o);
+  const f=fixture(),p=f.E.plan(inst,args({stop:19}).spec,null);assert.throws(()=>f.E.arm(inst,p,'other'),/Portfolio/);const o=f.E.arm(inst,p,'b1');assert.throws(()=>f.E.arm(inst,p,'b1'),/already/);f.E.startEntry(o.id);f.E.fill(o);
   f.Q[123].bid=18.5;f.Q[123].ask=18.51;f.Q[123].bidSize=0;f.E.manage();assert.equal(f.E.book().active[0].stopTriggered,true);
   f.Q[123].bid=19.2;f.Q[123].ask=19.21;f.Q[123].bidSize=1;f.E.manage();assert.equal(f.E.book().journal[0].outcome,'STOP');
 });
@@ -104,4 +104,33 @@ test('tracking marks disconnected/reload gaps and excludes prices after the conf
   const saved=JSON.parse(JSON.stringify(b));T.observe(saved,quote(now+61000,99),true,now+61000);
   assert.equal(saved.tracking.max,11);assert.equal(saved.tracking.status,'finished with gaps');assert.ok(saved.tracking.gapMs>50000);
   const empty={};T.beginTracking(empty,now,1);T.observe(empty,null,false,now+60000);assert.equal(empty.tracking.status,'no data');assert.equal(empty.tracking.gapMs,60000);
+});
+
+test('paused confirmation supports start, pause and offline cancellation',()=>{
+ const f=fixture(),o=f.E.arm(inst,f.E.plan(inst,args({stop:19}).spec,null),'b1');
+ assert.equal(o.desk.paused,true);assert.equal(f.E.fill(o),false);assert.equal(f.S.positions.length,0);
+ f.E.startEntry(o.id);f.E.pauseEntry(o.id);assert.equal(f.E.fill(o),false);f.ready(false);
+ assert.equal(f.E.cancelEntry(o.id),true);assert.equal(o.status,'cancelled');assert.equal(f.E.fill(o),false);
+});
+test('premarket start queues without triggering until verified open',()=>{
+ const f=fixture();f.advance(-3600001);const o=f.E.arm(inst,f.E.plan(inst,args({stop:19,type:'STPLMT'}).spec,null),'b1');f.E.startEntry(o.id);
+ assert.match(f.E.entryStatus(o),/QUEUED/);assert.equal(f.E.fill(o),false);assert.equal(o.triggered,false);assert.equal(f.S.cash,100000);
+ f.advance(1);assert.equal(f.E.fill(o),true);assert.equal(o.triggered,true);assert.ok(f.S.positions[0].qty>0);
+});
+test('DAY expires even paused; missing sessions and legacy policies are blocked',()=>{
+ const f=fixture(),o=f.E.arm(inst,f.E.plan(inst,args({stop:19}).spec,null),'b1');f.advance(19800000);
+ assert.equal(f.E.fill(o),true);assert.equal(o.status,'cancelled');assert.match(o.note,/regular-session close/);
+ const g=fixture(),old=g.E.arm(inst,g.E.plan(inst,args({stop:19}).spec,null),'b1');delete old.desk.plan.sessionPolicy;
+ assert.equal(g.E.fill(old),false);assert.throws(()=>g.E.startEntry(old.id),/old entry/);assert.equal(g.S.positions.length,0);
+ assert.throws(()=>T.calculate(args({sessions:[]})),/Verified current/);
+});
+test('unsafe spreads, 10197, halt, future and stale quotes cannot fill entries',()=>{
+ for(const update of [{bid:18.9},{error:'10197 competing live session'},{halted:true},{at:now+1},{at:now-15000},{bid:21,ask:20}]){
+  const f=fixture(),o=f.E.arm(inst,f.E.plan(inst,args({stop:19}).spec,null),'b1');f.E.startEntry(o.id);Object.assign(f.Q[123],update);
+  assert.equal(f.E.fill(o),false,JSON.stringify(update));assert.equal(f.S.positions.length,0);
+ }
+});
+test('filled position keeps stop protection after regular-session close',()=>{
+ const f=fixture(),o=f.E.arm(inst,f.E.plan(inst,args({stop:19}).spec,null),'b1');f.E.startEntry(o.id);f.E.fill(o);
+ f.advance(19800001);f.Q[123].bid=18.5;f.Q[123].ask=18.51;f.E.manage();assert.equal(f.E.book().journal[0].outcome,'STOP');assert.equal(f.E.book().journal[0].exitPrice,18.5);
 });

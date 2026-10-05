@@ -2829,9 +2829,10 @@ function sparkline(){
 }
 function viewHist(){
   var tr = S.trades.slice(0,400).map(function(t){
+    var adjustment=t.side==='ADJUST'&&t.priceSource==='USER_REPORTED_RESULT';
     return '<tr><td class="l">'+ts(t.ts)+'</td><td class="l"><b>'+esc(t.symbol)+'</b>'+(t.strategyType?' <span class="pill">'+esc(t.strategyType)+'</span>':'')+(t.combo?' <span class="pill">'+esc(t.combo)+'</span>':'')+'</td>'
-     +'<td class="l '+(t.side==='BUY'?'up':'dn')+'">'+t.side+'</td><td>'+qty(t.qty)+'</td><td>'+px(t.price)+'</td>'
-     +'<td>'+money(t.qty*t.price*(t.mult||(t.secType==='OPT'?100:1)))+'</td><td>'+money(t.commission)+'</td>'
+     +'<td class="l '+(t.side==='BUY'?'up':'dn')+'">'+t.side+'</td><td>'+(adjustment?'not a fill':qty(t.qty))+'</td><td>'+(adjustment?'unknown':px(t.price))+'</td>'
+     +'<td>'+(adjustment?'not applicable':money(t.qty*t.price*(t.mult||(t.secType==='OPT'?100:1))))+'</td><td>'+(adjustment?'unknown':money(t.commission))+'</td>'
      +'<td class="'+cls(t.realized)+'">'+(t.realized?money(t.realized):'-')+'</td><td>'+money(t.cashAfter)+'</td></tr>';
   }).join('');
   var cf = S.cashflows.slice().reverse().slice(0,80).map(function(c){
@@ -2839,7 +2840,7 @@ function viewHist(){
   }).join('');
   var lg = S.log.slice(0,200).map(function(l){ return '<div><span class="dim">'+ts(l.ts)+'</span> '+esc(l.text)+'</div>'; }).join('');
   return (tradingUI?tradingUI.journal():'')+'<div class="panel"><h2>Equity curve</h2>'+sparkline()+'<button class="mini" id="markBtn" style="margin-top:6px">Mark to market now</button></div>'
-   +'<div class="panel"><h2>Fills ('+S.trades.length+')</h2><div class="tblwrap"><table><thead><tr><th class="l">Time</th><th class="l">Symbol</th><th class="l">Side</th><th>Qty</th><th>Price</th><th>Notional</th><th>Comm</th><th>Realized</th><th>Cash after</th></tr></thead><tbody>'+(tr||'<tr><td class="l dim" colspan="9">No fills yet.</td></tr>')+'</tbody></table></div></div>'
+   +'<div class="panel"><h2>Fills / adjustment ledger ('+S.trades.length+')</h2><div class="tblwrap"><table><thead><tr><th class="l">Time</th><th class="l">Symbol</th><th class="l">Side</th><th>Qty</th><th>Price</th><th>Notional</th><th>Comm</th><th>Realized</th><th>Cash after</th></tr></thead><tbody>'+(tr||'<tr><td class="l dim" colspan="9">No fills yet.</td></tr>')+'</tbody></table></div></div>'
    +'<div class="panel"><h2>Cash flows</h2><div class="tblwrap"><table style="min-width:320px"><thead><tr><th class="l">Time</th><th class="l">Note</th><th>Amount</th></tr></thead><tbody>'+cf+'</tbody></table></div></div>'
    +'<div class="panel"><h2>Activity log</h2><div class="log">'+(lg||'<span class="dim">Nothing yet.</span>')+'</div></div>';
 }
