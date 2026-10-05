@@ -60,6 +60,37 @@ test('ordinary partial exits journal fees and realized dollars without inventing
   f.E.after({...inst,id:'b',side:'SELL'},4,11,10,6,3,1,10);assert.equal(f.E.book().active[0].qty,6);
   f.E.after({...inst,id:'c',side:'SELL'},6,12,6,0,11,1,10);const b=f.E.book().journal[0];assert.equal(b.net,13);assert.equal(b.fees,3);assert.equal(b.budgetR,null);assert.equal(b.strategy,'Manual');
 });
+function repairFixture(active='pam'){
+  const data=(name,cash,realized)=>({account:{name,mode:'Trading',currency:'USD'},cash,realized,positions:[],orders:[],trades:[],cashflows:[],equity:[],watchlist:[],log:[],desk:{settings:{},active:[],journal:[]}});
+  const desk=data('Paper-Desk',81234.50,234.50),pam=data('PAM',98566.80,-1433.20);
+  pam.positions=[{conid:999,qty:10}];pam.orders=[{id:'pam-order'}];pam.trades=[{symbol:'AVAT',realized:-1662.21}];
+  return {...JSON.parse(JSON.stringify(active==='pam'?pam:desk)),bookId:active,books:[{id:'desk',name:'Paper-Desk',data:desk},{id:'pam',name:'PAM',data:pam}],guns:{books:{desk:{journal:[]},pam:{journal:[{id:'pam-only'}]}}}};
+}
+test('owner repair credits only Paper Desk, removes PAM without transfer and is pure / once-only',()=>{
+  const s=repairFixture(),before=JSON.stringify(s),r=T.requestedAccountRepair(s,now),n=r.state;
+  assert.equal(JSON.stringify(s),before);assert.equal(n.bookId,'desk');assert.equal(n.cash,87314.50);assert.equal(n.realized,6314.50);
+  assert.deepEqual(n.books.map(b=>b.id),['desk']);assert.equal(n.guns.books.pam,undefined);assert.deepEqual(n.positions,[]);assert.deepEqual(n.orders,[]);
+  assert.equal(r.report.delta,6080);assert.equal(n.trades.length,3);assert.ok(n.trades.every(t=>t.side==='ADJUST'&&t.qty===0));
+  const j=n.desk.journal.find(b=>b.inst.symbol==='JAGX');assert.equal(j.budgetR,2);assert.equal(j.originalQty,null);assert.equal(j.closedAt,null);assert.equal(j.exitPrice,null);assert.equal(j.fees,null);assert.equal(j.tracking,undefined);
+  assert.equal(T.requestedAccountRepair(JSON.parse(JSON.stringify(n)),now),null);
+});
+test('owner repair snapshots active Paper Desk and does not mistake same ticker/profit executions for credits',()=>{
+  const s=repairFixture('desk');s.cash=90000;s.realized=700;
+  s.desk.journal.push({id:'real-trade',inst:{symbol:'USDE'},net:2040,strategy:'Breakout'});
+  const r=T.requestedAccountRepair(s,now);assert.equal(r.state.cash,96080);assert.equal(r.state.realized,6780);assert.equal(r.state.desk.journal.length,4);
+});
+test('owner repair recognizes explicit request evidence and applies only missing money',()=>{
+  const s=repairFixture(),d=s.books[0].data;d.desk.journal.push({id:'owner-reported-JAGX-2000-v1',inst:{symbol:'JAGX'},net:2000});
+  const r=T.requestedAccountRepair(s,now);assert.equal(r.report.delta,4080);assert.equal(r.state.desk.journal.length,3);
+  const partial=repairFixture();partial.books[0].data.desk.journal.push({id:'owner-reported-JAGX-2000-v1',inst:{symbol:'JAGX'},net:1500});
+  assert.equal(T.requestedAccountRepair(partial,now).report.delta,4580);
+});
+test('owner repair fails safely on missing / ambiguous destinations and conflicting records',()=>{
+  const s=repairFixture();s.books[0].name=s.books[0].data.account.name='Other';assert.equal(T.requestedAccountRepair(s,now),null);
+  const a=repairFixture();a.books.push({...a.books[0],id:'another'});assert.equal(T.requestedAccountRepair(a,now),null);
+  const bad=repairFixture();bad.books[0].data.cash=null;assert.throws(()=>T.requestedAccountRepair(bad,now),/invalid accounting/);
+  const conflict=repairFixture();conflict.books[0].data.desk.journal=[{id:'owner-reported-JAGX-2000-v1',net:3000}];assert.throws(()=>T.requestedAccountRepair(conflict,now),/Conflicting/);
+});
 const quote=(at,bid)=>({at,bid,ask:bid+.01,status:'LIVE'});
 test('tracking records distinct observed quotes, later TP and additional R without changing results',()=>{
   const b={entry:10,exitPrice:11,priceR:1,target:12,net:999};T.beginTracking(b,now,1);

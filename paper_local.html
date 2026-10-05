@@ -202,7 +202,7 @@ h1{font-size:20px;letter-spacing:-.5px} h2{letter-spacing:.09em;font-size:11px}
 <script src="/assets/trading-ui.js"></script>
 <script>
 var PAPER_LOCAL = true;
-(function(){
+(async function(){
 "use strict";
 /* ------------------------------------------------------------------
    IBKR Client Portal Web API adapter.
@@ -3322,6 +3322,18 @@ function startAuto(){
 window.__paper = {get S(){return S;}, get Q(){return Q;}, requirement:function(){return requirement(S.positions);}, requirementFor:function(m){return requirement(S.positions,m);}, commission:commission, acct:function(){return acct();}, classOf:classOf, reauths:function(){return GW_REAUTHS;}, paper:function(){return GW_PAPER;}, callFree:function(t,i){return callFREE(t,i);}, marketablePrice:marketablePrice, drawFillWait:drawFillWait, setRng:function(f){ RNG = f || Math.random; }, stream:function(){return STREAM;}, ticks:function(){return TICKS;}, get FREE(){return (typeof FREE!=='undefined')?FREE:null;}, bookCreate:bookCreate, bookSwitch:bookSwitch, bookDelete:bookDelete, bookOf:bookOf};
 
 /* ---------- boot ---------- */
+// One writer per browser origin. The browser releases this lifetime lock on
+// tab close/reload. This protects both the repair and subsequent account saves.
+var accountWriterLocked=false;
+if(LOCAL && navigator.locks){
+  accountWriterLocked=await new Promise(function(resolve){
+    navigator.locks.request('paperAccount.writer',{ifAvailable:true},function(lock){
+      resolve(!!lock);
+      if(lock)return new Promise(function(){});
+    }).catch(function(){resolve(false);});
+  });
+  if(!accountWriterLocked){warn('Paper Desk is already open in another tab. Close that tab, then reload this one. No account changes or execution started.');return;}
+}
 if(LOCAL){
   try { var saved = localStorage.getItem('paperAccount'); if(saved){ var pS=JSON.parse(saved); for(var _k in pS) S[_k]=pS[_k]; } }
   catch(e){}
@@ -3334,6 +3346,26 @@ if(!S.settings.gatewayStreamVersion){
 }
 S.settings.auto=true;
 bookInit();          /* after the saved state is merged in, before anything reads it */
+if(LOCAL && saved && window.PaperTrading){
+  var ownerBefore=S;
+  try{
+    var ownerChange=window.PaperTrading.requestedAccountRepair(S,Date.now());
+    if(ownerChange){
+      if(!accountWriterLocked)throw Error('Use localhost in a browser supporting Web Locks for the safe account update');
+      if(localStorage.getItem('paperAccount')!==saved)throw Error('Account changed in another tab; close other tabs and reload');
+      var ownerBackup='paperAccount.backup.'+ownerChange.report.id;
+      // Preserve the exact original stored account, including the active PAM state.
+      if(localStorage.getItem(ownerBackup)===null)localStorage.setItem(ownerBackup,saved);
+      S=ownerChange.state;
+      snapshotEquity(true);bookSync();
+      localStorage.setItem('paperAccount',JSON.stringify(S));
+    }
+  }catch(e){
+    S=ownerBefore;
+    warn('Account update NOT applied. '+(e.message||'Backup/save failed')+'. No execution started; resolve storage or account conflict and reload.');
+    return;
+  }
+}
 sel=S.lastSelected || S.watchlist[0] || S.positions.find(function(p){return p.qty;}) || null;
 if(S.lastDay !== today()){
   S.lastDay = today();

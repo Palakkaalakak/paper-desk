@@ -82,6 +82,71 @@ function observe(b,q,ready,now){
   if(t.samples&&positive(exit)){t.favorable=Math.max(0,long?t.max-exit:exit-t.min);t.adverse=Math.max(0,long?exit-t.min:t.max-exit);t.extraR=positive(risk)?t.favorable/risk:null;}
   return changedSample||t.status!=='observing'||!valid;
 }
+// One owner-requested local-account repair, not an execution or a deposit.
+const ownerUpdateId='paperdesk-owner-results-20260930-v1';
+const accountFields=['account','cash','realized','lastDay','positions','orders','trades','cashflows','equity','watchlist','log','desk'];
+function requestedAccountRepair(state,now){
+  if(state.ownerAccountUpdates?.[ownerUpdateId])return null;
+  const normalize=x=>String(x||'').toLowerCase().replace(/[^a-z0-9]/g,''),clone=x=>JSON.parse(JSON.stringify(x));
+  const next=clone(state),books=next.books;
+  if(!Array.isArray(books))return null;
+  const active=books.find(b=>b.id===next.bookId);if(!active)return null;
+  active.data=Object.fromEntries(accountFields.filter(k=>next[k]!==undefined).map(k=>[k,clone(next[k])]));
+  const named=(b,name)=>normalize(b.name)===name||normalize(b.data?.account?.name)===name;
+  const targets=books.filter(b=>named(b,'paperdesk')),pam=books.filter(b=>named(b,'pam'));
+  if(targets.length!==1)return null;
+  const target=targets[0];if(pam.includes(target))return null;
+  // Initial repair is scoped to the owner's Paper Desk + PAM state. Explicit
+  // prior request evidence also permits remaining credits after PAM was removed.
+  const d=target.data,prior=Object.values(next.ownerAccountUpdates||{}).some(r=>r.targetBookId===target.id);
+  const requests=[['JAGX',2000],['USDE',2040],['CYPH',2040]];
+  const requestId=s=>'owner-reported-'+s+'-'+requests.find(x=>x[0]===s)[1]+'-v1';
+  const existing=[...(d?.desk?.journal||[]),...(next.guns?.books?.[target.id]?.journal||[])];
+  const identified=existing.some(b=>requests.some(([s])=>b.id===requestId(s)||b.requestId===requestId(s)));
+  if(!pam.length&&!prior&&!identified)return null;
+  if(!d?.account||!Number.isFinite(d.cash)||!Number.isFinite(d.realized))throw Error('Paper Desk has invalid accounting; owner update stopped');
+  for(const k of ['positions','orders','trades','cashflows','equity','watchlist','log']){
+    if(d[k]===undefined)d[k]=[];
+    if(!Array.isArray(d[k]))throw Error('Invalid Paper Desk '+k+'; owner update stopped');
+  }
+  d.desk=d.desk||{settings:{},active:[],journal:[]};
+  if(!Array.isArray(d.desk.journal))throw Error('Invalid Paper Desk journal; owner update stopped');
+  const report={id:ownerUpdateId,at:now,targetBookId:target.id,deletedBookIds:pam.map(b=>b.id),delta:0,results:[]};
+  for(const [symbol,net] of requests){
+    const id=requestId(symbol),jagx=symbol==='JAGX';
+    const matches=existing.filter(b=>b.id===id||b.requestId===id||(
+      b.inst?.symbol===symbol&&/owner.reported|user.reported/i.test(b.strategy||'')&&
+      (jagx?b.entry===10.40&&b.originalStop===9.96&&(b.originalTarget??b.target)===11.28&&/20:55/.test(b.reportedEntryTime||''):b.requestedNet===net)
+    ));
+    const ledger=d.trades.filter(t=>t.id===id||t.requestId===id);
+    if(matches.length>1||ledger.length>1)throw Error('Ambiguous existing '+symbol+' owner credit; update stopped');
+    const recorded=matches.length?matches[0].net:ledger.length?ledger[0].realized:0;
+    if(!Number.isFinite(recorded)||recorded<0||recorded>net)throw Error('Conflicting existing '+symbol+' owner credit; update stopped');
+    if(matches.length&&ledger.length&&matches[0].net!==ledger[0].realized)throw Error('Journal/ledger mismatch for '+symbol+'; update stopped');
+    const delta=Math.round((net-recorded)*100)/100;
+    report.results.push({requestId:id,symbol,net,previouslyRecorded:recorded,delta,status:delta?'credited':'already recorded'});
+    if(!delta)continue;
+    const basis=jagx?'Owner-reported +2R normalized at $1,000/R = $2,000; not share-based execution':'Owner-reported net profit of $2,040; risk budget not supplied';
+    const adjustmentId=recorded?id+'-remainder':id;
+    d.cash=Math.round((d.cash+delta)*100)/100;d.realized=Math.round((d.realized+delta)*100)/100;report.delta+=delta;
+    d.desk.journal.unshift({id:adjustmentId,requestId:id,inst:{symbol,secType:'STK',mult:1},qty:0,originalQty:null,
+      openedAt:null,closedAt:null,recordedAt:now,entry:jagx?10.40:null,originalStop:jagx?9.96:null,stop:jagx?9.96:null,
+      target:jagx?11.28:null,originalTarget:jagx?11.28:null,exitPrice:null,budget:jagx?1000:null,budgetR:jagx?delta/1000:null,
+      net:delta,requestedNet:net,previouslyRecorded:recorded,gross:null,fees:null,managed:false,
+      strategy:jagx?'GUNS S1 · owner-reported':'Owner-reported result',reportedEntryTime:jagx?'20:55 Asia/Bangkok; date not supplied':'unknown',
+      outcome:'PROFIT — owner-reported adjustment',coverage:basis+'; trade date, quantity, fees and exit time unknown; NOT a broker fill',repairId:ownerUpdateId,
+      events:[{at:now,type:'OWNER-REQUESTED CREDIT',detail:basis+'; previously recorded '+recorded+'; added '+delta}]});
+    d.trades.unshift({id:adjustmentId,requestId:id,ts:now,orderId:adjustmentId,symbol,secType:'STK',side:'ADJUST',qty:0,price:null,
+      commission:null,realized:delta,cashAfter:d.cash,mult:1,priceSource:'USER_REPORTED_RESULT',repairId:ownerUpdateId,combo:basis});
+  }
+  d.log.unshift({ts:now,text:'Owner-requested Paper Desk adjustment +$'+report.delta.toFixed(2)+' (JAGX / USDE / CYPH). PAM deleted without transferring money, positions, orders or trades. Original account backed up before persistence.'});
+  next.books=books.filter(b=>!pam.includes(b));
+  for(const b of pam)if(next.guns?.books)delete next.guns.books[b.id];
+  next.bookId=target.id;next.lastSelected=null;
+  for(const k of accountFields){delete next[k];if(d[k]!==undefined)next[k]=clone(d[k]);}
+  next.ownerAccountUpdates=next.ownerAccountUpdates||{};next.ownerAccountUpdates[ownerUpdateId]=report;
+  return {state:next,report};
+}
 function create(a){
   const state=()=>a.state();
   function book(){const s=state();return s.desk||(s.desk={settings:{},active:[],journal:[]});}
@@ -191,5 +256,5 @@ function create(a){
   function onGunsClose(b){beginTracking(b,a.now(),settings().trackMinutes);a.sync();}
   return {book,settings,plan,arm,startEntry,pauseEntry,cancelEntry,entryStatus,guard,fill,after,manage,setTarget,flatten,pending,exposure,track,instruments,onGunsClose};
 }
-return {defaults,sessionFor,atrFor,calculate,beginTracking,observe,create};
+return {defaults,ownerUpdateId,requestedAccountRepair,sessionFor,atrFor,calculate,beginTracking,observe,create};
 });
