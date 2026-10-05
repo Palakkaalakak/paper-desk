@@ -8,7 +8,7 @@ This section supersedes older confirmation instructions below. Architecture rema
 - On loading the updated app with the existing Paper Desk/PAM state, credit **JAGX +$2,000, USDE +$2,040 and CYPH +$2,040** to the existing **Paper Desk / Paper-Desk** cash and realized P&L, with a current equity mark. Never reset its balance or reverse PAM losses into it.
 - **Delete PAM** and its GUNS book without transferring any PAM money, orders, positions or history. Other portfolios and existing Paper Desk data remain intact.
 - JAGX is explicitly **normalized +2R at $1,000/R**, not a share-based fill. Preserve reported entry 10.40, SL 9.96, TP 11.28 and 20:55 Asia/Bangkok. Trade date, quantity, fees and actual exit time/price remain unknown. USDE/CYPH use only reported dollar amounts; no invented screenshot levels or risk budgets.
-- Before saving changes, back up the exact original `paperAccount` value at `localStorage['paperAccount.backup.paperdesk-owner-results-20260930-v1']`. Save the changed state and `ownerAccountUpdates` marker together. Backup/save errors stop startup before execution and keep the original account.
+- Before saving changes, back up the exact original `paperAccount` value at `localStorage['paperAccount.backup.paperdesk-owner-results-20260930-v1']`. If an earlier backup differs, retain it and save the current pre-update value under a unique suffixed key; the report records `backupKey`. Save the changed state and `ownerAccountUpdates` marker together. Backup/save errors stop startup before execution and keep the original account.
 - History shows owner-reported adjustments in the detailed journal, adjustment ledger and activity log, not fake BUY/SELL fills or deposits. Request IDs / specific reported-result evidence prevent double credit; unrelated same-ticker/same-profit executions are not duplicates. An identified partial result receives only the missing delta. Conflicting evidence aborts rather than guesses.
 - Initial repair is scoped to existing Paper Desk plus PAM. Prior owner-update/request evidence permits remaining credits after PAM was removed. Missing/ambiguous destinations are not guessed; this is not a recurring starting-balance bonus for new accounts.
 - Use the same browser profile and localhost origin holding the account. **Close old-version tabs before upgrading.** A lifetime Web Lock permits one updated writer tab; another tab stops before loading or execution. Safe repair requires a localhost browser supporting Web Locks. The backup remains in that browser, not on GitHub or in cloud storage.
@@ -21,6 +21,13 @@ Entry is blocked when the live bid is already at/below SL or Gateway reports 101
 S1 uses same-day **04:00–09:30 New York premarket**, capped at an earlier reported open. Delayed stock openings cannot extend it into regular hours. Observed sparse/forming 1m/5m/15m S1 hover is labeled; invalid hover clears levels instead of silently reverting to automatic levels. ENHA's exact historical cause remains unverified. No further shading investigation is requested.
 
 Update with `git pull --ff-only origin main`, restart the existing Python server and reload the same account-holding browser. No correction form is needed. Development tests/source changes do not themselves change your separate browser. Offline regressions do not establish live Gateway reliability; quote entitlement/timing acceptance on the user's machine remains outstanding.
+
+### Final offline verification — 2026-10-05
+- `node --test test_frontend.cjs test_guns.cjs test_trading.cjs`: **108 passed**.
+- `python -m unittest test_market test_security`: **72 passed**.
+- `python browser_check.py`, `python browser_guns_check.py`, `python browser_trading_check.py`: **all passed, zero browser errors**.
+- Actual localhost browser fixtures verify automatic +$6,080, no PAM money/position/order leakage, exact original backup, existing-backup preservation, equity reconciliation, unknown metadata, no repeat on reload, storage-failure rollback and single-writer locking. Execution fixtures cover queued/paused/start/cancel/expiry, legacy-policy blocking, unsafe spreads, two-symbol visibility, Trading level selection, 10197 entry/exit blocking and continued stop protection after regular close.
+- These results were observed before the final sandbox reset; only documentation changed afterward. They are offline fixtures, not changes to your separate browser or proof of live Gateway reliability. Older dated counts below describe earlier checkpoints.
 
 ## New modes and journal workflow — 2026-09-24
 
