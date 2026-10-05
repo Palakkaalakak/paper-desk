@@ -22,7 +22,7 @@ def main():
         history['minute'].append(dict(t=NOW-(450-i)*60000,o=c,h=c+.1,l=c-.1,c=c,v=1000))
     errors=[];requests=[]
     with sync_playwright() as pw:
-        browser=pw.chromium.launch(args=['--no-sandbox','--unsafely-treat-insecure-origin-as-secure=http://paper.test'])
+        browser=pw.chromium.launch(args=['--no-sandbox'])
         page=browser.new_page(viewport={'width':1300,'height':950})
         page.clock.install(time=dt.datetime.fromtimestamp(NOW/1000,tz=dt.timezone.utc))
         page.on('pageerror',lambda e:errors.append(str(e)))
@@ -43,7 +43,7 @@ def main():
             return r.fulfill(status=404,body='No fixture')
         page.route('**/*',route)
         page.add_init_script('if(!localStorage.paperAccount)localStorage.paperAccount='+json.dumps(json.dumps(state))+';')
-        page.goto('http://paper.test/',wait_until='domcontentloaded')
+        page.goto('http://localhost:8765/',wait_until='domcontentloaded')
         page.wait_for_function('window.__deskTest && __deskTest.engine')
         page.locator('[data-tab="acct"]').click()
         page.locator('#bkName').fill('ATR book');page.locator('#bkCash').fill('100000');page.locator('#bkMode').select_option('Trading');page.locator('#bkAdd').click()
@@ -65,6 +65,7 @@ def main():
         assert page.locator('[data-desk-cancel]').count()==1
         feed();page.evaluate('__deskTest.sweep()')
         assert page.evaluate('__deskTest.engine.book().active.length')==0
+        feed(20.4,20.5)  # Outside entry limit while testing pause, not a fill race.
         page.locator('[data-desk-start]').click();page.locator('[data-desk-pause]').click()
         feed();page.evaluate('__deskTest.sweep()')
         assert page.evaluate('__deskTest.engine.book().active.length')==0
@@ -125,7 +126,7 @@ def owner_checks(browser,route,state,errors):
                positions=[{'conid':999,'symbol':'PAMONLY','qty':1,'avgCost':12,'secType':'STK','mult':1}],
                orders=[{'id':'pam-order','conid':999,'status':'working'}],trades=[{'symbol':'AVAT','realized':-1662.21}],
                desk={'settings':{},'active':[],'journal':[]})
-    original.update(pam);original.update(bookId='pam',books=[{'id':'desk','name':'Paper-Desk','data':desk},{'id':'pam','name':'PAM','data':pam}],guns={'books':{'desk':{'journal':[]},'pam':{'journal':[{'id':'pam-journal'}]}}})
+    original.update(pam);original.update(bookId='pam',books=[{'id':'desk','name':'Paper-Desk','data':desk},{'id':'pam','name':'PAM','data':pam}],guns={'books':{'desk':{'notes':{},'active':[],'journal':[]},'pam':{'notes':{},'active':[],'journal':[{'id':'pam-journal'}]}}})
     seed=json.dumps(original);backup='paperAccount.backup.paperdesk-owner-results-20260930-v1'
     for failure in (None,'backup','account'):
         context=browser.new_context();context.route('**/*',route)
@@ -135,14 +136,17 @@ def owner_checks(browser,route,state,errors):
             script+="const originalSet=Storage.prototype.setItem;Storage.prototype.setItem=function(k,v){if("+condition+")throw new DOMException('fixture storage failure','QuotaExceededError');return originalSet.call(this,k,v);};"
         context.add_init_script(script)
         page=context.new_page();page.on('pageerror',lambda e:errors.append(str(e)))
-        page.goto('http://paper.test/',wait_until='domcontentloaded')
+        page.goto('http://localhost:8765/',wait_until='domcontentloaded')
         if failure:
             page.wait_for_function("document.querySelector('#banner').textContent.includes('Account update NOT applied')")
             assert page.evaluate('localStorage.paperAccount')==seed
             assert page.evaluate('__paper.S.bookId')=='pam' and page.evaluate('__deskTest.engine') is None
             assert page.evaluate('(key)=>localStorage.getItem(key)',backup)==(None if failure=='backup' else seed)
         else:
-            page.wait_for_function('window.__deskTest && __deskTest.engine')
+            try:
+                page.wait_for_function('window.__deskTest && __deskTest.engine',timeout=5000)
+            except Exception as e:
+                raise AssertionError((page.locator('#banner').text_content(),errors)) from e
             assert page.evaluate('__paper.S.bookId')=='desk'
             assert page.evaluate('__paper.S.cash')==87314.5 and page.evaluate('__paper.S.realized')==6314.5
             assert page.evaluate('__paper.S.positions.length+__paper.S.orders.length')==0
@@ -157,7 +161,7 @@ def owner_checks(browser,route,state,errors):
             page.reload(wait_until='domcontentloaded');page.wait_for_function('window.__deskTest && __deskTest.engine')
             assert page.evaluate('__paper.S.cash')==87314.5 and page.evaluate('__paper.S.trades.length')==3
             assert page.evaluate('(key)=>localStorage.getItem(key)',backup)==seed
-            other=context.new_page();other.goto('http://paper.test/',wait_until='domcontentloaded')
+            other=context.new_page();other.goto('http://localhost:8765/',wait_until='domcontentloaded')
             other.wait_for_function("document.querySelector('#banner').textContent.includes('already open in another tab')")
             assert other.evaluate('__deskTest.engine') is None
             assert other.evaluate('JSON.parse(localStorage.paperAccount).cash')==87314.5
