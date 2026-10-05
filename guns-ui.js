@@ -68,10 +68,18 @@
    const cheap=(items,label)=>{for(const [id,name] of [['volume','Available traded volume'],['price','Price'],['spread','Measured spread'],['gap','IBKR gainers selection; local gap comparison only']]){const before=items.length;items=W.cheapFilter(items,id,E.cfg());scanDiagnostics.push(label+' / '+name+': '+items.length+'/'+before+' survive; missing values remain unverified');}return items;};
    try{
     scanProgress='IBKR Top % Gainers + source status in parallel · provider-ranked, no local gap veto';live();
-    const resume=st.acquisition&&st.acquisition.rows?.every(r=>W.providerRanked(r,a.now()))&&C.day(st.acquisition.at)===C.day(a.now())&&a.now()-st.acquisition.at<1800000;
-    const response=await Promise.all([read('guns_data_status',{},whole.signal,5000).catch(()=>({publicFloatAvailable:true})),resume?Promise.resolve({rows:st.acquisition.rows}):read('guns_scan',{},whole.signal,20000)]);
-    sources=response[0];const excluded=new Set((st.excluded||[]).map(r=>Number(r.conid)));const found=(response[1].rows||[]).filter(r=>!excluded.has(Number(r.conid))).sort((a,b)=>a.rank-b.rank);if(!current())return;
-    st.acquisition={at:resume?st.acquisition.at:a.now(),rows:found};a.save();
+    // Scan now always asks IBKR again. An empty cached array previously passed
+    // every(providerRanked), turning retries into a false one-second success.
+    const response=await Promise.all([read('guns_data_status',{},whole.signal,5000).catch(()=>({publicFloatAvailable:true})),read('guns_scan',{},whole.signal,20000)]);
+    sources=response[0];if(!Array.isArray(response[1].rows))throw Error('Invalid IBKR scanner response: rows missing');
+    const returned=response[1].rows,excluded=new Set((st.excluded||[]).map(r=>Number(r.conid)));const found=returned.filter(r=>!excluded.has(Number(r.conid))).sort((a,b)=>a.rank-b.rank);if(!current())return;
+    scanDiagnostics.push('IBKR returned '+returned.length+' candidates; '+(returned.length-found.length)+' excluded by you.');
+    if(response[1].warning)scanDiagnostics.push(response[1].warning);
+    if(!found.length){
+      st.acquisition=null;st.manualRetry=true;st.lastRun={elapsedMs:Math.round(performance.now()-started),unresolved:0,returned:returned.length,discovered:0,published:0,status:'empty'};
+      scanProgress=(returned.length?'All '+returned.length+' returned candidates are excluded by you':'IBKR returned 0 gainers — no candidates to verify')+' · prior shortlist retained, not refreshed · trading positions unchanged · Scan now to retry';a.save();return;
+    }
+    st.acquisition={at:a.now(),rows:found};a.save();
     // Zero-network checks go first, across the entire cached candidate set.
     let pool=cheap(found.map(row=>{const q=a.quotes()[row.conid];return {row,q:q?.status==='LIVE'&&a.now()-q.at>=0&&a.now()-q.at<15000?q:null};}),'Cached / no network');
     discovery=pool.map(x=>x.row);a.sync();
@@ -91,13 +99,13 @@
      if(f.diagnostics?.length)scanDiagnostics.push(row.symbol+': '+f.diagnostics.map(x=>x.source+' '+(x.httpStatus?'HTTP '+x.httpStatus+' ':'')+x.code).join('; ')+' → '+W.floatLabel(f));
      evidence.set(row.conid,{...ev,float:f});floatRefs.set(row.symbol,f);times['verify:'+row.conid]=a.now();return row;});
     const candidates=await runPhase('4 / Concurrent finalist quote refresh',pool,6,async(row,i,signal)=>{let ev=evidence.get(row.conid);if(a.now()-ev.at>75000){ev={...await read('guns_verify',{conid:row.conid,comparison:'false'},signal,40000),float:ev.float};if(!usable(signal))return null;evidence.set(row.conid,ev);}const q=await acquireQuote(row,signal);if(!usable(signal)||!q)return null;const c=check(row,q,ev,{...E.cfg(),floatMode:'strict'}),snapshot=W.screenSnapshot(c,a.now());if(c.eligible&&W.completeScreen(snapshot,E.cfg()))return snapshot;unresolved++;scanDiagnostics.push(row.symbol+': '+c.why.join('; '));return null;});
-    if(!current())return;const final=W.selectCandidates(candidates,st.excluded||[],E.cfg());st.lastRun={elapsedMs:Math.round(performance.now()-started),unresolved,discovered:found.length,published:final.length};st.retryAt=0;st.recoveries=0;
-    if(!final.length&&unresolved){st.manualRetry=true;scanProgress='Scan finished in '+Math.ceil(st.lastRun.elapsedMs/1000)+'s · no new complete candidates · '+unresolved+' acquisition issues · prior shortlist retained. Scan now to retry.';a.save();return;}
+    if(!current())return;const final=W.selectCandidates(candidates,st.excluded||[],E.cfg());st.lastRun={elapsedMs:Math.round(performance.now()-started),unresolved,returned:returned.length,discovered:found.length,published:final.length,status:final.length?'published':'no-matches'};st.retryAt=0;st.recoveries=0;
+    if(!final.length){st.acquisition=null;st.manualRetry=true;scanProgress='0 of '+found.length+' IBKR candidates passed verification in '+Math.ceil(st.lastRun.elapsedMs/1000)+'s · '+(unresolved?unresolved+' acquisition issues':'see filter diagnostics')+' · prior shortlist retained, not refreshed · trading positions unchanged. Scan now to retry.';a.save();return;}
     st.pool=candidates;rows=W.stableSlots(rows,final);st.rows=rows;st.publishedAt=a.now();st.version=C.VERSION;st.acquisition=null;st.manualRetry=false;
     const sess=sessions.find(s=>st.attemptedAt>=s.start-1800000&&st.attemptedAt<s.start);if(sess)st.scheduledOpen=sess.start;
-    scanProgress=rows.length+' IBKR-ranked gainers in '+Math.ceil(st.lastRun.elapsedMs/1000)+'s · positions locked'+(unresolved?' · '+unresolved+' acquisition issues (not numeric rejections)':'');a.save();
+    scanProgress=rows.length+' IBKR-ranked gainers in '+Math.ceil(st.lastRun.elapsedMs/1000)+'s · shortlist order stable · trading positions unchanged'+(unresolved?' · '+unresolved+' acquisition issues (not numeric rejections)':'');a.save();
     if(E.cfg().autoCharts&&!slots.some(s=>s.inst)&&rows.length){rows.forEach((r,i)=>{slots[i].inst={...r,secType:'STK',exch:'SMART',mult:1,brokerId:true};});selected=slots[activeSlot].inst;saveDesk();}
-   }catch(e){if(current()){st.retryAt=0;st.manualRetry=true;st.lastRun={elapsedMs:Math.round(performance.now()-started),unresolved};scanProgress='Scan stopped after '+Math.ceil(st.lastRun.elapsedMs/1000)+'s · prior shortlist retained · Scan now to retry';scanDiagnostics.push(e.message);a.save();}}
+   }catch(e){if(current()){st.acquisition=null;st.retryAt=0;st.manualRetry=true;st.lastRun={elapsedMs:Math.round(performance.now()-started),unresolved};scanProgress='Scan stopped after '+Math.ceil(st.lastRun.elapsedMs/1000)+'s · prior shortlist retained · Scan now to retry';scanDiagnostics.push(e.message);a.save();}}
    finally{whole.abort();if(current()){discovery=[];a.sync();}}
   });}
  function bars(sym){if(a.now()-(times['float:'+sym]||0)>(W.floatKnown(floatRefs.get(sym),a.now())?21600000:30000))job('float:'+sym,async()=>{floatRefs.set(sym,await request('guns_float',{symbol:sym}));if(floatRefs.size>60)floatRefs.delete(floatRefs.keys().next().value);});if(a.now()-(times['bars:'+sym]||0)>900)job('bars:'+sym,async()=>{cache.set(sym,await request('guns_bars',{symbol:sym}));if(cache.size>8)cache.delete(cache.keys().next().value);});}
