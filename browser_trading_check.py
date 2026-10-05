@@ -111,6 +111,29 @@ def main():
         assert page.evaluate('__deskTest.engine.book().journal[0].strategy')=='Discretionary'
         page.evaluate('(id)=>__paper.bookSwitch(id)',book)
         assert page.evaluate('__paper.S.account.mode')=='Trading' and page.evaluate('__deskTest.engine.book().journal[0].tracking.status')=='finished with gaps'
+        # Two stocks remain visible, cancelled entries cannot fill, and 10197
+        # blocks otherwise LIVE quotes for both entry and protective exits.
+        page.evaluate("__paper.bookCreate('Safety fixture',100000,'Custom');__deskTest.select()")
+        def both(bid=19.99,ask=20,problem=''):
+            page.evaluate('''([bid,ask,problem])=>{const q={bid,ask,last:ask,bidSize:1,askSize:1,status:'LIVE',at:Date.now(),source:'IB Gateway'};__deskTest.feed({connected:true,feedHealthy:true,generation:0,problem,quotes:{201:q,202:q}});__deskTest.sweep();__deskTest.engine.manage();__deskTest.ui.live();}''',[bid,ask,problem])
+        both()
+        page.evaluate('''()=>{for(const [conid,symbol] of [[201,'BKYI'],[202,'AVAT']]){const inst={conid,symbol,secType:'STK',mult:1,brokerId:true};const p=__deskTest.engine.plan(inst,{entry:20,stop:19,target:22,qty:10,timeframe:'5',trackMinutes:1,type:'LMT',sessions:[{start:Date.now()-3600000,end:Date.now()+18000000}]},null);__deskTest.engine.arm(inst,p,__paper.S.bookId);}__deskTest.ui.live();}''')
+        panel=page.locator('#desk-active').inner_text()
+        assert 'BKYI' in panel and 'AVAT' in panel and page.locator('[data-desk-cancel]').count()==2
+        avat=page.evaluate("__deskTest.engine.pending().find(o=>o.symbol==='AVAT').id")
+        page.locator('[data-desk-cancel="'+avat+'"]').click()
+        both();assert page.evaluate("__paper.S.orders.find(o=>o.id==='"+avat+"').status")=='cancelled'
+        levels=page.evaluate('__deskTest.ui.levels({conid:201})')
+        assert levels=={'entry':20,'stop':19,'target':22}
+        assert page.evaluate('__deskTest.ui.levels({conid:999})')=={}
+        both(problem='10197: No market data during competing live session')
+        page.locator('[data-desk-start]').click();both(problem='10197: No market data during competing live session')
+        assert page.evaluate('__deskTest.engine.book().active.length')==0
+        both();assert page.evaluate('__deskTest.engine.book().active[0].inst.symbol')=='BKYI'
+        both(18.5,18.51,'10197: No market data during competing live session')
+        assert page.evaluate('__deskTest.engine.book().active.length')==1
+        both(18.5,18.51);assert page.evaluate('__deskTest.engine.book().journal[0].outcome')=='STOP'
+        panel=page.locator('#desk-active').inner_text();assert 'BKYI · CLOSED' in panel and 'AVAT · CANCELLED' in panel
         owner_checks(browser,route,state,errors)
         assert not errors,errors
         print(json.dumps({'Trading_Custom_ATR_TP_later_tracking_mobile_persistence':'passed','browser_errors':errors}))
