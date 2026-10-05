@@ -10,7 +10,7 @@ NOW=int(dt.datetime(2026,9,10,14,30,tzinfo=dt.timezone.utc).timestamp()*1000)
 
 def main():
     html=(ROOT/'paper_local.html').read_text().replace('/* ---------- debug surface ---------- */', '''
-    window.__deskTest={get engine(){return trading;},feed:feedApply,sweep:sweepOrders,save:save,
+    window.__deskTest={get engine(){return trading;},get ui(){return tradingUI;},feed:feedApply,sweep:sweepOrders,save:save,
     select:function(){sel={conid:123,symbol:'TEST',secType:'STK',mult:1,exch:'SMART',brokerId:true};tab='trade';render();syncSubs();}};
     /* ---------- debug surface ---------- */''')
     state=json.loads(re.search(r'<script id="st" type="application/json">(.*?)</script>',html).group(1))
@@ -22,7 +22,7 @@ def main():
         history['minute'].append(dict(t=NOW-(450-i)*60000,o=c,h=c+.1,l=c-.1,c=c,v=1000))
     errors=[];requests=[]
     with sync_playwright() as pw:
-        browser=pw.chromium.launch(args=['--no-sandbox'])
+        browser=pw.chromium.launch(args=['--no-sandbox','--unsafely-treat-insecure-origin-as-secure=http://paper.test'])
         page=browser.new_page(viewport={'width':1300,'height':950})
         page.clock.install(time=dt.datetime.fromtimestamp(NOW/1000,tz=dt.timezone.utc))
         page.on('pageerror',lambda e:errors.append(str(e)))
@@ -38,7 +38,7 @@ def main():
             if path=='/data/stream':return r.fulfill(content_type='text/event-stream',body=': fixture\n\n')
             if path=='/data/twsstatus':return r.fulfill(json={'connected':True,'sealed':True,'readonly':True,'accounts':[]})
             if path=='/data/guns_bars':return r.fulfill(json=history)
-            if path=='/data/guns_schedule':return r.fulfill(json={'sessions':[]})
+            if path=='/data/guns_schedule':return r.fulfill(json={'sessions':[{'start':NOW-3600000,'end':NOW+19800000}]})
             if path.startswith('/api/'):return r.fulfill(json={'authenticated':False})
             return r.fulfill(status=404,body='No fixture')
         page.route('**/*',route)
@@ -61,6 +61,14 @@ def main():
         page.locator('#desk-recalculate').click();page.wait_for_selector('#desk-confirm:not([disabled])')
         page.keyboard.press('Enter');page.wait_for_selector('#desk-order-preview',state='detached')
         assert page.evaluate('__paper.S.orders.length')==1
+        assert page.evaluate('__paper.S.orders[0].desk.paused') is True
+        assert page.locator('[data-desk-cancel]').count()==1
+        feed();page.evaluate('__deskTest.sweep()')
+        assert page.evaluate('__deskTest.engine.book().active.length')==0
+        page.locator('[data-desk-start]').click();page.locator('[data-desk-pause]').click()
+        feed();page.evaluate('__deskTest.sweep()')
+        assert page.evaluate('__deskTest.engine.book().active.length')==0
+        page.locator('[data-desk-start]').click()
         feed();page.evaluate('__deskTest.sweep()')
         b=page.evaluate('__deskTest.engine.book().active[0]')
         assert b['qty']>1 and b['target'] is None and b['budget']==1000 and b['atr']['value']>0
@@ -84,10 +92,11 @@ def main():
         assert page.locator('#desk-qty').input_value()=='' and requests.count('/data/guns_bars')==calls
         page.locator('#desk-qty').fill('10');page.locator('#desk-tag').fill('Discretionary');page.locator('#desk-recalculate').click()
         page.wait_for_selector('#desk-confirm:not([disabled])');page.keyboard.press('Enter');page.wait_for_selector('#desk-order-preview',state='detached')
+        page.locator('[data-desk-start]').click()
         feed();page.evaluate('__deskTest.sweep()')
         b=page.evaluate('__deskTest.engine.book().active[0]')
         assert b['qty']==10 and b['stop'] is None and b['target'] is None and b['atr'] is None
-        page.locator('[data-desk-flat]').click()
+        page.once('dialog',lambda d:d.accept());page.locator('[data-desk-flat]').click()
         assert page.evaluate('__deskTest.engine.book().journal[0].strategy')=='Discretionary'
         page.set_viewport_size({'width':390,'height':844});shortcut()
         assert page.locator('#desk-order-preview').evaluate('(e)=>e.scrollWidth<=e.clientWidth+1')
