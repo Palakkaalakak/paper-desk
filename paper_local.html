@@ -285,6 +285,94 @@ function validate(text){need(typeof text==='string'&&text.length<=50000000,'Arch
 const API={VERSION,rules,profiles,categories,sectors,metrics,reviews,finite,positive,date,ticker,copy,policy,dcf,scenarios,multiple,ratio,screen,collection,automatic,allocate,coveredCall,history,csv,averages,leverage,sec,company,workspace,append,validate};if(typeof module==='object'&&module.exports)module.exports=API;root.VMI=API;
 })(globalThis);
 </script>
+<script id="paper-corrections">/* Local historical stock accounting. Never calls a broker or the live fill engine. */
+(function(root){'use strict';
+const copy=x=>JSON.parse(JSON.stringify(x)),finite=Number.isFinite;
+const need=(ok,msg)=>{if(!ok)throw Error(msg);};
+const round=x=>Math.round(x*1e6)/1e6, cents=x=>Math.round(x*100)/100;
+function timestamp(value,now=Date.now()){
+ const m=String(value).match(/^(\d{4}-\d{2}-\d{2})T(\d{2}):(\d{2})(?::(\d{2}))?(Z|[+-]\d{2}:\d{2})$/);
+ need(m,'Execution time requires an explicit timezone, e.g. 2026-10-01T14:30:00-04:00');
+ const day=Date.parse(m[1]+'T00:00:00Z'),offset=m[5];
+ need(finite(day)&&new Date(day).toISOString().slice(0,10)===m[1]&&+m[2]<24&&+m[3]<60&&+(m[4]||0)<60,'Invalid execution date/time');
+ need(offset==='Z'||(+offset.slice(1,3)<=14&&+offset.slice(4)<60&&(+offset.slice(1,3)!==14||+offset.slice(4)===0)),'Invalid timezone offset');
+ const t=Date.parse(value);need(finite(t)&&t>0&&t<=now,'Execution must be in the past');return t;
+}
+function replay(rows){
+ let qty=0,avgCost=0,realized=0;const results=new Map();
+ for(const t of rows.slice().sort((a,b)=>a.ts-b.ts)){
+  need(t.secType==='STK'&&(t.mult==null||t.mult===1)&&['BUY','SELL'].includes(t.side)&&Number.isSafeInteger(t.qty)&&t.qty>0&&finite(t.price)&&t.price>0&&finite(t.commission)&&t.commission>=0&&finite(t.ts),'Unsupported or incomplete retained stock history');
+  let pnl=-t.commission;
+  if(t.side==='BUY'){avgCost=(avgCost*qty+t.price*t.qty)/(qty+t.qty);qty+=t.qty;}
+  else{need(t.qty<=qty,'Historical sale exceeds shares owned then; short/incomplete histories cannot be replayed');pnl+=(t.price-avgCost)*t.qty;qty-=t.qty;if(!qty)avgCost=0;}
+  realized+=pnl;results.set(t.id,{realized:cents(pnl),qty,avgCost});
+ }
+ return {qty,avgCost,realized,results};
+}
+function fingerprint(book,context){
+ // Exclude live marks/log noise, but include every accounting and managed-state input.
+ return JSON.stringify([book.account,book.cash,book.realized,book.positions,book.orders,book.trades,book.cashflows,book.paperCorrections||[],context]);
+}
+function preview(book,inst,input,context={},now=Date.now()){
+ need(inst&&Number.isSafeInteger(inst.conid)&&inst.conid>0&&inst.secType==='STK'&&inst.currency==='USD'&&(inst.mult==null||inst.mult===1),'A resolved ordinary USD stock is required');
+ need(['BUY','SELL'].includes(input.side)&&Number.isSafeInteger(input.qty)&&input.qty>0&&finite(input.price)&&input.price>0&&finite(input.fees)&&input.fees>=0,'Positive whole shares/price and nonnegative fees required');
+ need(/^[A-Za-z0-9_-]{8,100}$/.test(input.requestId||''),'Stable correction request ID required');
+ need(typeof input.reason==='string'&&input.reason.trim().length>=3,'Explain why this paper execution is being recorded');
+ need(finite(book.cash)&&finite(book.realized),'Invalid account balances');
+ const ts=timestamp(input.executedAt,now),id='retro-'+input.requestId;
+ need(!(book.paperCorrections||[]).some(a=>a.requestId===input.requestId)&&!(book.trades||[]).some(t=>t.id===id),'Duplicate correction request');
+ need(!(context.protectedConids||[]).includes(inst.conid),'Active managed position: reconcile its strategy journal before historical recording');
+ const related=x=>x.conid===inst.conid||x.underConid===inst.conid||x.root===inst.symbol||x.symbol===inst.symbol||String(x.symbol||'').startsWith(inst.symbol+' ');
+ need(!(book.orders||[]).some(o=>['working','pending','submitted'].includes(o.status)&&(related(o)||(o.legs||[]).some(related))),'Cancel affected working orders before recording');
+ need(!(book.positions||[]).some(p=>p.qty&&p.secType!=='STK'&&related(p)),'Related derivatives exist; historical coverage requires separate reconciliation');
+ const rows=(book.trades||[]).filter(t=>t.conid===inst.conid),current=(book.positions||[]).filter(p=>p.conid===inst.conid);
+ need(current.length<=1,'Duplicate current position records');
+ need(new Set(rows.map(t=>t.id)).size===rows.length&&rows.every(t=>t.id),'Missing or duplicate retained trade IDs');
+ need(!rows.some(t=>t.ts===ts),'Execution timestamp ties an existing fill; specify a distinct execution second');
+ need(!rows.some(t=>Math.abs(t.ts-ts)<1000&&t.side===input.side&&t.qty===input.qty&&t.price===input.price&&t.commission===input.fees),'Possible duplicate execution');
+ const old=replay(rows),position=current[0];
+ need(old.qty===(position?.qty||0)&&Math.abs(old.avgCost-(position?.avgCost||0))<1e-6,'Retained fills do not reconcile current quantity/cost; incomplete history is unsafe');
+ for(const t of rows)need(finite(t.realized)&&Math.abs(t.realized-old.results.get(t.id).realized)<=.031,'Retained realized P&L does not reconcile');
+ const trade={conid:inst.conid,symbol:inst.symbol,secType:'STK',currency:'USD',exch:inst.exch||'SMART',mult:1,id,orderId:id,ts,executedAt:new Date(ts).toISOString(),executionInput:input.executedAt,recordedAt:new Date(now).toISOString(),side:input.side,qty:input.qty,price:input.price,commission:input.fees,priceSource:'USER_RECORDED_HISTORICAL_PAPER',userOverride:true,portfolioMode:book.account?.mode||'Custom',reason:input.reason.trim()};
+ const after=replay([...rows,trade]);trade.realized=after.results.get(id).realized;
+ const laterTradeChanges=rows.filter(t=>Math.abs(old.results.get(t.id).realized-after.results.get(t.id).realized)>.00001).map(t=>({tradeId:t.id,executedAt:new Date(t.ts).toISOString(),before:t.realized,after:after.results.get(t.id).realized}));
+ need(!laterTradeChanges.some(x=>{const t=rows.find(t=>t.id===x.tradeId);return t.strategyType||t.combo||(context.managedTradeIds||[]).includes(t.id);}),'Later managed P&L would change; strategy-journal reconciliation required');
+ const cashDelta=round((input.side==='BUY'?-1:1)*input.qty*input.price-input.fees),realizedDelta=after.realized-old.realized;
+ need(book.account?.type!=='cash'||book.cash+cashDelta>=0,'This would overdraw the current cash account');
+ return {requestId:input.requestId,input:copy(input),inst:copy(inst),base:fingerprint(book,context),trade,cashBefore:book.cash,cashDelta,cashAfter:round(book.cash+cashDelta),realizedBefore:book.realized,realizedDelta,realizedAfter:book.realized+realizedDelta,positionBefore:position?copy(position):null,positionAfter:{qty:after.qty,avgCost:after.avgCost},laterTradeChanges,warnings:['User-recorded paper execution; no IB order is sent.','Historical equity marks, buying power and strategy journals are not reconstructed.','Later affected cost-basis/P&L changes and cashAfter adjustments are explicitly audited.']};
+}
+function apply(book,prepared,context={},now=Date.now()){
+ need(prepared.base===fingerprint(book,context),'Account changed since preview; preview again');
+ const p=preview(book,prepared.inst,prepared.input,context,now),next=copy(book),originalTrades=[];
+ for(const t of next.trades){
+  const change=p.laterTradeChanges.find(c=>c.tradeId===t.id),cash=t.ts>p.trade.ts&&finite(t.cashAfter);
+  if(change||cash){originalTrades.push(copy(t));if(change)t.realized=change.after;if(cash)t.cashAfter=round(t.cashAfter+p.cashDelta);}
+ }
+ next.cash=p.cashAfter;next.realized=p.realizedAfter;
+ next.positions=next.positions.filter(x=>x.conid!==p.inst.conid);
+ if(p.positionAfter.qty)next.positions.push({...p.inst,...p.positionBefore,...p.positionAfter,opened:p.positionBefore?.opened||p.trade.ts,openedToday:false});
+ next.trades.push(p.trade);next.trades.sort((a,b)=>b.ts-a.ts);
+ next.orders.unshift({...p.inst,id:p.trade.orderId,type:'HISTORICAL',status:'filled',side:p.trade.side,qty:p.trade.qty,filledQty:p.trade.qty,avgFill:p.trade.price,commission:p.trade.commission,ts:p.trade.ts,filledAt:p.trade.ts,recordedAt:p.trade.recordedAt,note:p.trade.reason});
+ const audit={requestId:p.requestId,recordedAt:p.trade.recordedAt,executedAt:p.trade.executedAt,executionInput:p.input.executedAt,reason:p.trade.reason,trade:copy(p.trade),before:{cash:book.cash,realized:book.realized,position:p.positionBefore},after:{cash:next.cash,realized:next.realized,position:p.positionAfter},laterTradeChanges:p.laterTradeChanges,originalTrades,equityRestated:false};
+ (next.paperCorrections||(next.paperCorrections=[])).push(audit);
+ (next.log||(next.log=[])).unshift({ts:now,text:'Historical paper trade recorded: '+p.requestId});return next;
+}
+function persist(storage,state,nextBook,fields,requestId){
+ const before=copy(state),next=copy(state),b=next.books.find(b=>b.id===next.bookId);
+ need(b,'Target paper book missing');
+ for(const k of fields){if(nextBook[k]!==undefined)next[k]=copy(nextBook[k]);}
+ b.data=copy(nextBook);
+ const backupKey='paperAccount.backup.missed-trade.'+requestId;
+ need(storage.getItem(backupKey)===null,'Correction backup already exists; inspect audit before retrying');
+ // No in-memory mutation until BOTH writes succeed. A failed main write removes only our new backup.
+ storage.setItem(backupKey,JSON.stringify(before));
+ try{storage.setItem('paperAccount',JSON.stringify(next));}catch(e){try{storage.removeItem(backupKey);}catch(ignore){}throw e;}
+ return {next,backupKey};
+}
+root.PaperCorrections={timestamp,replay,preview,apply,fingerprint,persist};
+if(typeof module!=='undefined')module.exports=root.PaperCorrections;
+})(globalThis);
+</script>
 <script id="vmi-ui">(function(root){'use strict';
 const C=root.VMI,esc=x=>String(x??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])),today=()=>new Date().toISOString().slice(0,10);
 const fmt=x=>C.finite(x)?x.toLocaleString(undefined,{maximumFractionDigits:3}):'Unknown';
@@ -298,6 +386,12 @@ const conversion=()=>[field('shares','Shares outstanding (same scale as amounts)
 root.VMIUI={create(adapter){
  let W=C.workspace(),page='today',el=null,message='',dirty=false,busy=false,lastRefresh=0,epoch=0,query='',sourcePage=0;
  const drafts=new Map(),pending=new Set(),results=new Map(),seen=new Map();
+ let missedPreview=null,missedRevision=0,missedBusy=false;
+ function invalidateMissed(){missedRevision++;missedPreview=null;const p=el?.querySelector('#vmi-missed-preview');if(p)p.remove();}
+ function missedView(){
+  const p=missedPreview?.prepared;
+  return '<aside class="vmi-notice">Record an already executed hypothetical paper trade in the current account. This is not a broker order or strategy enrollment. Complete retained long-only stock history is required; active managed positions and affected working orders must be reconciled first.</aside>'+tool('vmi-missed','Record missed paper trade · '+adapter.currentBook().name,[field('symbol','Ticker','text'),field('side','Side',['BUY','SELL'],'BUY'),field('qty','Whole shares'),field('price','Execution price USD'),field('fees','Total fees USD','number',0),field('executedAt','Execution time with UTC offset (e.g. 2026-10-01T14:30:00-04:00)','text'),field('reason','Reason / paper execution evidence','textarea')],'Preview accounting — no recording yet')+(p?'<section id="vmi-missed-preview" class="vmi-card"><h3>Confirm accounting · '+esc(missedPreview.bookName)+'</h3>'+table(['Measure','Before','After','Change'],[['Cash',fmt(p.cashBefore),fmt(p.cashAfter),fmt(p.cashDelta)],['Realized P&L',fmt(p.realizedBefore),fmt(p.realizedAfter),fmt(p.realizedDelta)],['Shares',p.positionBefore?.qty||0,p.positionAfter.qty,p.trade.side+' '+p.trade.qty],['Average cost',fmt(p.positionBefore?.avgCost||0),fmt(p.positionAfter.avgCost),'Replayed chronologically']])+table(['Later trade','Execution','Old realized','New realized'],p.laterTradeChanges.map(x=>[x.tradeId,x.executedAt,fmt(x.before),fmt(x.after)]))+'<p>'+esc(p.trade.symbol+' · '+p.input.executedAt+' · '+p.trade.side+' '+p.trade.qty+' @ '+p.trade.price+' · fees '+p.trade.commission)+'</p><ul>'+p.warnings.map(x=>'<li>'+esc(x)+'</li>').join('')+'</ul><p>All later retained cashAfter values are adjusted by '+esc(fmt(p.cashDelta))+'. Original affected rows are retained in the audit. A full local account backup is saved before recording.</p><button data-action="record-missed">Confirm and record paper trade</button></section>':'')+'<section class="vmi-card"><h3>Historical correction audit · current paper book</h3>'+((adapter.corrections?.()||[]).slice().reverse().map(a=>'<details><summary>'+esc(a.trade.symbol+' · '+a.trade.side+' '+a.trade.qty+' · executed '+a.executionInput+' · recorded '+a.recordedAt)+'</summary><pre>'+esc(JSON.stringify(a,null,2))+'</pre></details>').join('')||'<p>No historical corrections recorded.</p>')+'</section>';
+ }
  const company=()=>W.companies.find(c=>c.symbol===W.selected),book=()=>W.portfolios[W.profile],mode=()=>book().mode;
  const key=id=>[W.profile,W.selected,id].join(':');
  const discoveries=new Map(),factRetries=new Map();let scanBusy=false,factsBusy=false,scanPage=0,nextScan=0,scanMode='',bucket='all',dataStatus='Automatic discovery starting…';
@@ -346,14 +440,18 @@ root.VMIUI={create(adapter){
  function historyView(c){return tool('vmi-history','Historical CSV metadata',[source(),field('adjustment','Adjustment basis',['raw','split-adjusted','total-return-adjusted','unknown'],'unknown')],'Apply metadata')+'<section class="vmi-card"><label>Import completed daily date,close CSV<input id="vmi-history-file" type="file" accept=".csv"></label><p>We do not sweep GUNS’s live chart subscription pool. No invented missing bars. Daily SMA slope is a diagnostic, not a complete entry signal.</p>'+(c.history?table(['Daily SMA','Value','One-session slope'],C.averages(c.history.rows).map(x=>[x.period,fmt(x.value),fmt(x.slope)]))+'<p>'+esc(c.history.rows.length+' observations · '+c.history.rows[0].date+' to '+c.history.rows.at(-1).date+' · '+c.history.source+' · '+c.history.adjustment)+'</p>':'')+'</section><section class="vmi-card"><h3>Entry and exit discipline</h3><ul><li>Quality first, then price below IV, then retracement to support in an uptrend/consolidation.</li><li>Identify 3–4 supports. Wait for a downtrend to stabilize; never buy the whole allocation at once.</li><li>Review moat damage, forced discounting for 2–3 years, or falling market share for two years.</li><li>Also review fraud, changed needs, a materially better opportunity or gross overvaluation. Defensive and high-growth valuation exits differ.</li><li>Do not transfer ETF moving-average exit rules to VMI stocks.</li></ul><p>Reference: Step 7 and monitoring/sale rules, lines 4590–4861 and 6930–7196.</p></section>'+tool('vmi-decision','Record investment decision',[field('reason','Decision, supporting evidence and next action','textarea')],'Record decision');}
  function portfolioView(c){const p=book();return '<aside class="vmi-notice">'+esc(W.profile==='defensive'?'Defensive business focus; covered calls optional.':W.profile==='balanced'?'Defensive/growth mix. 20% CAGR is your aspiration, not a forecast.':'Growth focus. 25–30% CAGR is your aspiration. Losses can exceed a 30–50% drawdown, including total loss.')+' These are three independent research planners, not funded execution accounts. Initial 100,000 / 20 holdings are editable illustrative defaults.</aside>'+tool('vmi-planner','Planner configuration',[field('capital','Intended capital','number',p.capital),field('count','Planned holdings 8–60','number',p.count),field('bookId','Read-only paper-book ID (blank = unlinked)','text',p.bookId)],'Apply planner')+table(['Available book ID','Name'],adapter.books().map(b=>[b.id,b.name]))+(c?tool('vmi-allocation','Support budget · '+c.symbol,[field('spent','Original purchase cost already allocated','number',0),field('cash','Unreserved available cash'),field('fee','Fee per filled tranche','number',0),field('iv','Active-preset IV','number',c.valuations[mode()]?.iv??''),field('levels','3–4 descending support prices','text')],'Save plan'):'<p>Select a company to plan tranches.</p>')+table(['Company','Created','Planned spend'],p.plans.map(x=>[x.symbol,x.date,fmt(x.result.total)]))+'<p>Whole shares only. Plans do not reserve money or authorize purchases. Reconcile other plans before reusing cash. Reduced speculative/turnaround factor = '+fmt(C.policy(mode()).riskySize)+'. Market-value declines do not create new purchase allowance.</p>'+tool('vmi-call','Covered-call expiry payoff',[field('owned','Owned shares'),field('contracts','Call contracts','number',1),field('deliverable','Shares per contract','number',100),field('cost','Cost per share'),field('strike','Strike'),field('premium','Premium per share'),field('fees','Total fees','number',0)])+'<p>Only covered shares modeled. No early exercise, assignment timing, dividends, liquidity or tax model. Supplemental payoff math, not reconstruction of excluded options lessons.</p>'+tool('vmi-leverage','Leverage illustration from imported history',[field('leverage','Multiple','number',3),field('fee','Total fee % of original principal','number',0)])+'<p>Terminal participation with a zero floor differs from reset-every-observation leverage. No issuer credit, knock-outs, barriers, financing or bank-note pricing. Not a point-in-time strategy backtest; price adjustment basis controls dividend treatment.</p>';}
  function library(){const lines=String(root.VMI_SOURCE||'').split(/\r?\n/).map((text,i)=>({text,line:i+1})).filter(x=>!query||x.text.toLowerCase().includes(query.toLowerCase()));sourcePage=Math.min(sourcePage,Math.max(0,Math.ceil(lines.length/100)-1));return tool('vmi-search','Search your course',[field('query','Search phrase','text',query)],'Search')+'<section class="vmi-card"><p>Original notes; company examples and broad tax/safety claims are not independently verified current facts. '+lines.length+' matching lines, page '+(sourcePage+1)+'.</p><button data-action="prev">Previous</button> <button data-action="next">Next</button><pre>'+esc(lines.slice(sourcePage*100,sourcePage*100+100).map(x=>x.line+'  '+x.text).join('\n'))+'</pre></section>';}
- function draw(){if(!el?.isConnected)return;const c=company();let content=page==='today'?todayView():page==='portfolio'?portfolioView(c):page==='learn'?library():page==='archive'?'<section class="vmi-card"><h3>'+W.events.length+' / 5,000 research events</h3><p>Export retains raw SEC facts, inputs, calculations, price observations, decisions and linked-book snapshots. Only the latest 100 event headers are shown below. Closed-app intervals cannot be reconstructed.</p>'+table(['#','Recorded','Type'],W.events.slice(-100).reverse().map(e=>[e.sequence,e.recordedAt,e.type]))+'</section>':c?(page==='review'?reviewView(c):page==='value'?valueView(c):historyView(c)):'<p>Add and select a company on Today.</p>';
- el.innerHTML='<header class="vmi-heading"><div><p class="vmi-eyebrow">VALUE MOMENTUM INVESTING</p><h2>Research, then act.</h2><p>Business quality → value → entry. No weighted score overrides a failed gate.</p></div><div class="vmi-controls"><label>Research portfolio<select id="vmi-profile">'+options(C.profiles,W.profile)+'</select></label><label>Rule preset<select id="vmi-mode">'+options(Object.keys(C.rules),mode())+'</select></label></div></header><aside class="vmi-notice">Session-only research: apply forms, then EXPORT before closing; IMPORT to resume. Research never submits orders. Explicit stock handoffs only select a contract and prefill your existing Trade ticket. The account statistics above are NOT planner balances.</aside><div class="vmi-toolbar"><button data-action="export">Export research JSON</button><label>Import archive<input id="vmi-import" type="file" accept=".json"></label><span id="vmi-quote-status" role="status">IB quotes refresh automatically every five minutes while VMI is visible.</span><button data-action="capture">Capture linked books</button></div><p id="vmi-message" role="status">'+esc(message)+'</p><nav>'+[['today','Discovery'],['review','Company review'],['value','Valuation'],['history','Entry & exit'],['portfolio','Portfolios & options'],['archive','Archive'],['learn','Course library']].map(([id,title])=>'<button data-page="'+id+'" aria-current="'+(page===id?'page':'false')+'">'+title+'</button>').join('')+'</nav><label class="vmi-company">Company<select id="vmi-company"><option value="">Choose listing</option>'+W.companies.map(c=>'<option value="'+esc(c.symbol)+'"'+(c.symbol===W.selected?' selected':'')+'>'+esc(c.symbol+' · '+c.currency)+'</option>').join('')+'</select></label>'+content;
+ function draw(){if(!el?.isConnected)return;const c=company();let content=page==='missed'?missedView():page==='today'?todayView():page==='portfolio'?portfolioView(c):page==='learn'?library():page==='archive'?'<section class="vmi-card"><h3>'+W.events.length+' / 5,000 research events</h3><p>Export retains raw SEC facts, inputs, calculations, price observations, decisions and linked-book snapshots. Only the latest 100 event headers are shown below. Closed-app intervals cannot be reconstructed.</p>'+table(['#','Recorded','Type'],W.events.slice(-100).reverse().map(e=>[e.sequence,e.recordedAt,e.type]))+'</section>':c?(page==='review'?reviewView(c):page==='value'?valueView(c):historyView(c)):'<p>Add and select a company on Today.</p>';
+ el.innerHTML='<header class="vmi-heading"><div><p class="vmi-eyebrow">VALUE MOMENTUM INVESTING</p><h2>Research, then act.</h2><p>Business quality → value → entry. No weighted score overrides a failed gate.</p></div><div class="vmi-controls"><label>Research portfolio<select id="vmi-profile">'+options(C.profiles,W.profile)+'</select></label><label>Rule preset<select id="vmi-mode">'+options(Object.keys(C.rules),mode())+'</select></label></div></header><aside class="vmi-notice">Session-only research: apply forms, then EXPORT before closing; IMPORT to resume. Research never submits orders. Explicit stock handoffs only select a contract and prefill your existing Trade ticket. The account statistics above are NOT planner balances.</aside><div class="vmi-toolbar"><button data-action="export">Export research JSON</button><label>Import archive<input id="vmi-import" type="file" accept=".json"></label><span id="vmi-quote-status" role="status">IB quotes refresh automatically every five minutes while VMI is visible.</span><button data-action="capture">Capture linked books</button></div><p id="vmi-message" role="status">'+esc(message)+'</p><nav>'+[['today','Discovery'],['review','Company review'],['value','Valuation'],['history','Entry & exit'],['portfolio','Portfolios & options'],['missed','Record missed trade'],['archive','Archive'],['learn','Course library']].map(([id,title])=>'<button data-page="'+id+'" aria-current="'+(page===id?'page':'false')+'">'+title+'</button>').join('')+'</nav><label class="vmi-company">Company<select id="vmi-company"><option value="">Choose listing</option>'+W.companies.map(c=>'<option value="'+esc(c.symbol)+'"'+(c.symbol===W.selected?' selected':'')+'>'+esc(c.symbol+' · '+c.currency)+'</option>').join('')+'</select></label>'+content;
  }
  function capture(){for(const p of C.profiles){const id=W.portfolios[p].bookId;if(!id)continue;const snapshot=adapter.snapshot(id);if(!snapshot){notice('Linked book is no longer available: '+p);continue;}const s=JSON.stringify(snapshot);if(seen.get(p)!==s){event('paper-book-snapshot',{profile:p,bookId:id,snapshot});seen.set(p,s);}}}
  async function refresh(force=false){if(busy||!W.companies.length||!force&&Date.now()-lastRefresh<300000)return;busy=true;lastRefresh=Date.now();const gen=epoch;let good=0,bad=0;notice('Refreshing dated IB observations…');try{for(const c of W.companies.slice()){if(gen!==epoch)break;try{const q=await adapter.quote(c.symbol);if(gen!==epoch)break;const t=q.tradeAt??q.at,at=typeof t==='number'?new Date(t<1e12?t*1000:t).toISOString():t;if(q.served_by!=='tws'||!C.positive(q.last)||!at||!Number.isFinite(Date.parse(at))||Date.parse(at)>Date.now()+60000||c.currency!=='USD')throw Error('No timestamped USD-compatible IB last; fallback not promoted');const price={value:q.last,date:new Date(at).toISOString().slice(0,10),at,source:q.source||'IB Gateway',status:q.status||'Unspecified',currency:'USD',retrievedAt:new Date().toISOString()};if(c.price?.at!==price.at||c.price?.value!==price.value)event('quote',{symbol:c.symbol,price});c.price=price;c.quoteError=null;good++;}catch(e){if(gen!==epoch)break;if(c.quoteError!==e.message)event('quote-failure',{symbol:c.symbol,error:e.message});c.quoteError=e.message;bad++;}await new Promise(r=>setTimeout(r,200));}}finally{busy=false;if(gen===epoch){notice(good+' IB observations; '+bad+' unavailable. Automatically checked '+new Date().toLocaleTimeString()+'. Retained quotes keep their original dates.');if(!el?.contains(document.activeElement)||!document.activeElement?.matches('input,textarea,select'))draw();}}}
  function exportArchive(){if(pending.size&&!confirm('Unapplied drafts are NOT exported. Export applied research only? Cancel to apply forms first.'))return;const url=URL.createObjectURL(new Blob([JSON.stringify({kind:'paper-desk-vmi',exportedAt:new Date().toISOString(),workspace:W})],{type:'application/json'}));const a=document.createElement('a');a.href=url;a.download='paper_desk_vmi_'+today()+'.json';a.click();setTimeout(()=>URL.revokeObjectURL(url),30000);dirty=pending.size>0;notice('Download requested. Verify the file; unapplied drafts are excluded.');}
  async function submit(f){const id=f.id,k=key(id),d=data(f),n=Object.fromEntries(Object.entries(d).map(([k,v])=>[k,number(v)])),c=company(),p=book(),m=mode();let output;if(W.events.length>=5000)throw Error('Event limit: export first');
  switch(id){
+ case 'vmi-missed':{
+  if(missedBusy)throw Error('Preview already in progress');missedBusy=true;missedPreview=null;const revision=++missedRevision;
+  try{const result=await adapter.previewMissed({...d,qty:n.qty,price:n.price,fees:n.fees,requestId:Array.from(crypto.getRandomValues(new Uint8Array(16)),x=>x.toString(16).padStart(2,'0')).join('')});if(revision!==missedRevision||page!=='missed')throw Error('Inputs or view changed; preview again');missedPreview=result;}finally{missedBusy=false;}break;
+ }
  case 'vmi-stock-ticket':{if(!c||c.currency!=='USD')throw Error('A USD listing is required for this IB stock handoff');if(!Number.isSafeInteger(n.qty)||n.qty<=0||!C.positive(n.limit))throw Error('Positive whole shares and limit price required');const generation=epoch,profile=W.profile;event('stock-ticket-request',{symbol:c.symbol,qty:n.qty,limit:n.limit,book:adapter.currentBook()});await adapter.openStock(c.symbol,n.qty,n.limit,()=>epoch===generation&&company()===c&&W.profile===profile);break;}
 
  case 'vmi-auto-settings':if(!C.positive(n.discount)||n.discount>100)throw Error('Discount rate must be >0 and ≤100');event('automatic-assumptions',{discount:n.discount});W.autoDiscount=n.discount;for(const item of W.companies)if(item.automatic)Object.assign(item,C.automatic(item,item.automatic,n.discount));break;
@@ -381,7 +479,7 @@ root.VMIUI={create(adapter){
  if(input.id==='vmi-sec-file'){if(!meta||!/^\d{1,10}$/.test(meta.cik))throw Error('Apply verified CIK/cutoff first');validDate(meta.cutoff);const raw=JSON.parse(text,(k,v)=>{if(['__proto__','constructor','prototype'].includes(k))throw Error('Unsafe SEC JSON key');return v;});if(Number(meta.cik)!==raw.cik)throw Error('CIK mismatch');const normalized=C.sec(raw,meta.cutoff);event('sec-companyfacts',{symbol:c.symbol,identity:'User-verified CIK; listing unverified',retrievedAt:new Date().toISOString(),raw,normalized});c.financials=normalized;}
  else{if(!meta?.source?.trim())throw Error('Apply history provenance first');const rows=C.csv(text);if(rows.some(r=>r.date>=today()))throw Error('Only completed dates before today accepted');const h={rows,source:meta.source,adjustment:meta.adjustment,retrievedAt:new Date().toISOString()};event('history-import',{symbol:c.symbol,...h});c.history=h;}draw();notice('Imported. Export to retain this observation.');
  }
- function attach(node){el=node;el.addEventListener('keydown',e=>e.stopPropagation());el.addEventListener('input',e=>{const f=e.target.closest('form');if(f){drafts.set(key(f.id),data(f));pending.add(key(f.id));dirty=true;}});el.addEventListener('submit',e=>{e.preventDefault();e.stopPropagation();protect(submit)(e.target);});el.addEventListener('change',e=>{e.stopPropagation();protect(async()=>{const t=e.target;if(t.type==='file'){await importFile(t);return;}if(t.id==='vmi-profile'){W.profile=t.value;dirty=true;draw();return;}if(t.id==='vmi-mode'){event('preset',{profile:W.profile,mode:t.value});book().mode=t.value;draw();return;}if(t.id==='vmi-company'){W.selected=t.value||null;draw();return;}const f=t.closest('form');if(f){drafts.set(key(f.id),data(f));pending.add(key(f.id));dirty=true;}})();});el.addEventListener('click',e=>{e.stopPropagation();protect(async()=>{const b=e.target.closest('button');if(!b)return;if(b.dataset.discovered){openDiscovered(b.dataset.discovered);return;}if(b.dataset.bucket){bucket=b.dataset.bucket;draw();return;}if(b.dataset.page){page=b.dataset.page;draw();return;}switch(b.dataset.action){case 'export':exportArchive();break;case 'capture':capture();notice('Changed linked-book snapshots captured; no account writes.');break;case 'prev':sourcePage=Math.max(0,sourcePage-1);draw();break;case 'next':sourcePage++;draw();break;}})();});draw();protect(refresh)();protect(discover)();protect(acquire)();}
+ function attach(node){el=node;el.addEventListener('keydown',e=>e.stopPropagation());el.addEventListener('input',e=>{const f=e.target.closest('form');if(f){if(f.id==='vmi-missed')invalidateMissed();drafts.set(key(f.id),data(f));pending.add(key(f.id));dirty=true;}});el.addEventListener('submit',e=>{e.preventDefault();e.stopPropagation();protect(submit)(e.target);});el.addEventListener('change',e=>{e.stopPropagation();protect(async()=>{const t=e.target;if(t.type==='file'){await importFile(t);return;}if(t.id==='vmi-profile'){W.profile=t.value;dirty=true;draw();return;}if(t.id==='vmi-mode'){event('preset',{profile:W.profile,mode:t.value});book().mode=t.value;draw();return;}if(t.id==='vmi-company'){W.selected=t.value||null;draw();return;}const f=t.closest('form');if(f){if(f.id==='vmi-missed')invalidateMissed();drafts.set(key(f.id),data(f));pending.add(key(f.id));dirty=true;}})();});el.addEventListener('click',e=>{e.stopPropagation();protect(async()=>{const b=e.target.closest('button');if(!b)return;if(b.dataset.discovered){openDiscovered(b.dataset.discovered);return;}if(b.dataset.bucket){bucket=b.dataset.bucket;draw();return;}if(b.dataset.page){invalidateMissed();page=b.dataset.page;draw();return;}switch(b.dataset.action){case 'record-missed':{if(!missedPreview)throw Error('Preview again first');if(!confirm('Record this historical PAPER trade and apply the displayed accounting changes? No IB order will be sent.'))return;const result=adapter.recordMissed(missedPreview);invalidateMissed();drafts.delete(key('vmi-missed'));draw();notice('Recorded. Local backup: '+result.backupKey);break;}case 'export':exportArchive();break;case 'capture':capture();notice('Changed linked-book snapshots captured; no account writes.');break;case 'prev':sourcePage=Math.max(0,sourcePage-1);draw();break;case 'next':sourcePage++;draw();break;}})();});draw();protect(refresh)();protect(discover)();protect(acquire)();}
  document.addEventListener('visibilitychange',()=>{if(!document.hidden&&adapter.active())protect(async()=>{capture();await refresh();})();});window.addEventListener('beforeunload',e=>{if(dirty||pending.size){e.preventDefault();e.returnValue='Export VMI research before leaving';}});setInterval(()=>{if(!document.hidden)protect(capture)();},60000);setInterval(()=>{if(!document.hidden&&adapter.active())protect(refresh)();},15000);setInterval(()=>{if(!document.hidden&&adapter.active()){protect(discover)();protect(acquire)();}},10000);
  return {view:()=>'<section id="vmi-root" aria-label="VMI research workspace"></section>',mount(){const node=document.getElementById('vmi-root');if(node&&node!==el)attach(node);}};
 }};
@@ -1120,7 +1218,7 @@ function buildDoc(){
    function already reads them. Switching snapshots the current one into
    S.books and loads the target over the top, so nothing else had to change. */
 var BOOK_FIELDS = ['account','cash','realized','lastDay','positions','orders',
-                   'trades','cashflows','equity','watchlist','log','desk'];
+                   'trades','cashflows','equity','watchlist','log','desk','paperCorrections'];
 
 function bookMode(account){
   var mode = (account || S.account || {}).mode;
@@ -1133,6 +1231,7 @@ function bookSnap(){
 }
 function paperExposure(){return !!((guns && guns.execution.exposure()) || (trading && trading.exposure()));}
 function bookApply(d){
+  S.paperCorrections=d.paperCorrections||[];
   S.desk = d.desk || {settings:{},active:[],journal:[]};
   for(var i=0;i<BOOK_FIELDS.length;i++){
     var k = BOOK_FIELDS[i];
@@ -2580,7 +2679,7 @@ function pick(inst){
   var found=false;
   for(var i=0;i<S.watchlist.length;i++) if(S.watchlist[i].conid===inst.conid) found=true;
   if(!found){ S.watchlist.push(inst); }
-  $('res').innerHTML=''; $('srch').value='';
+  if($('res'))$('res').innerHTML=''; if($('srch'))$('srch').value='';
   render();
   if(dataUp()) fetchQuote(inst).then(function(){ if(S.chainOpen && inst.secType!=='OPT') return loadChainFor(inst); render(); }).catch(function(){});
   if(!found) save();
@@ -3653,9 +3752,37 @@ if(window.PaperTrading){
     bars:async function(inst){var r=await fetch('/data/guns_bars?provider=tws&symbol='+encodeURIComponent(inst.symbol),{signal:AbortSignal.timeout(40000)});if(!r.ok)throw Error('Chart HTTP '+r.status);var d=await r.json();if(d.error)throw Error(d.error);return d;},
     gunsJournal:function(){return guns?guns.execution.book().journal:[];},save:save,render:render,warn:warn,cancel:cancelOrder,esc:esc,money:money,px:px},trading);
 }
+function paperCorrectionContext(){
+  var active=[...(S.guns?.books?.[S.bookId]?.active||[]),...(S.desk?.active||[])];
+  return {protectedConids:active.map(function(x){return x.inst?.conid||x.conid;}).filter(Number.isFinite)};
+}
 var vmiHandoffSequence=0;
 if(window.VMIUI)vmi=window.VMIUI.create({
   currentBook:function(){return {id:S.bookId,name:bookOf(S.bookId)?.name||S.bookId};},
+  corrections:function(){return S.paperCorrections||[];},
+  previewMissed:async function(input){
+    if(!LOCAL||readOnly)throw Error('Historical recording requires the writable local paper account');
+    var bookId=S.bookId,symbol=window.VMI.ticker(input.symbol);
+    var matches=[...S.positions,...S.watchlist].filter(function(p){return p.symbol===symbol&&p.secType==='STK'&&Number.isSafeInteger(p.conid)&&p.conid>0;});
+    var ids=[...new Set(matches.map(function(p){return p.conid;}))],inst;
+    if(ids.length===1){inst=Object.assign({},matches[0],{currency:matches[0].currency||S.account.currency||'USD',mult:1});}
+    else{
+      var r=await fetch('/data/vmi_stock?symbol='+encodeURIComponent(symbol),{signal:AbortSignal.timeout(35000)});
+      if(!r.ok)throw Error('Stock lookup HTTP '+r.status);inst=await r.json();if(inst.error)throw Error(inst.error);
+      if(inst.served_by!=='tws'||inst.symbol.replace(/[-. ]/g,'')!==symbol.replace(/[-. ]/g,''))throw Error('Stock identity mismatch');
+    }
+    if(S.bookId!==bookId||tab!=='vmi')throw Error('Paper account changed during preview');
+    return {bookId:bookId,bookName:bookOf(bookId).name,prepared:window.PaperCorrections.preview(bookSnap(),inst,input,paperCorrectionContext())};
+  },
+  recordMissed:function(preview){
+    if(!LOCAL||readOnly||S.bookId!==preview.bookId||tab!=='vmi')throw Error('Writable target paper account changed');
+    var nextBook=window.PaperCorrections.apply(bookSnap(),preview.prepared,paperCorrectionContext());
+    var saved=window.PaperCorrections.persist(localStorage,S,nextBook,BOOK_FIELDS,preview.prepared.requestId);
+    if(pubTimer){clearTimeout(pubTimer);pubTimer=null;}
+    Object.assign(S,saved.next);dirty=false;render();syncSubs();
+    setStatus('Historical paper trade recorded; backup '+saved.backupKey);
+    return {requestId:preview.prepared.requestId,backupKey:saved.backupKey};
+  },
   openStock:async function(symbol,qty,limit,isCurrent){
     if(!usingTws())throw Error('Select IB Gateway as the data source before opening an IB stock ticket.');
     if(!Number.isSafeInteger(qty)||qty<=0||!Number.isFinite(limit)||limit<=0)throw Error('Positive whole shares and limit price required');
