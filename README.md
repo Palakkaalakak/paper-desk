@@ -1,5 +1,43 @@
 # Paper Desk — IB Gateway paper-trading workstation
 
+## VMI research workspace — 2026-10-06
+
+**First usable research release, not complete investment automation.** The local Python/IB architecture, GUNS, Trading and broker-write protections remain unchanged. Open the existing app at **http://localhost:8765** and select **VMI** beside GUNS. No cloud deployment or new API credentials.
+
+### Implemented
+- Seven-step VMI checklist with explicit numeric cutoffs, qualitative evidence, unknown states, and separate quality/value/entry results.
+- Independent **Defensive / Balanced / Growth research planners**, each with its own **Conservative / Moderate / Optimistic** preset, capital, target holdings and allocation plans. These are NOT funded paper accounts. The top account statistics still belong to the selected existing paper book.
+- 20-year FCF, normalized FCF, operating-cash-flow and net-income valuations; min/mean/max forecast scenarios; P/B, P/S and NAV; distinct PEG and PSG thresholds. No terminal value. Match amount/share units, currencies and ADR ratios yourself.
+- Equal-weight purchase budgets, 3–4 support tranches, whole-share sizing and reduced speculative/turnaround sizes. Plans do not reserve cash or execute orders.
+- Supplemental covered-call expiry payoff and historical terminal-participation versus reset-leverage illustrations. These are not option or bank-note pricing models.
+- Offline SEC CompanyFacts JSON import with user-verified CIK, annual US-GAAP USD facts, filing cutoff, raw-payload retention and conflict warnings. No automatic SEC fetch or TTM assembly.
+- Completed-date CSV import (`date,close`), daily SMA diagnostics, review-date reminders, decision notes and searchable full supplied course notes.
+- Existing read-only `/data/quote?provider=tws&symbol=...` refresh on VMI entry, archive import and return to a visible VMI page, with five-minute automatic cooldown; manual refresh bypasses cooldown. Only timestamped USD-compatible IB last prices are promoted. Older prices remain visibly dated on failure. No GUNS chart-history sweep.
+- Explicit read-only links to existing paper books capture sanitized financial snapshots when changed (manual or every minute while browser is visible). Active books use current state, not a stale book copy.
+
+### Using it and retaining research
+1. Today → add a ticker and its listing currency; select the research portfolio and rule preset.
+2. Company review → apply sourced metrics, evidence and review notes. Import SEC data if useful; it is not automatically copied into valuation fields.
+3. Valuation → calculate scenarios, then explicitly adopt an IV for the active preset. Entry & exit → import history and document your chart/decision evidence.
+4. Portfolios & options → configure capital/holdings and support budgets. Existing account links are optional and read-only.
+5. **Apply forms, then Export research JSON before closing. Import that file on reopening to resume.** Research is session-only: no VMI localStorage writes or backend persistence. Unapplied form drafts are excluded from exports, with a warning. Verify downloads. The JSON contains private research and linked-book observations; keep it private.
+
+Archive schema `vmi-1` holds companies, independent planner settings and timestamped audit events. Limits: 100 companies, 1,000 plans per profile, 5,000 events and 50 MB import; capacity checks stop additions before producing an oversized compact export. No missing closed-app history is invented.
+
+### Deliberate limitations and next work
+- Automatic durable collection, SEC ingestion, market-wide discovery, forecast feeds, quarterly/TTM normalization and portfolio optimization remain unimplemented.
+- No three newly funded VMI execution books, automated entries/exits, options execution, or point-in-time strategy backtesting.
+- Speculative track-record exceptions do not automatically waive ordinary profitability/moat gates: such names may still display QUALITY FLAG. This is a research warning, not an automatic rejection of every speculative thesis.
+- Preset combinations are app policies drawn from source alternatives, not three named course strategies. The source has not been independently fact-checked end-to-end. Historical examples, tax generalizations and claims of safety are not current facts or guarantees.
+- 20% and 25–30% CAGR are user aspirations, not model forecasts. Losses may exceed 30–50%, including total loss. A zero-floored terminal leverage illustration omits issuer credit, barriers, financing, caps and product terms.
+- Recommended next work: agree a durable local research-storage approach, then add supported filing/forecast refresh and point-in-time history with explicit provenance.
+
+### Updating and development
+The update package replaces `paper_local.html` and adds VMI source, styles, source notes, bundler and tests. Back up your existing app/account export first; close old-version tabs, copy files into the existing project, restart its usual local server and reload the **same localhost origin/browser profile**. This source package does not contain or change your separate browser account data by itself.
+
+Run `node build_vmi.cjs` after changing VMI JS/CSS/source notes; it embeds assets without changing the Python asset allowlist. Tests: `node --test test_vmi.cjs test_frontend.cjs test_guns.cjs test_trading.cjs`. Earlier in this implementation, an offline Chromium fixture passed forms, SEC/CSV import, JSON roundtrip, independent presets, escaping, market-tick form preservation, read-only snapshots and mobile layouts with zero page errors. That fixture was lost in a sandbox reset; this package retains the numerical regression tests. Live Gateway timing/entitlements remain unverified; interrupted full Python/browser reruns are not counted as passes.
+
+
 ## Owner account update and safer entries — 2026-10-05
 
 This section supersedes older confirmation instructions below. Architecture remains local Python at **http://localhost:8765**, `ib_async==2.1.0`, one IB owner loop, vanilla JavaScript and browser-local simulated execution. Brokerage read-only protections are unchanged. No cloud deployment.
