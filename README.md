@@ -10,14 +10,17 @@
 - 20-year FCF, normalized FCF, operating-cash-flow and net-income valuations; min/mean/max forecast scenarios; P/B, P/S and NAV; distinct PEG and PSG thresholds. No terminal value. Match amount/share units, currencies and ADR ratios yourself.
 - Equal-weight purchase budgets, 3–4 support tranches, whole-share sizing and reduced speculative/turnaround sizes. Plans do not reserve cash or execute orders.
 - Supplemental covered-call expiry payoff and historical terminal-participation versus reset-leverage illustrations. These are not option or bank-note pricing models.
-- Offline SEC CompanyFacts JSON import with user-verified CIK, annual US-GAAP USD facts, filing cutoff, raw-payload retention and conflict warnings. No automatic SEC fetch or TTM assembly.
+- Automatic SEC CompanyFacts/submissions retrieval, issuer-link and SEC entity-search fallbacks when the ticker map is unavailable, Finviz snapshot metrics and Yahoo dated statement fallbacks. Annual facts retain tags, filing dates, periods and calculation inputs; they are not labeled TTM. Manual CompanyFacts import remains available.
+- Automatic valuation-neutral US-listing discovery via `/data/vmi_scan?mode=moderate&page=0`, two-minute pagination while VMI is visible. `/data/vmi_fundamentals?symbol=META` supplies financial observations. Up to 1,000 listings/session; sequential financial retrieval for the first 100 plus tracked companies. Backend successful observations are cached for six hours; no new dependency/API key.
+- Separate Research, Qualified/waiting-for-value and Qualified+undervalued collections. Qualification requires all five business gates; price cannot compensate for failed quality. Entry timing is separate.
+- Automatic annual-FCF valuation proposals when all inputs and a provider forecast exist, with an editable 10% application-default discount rate. One provider forecast is not three independent forecasts. Proposals never override adopted manual IVs or supply fabricated qualitative reviews. Older financial metrics (>550 days) remain in the source evidence but are excluded from active automatic screening.
 - Completed-date CSV import (`date,close`), daily SMA diagnostics, review-date reminders, decision notes and searchable full supplied course notes.
-- Existing read-only `/data/quote?provider=tws&symbol=...` refresh on VMI entry, archive import and return to a visible VMI page, with five-minute automatic cooldown; manual refresh bypasses cooldown. Only timestamped USD-compatible IB last prices are promoted. Older prices remain visibly dated on failure. No GUNS chart-history sweep.
+- Existing read-only `/data/quote?provider=tws&symbol=...` refresh on VMI entry, company addition, archive import and return to a visible VMI page, plus recurring automatic refresh with a five-minute cooldown. There is no manual quote-refresh button. Only timestamped USD-compatible IB last prices are promoted. Older prices remain visibly dated on failure. No GUNS chart-history sweep.
 - Explicit read-only links to existing paper books capture sanitized financial snapshots when changed (manual or every minute while browser is visible). Active books use current state, not a stale book copy.
 
 ### Using it and retaining research
-1. Today → add a ticker and its listing currency; select the research portfolio and rule preset.
-2. Company review → apply sourced metrics, evidence and review notes. Import SEC data if useful; it is not automatically copied into valuation fields.
+1. Discovery → wait for automatic market results, click a listing to track it, or add a ticker and its listing currency. Select the independent research portfolio and rule preset.
+2. Company review → inspect automatically retrieved financial evidence, dates and formulas, then add business/moat evidence and review notes. Manual metrics and SEC import remain available.
 3. Valuation → calculate scenarios, then explicitly adopt an IV for the active preset. Entry & exit → import history and document your chart/decision evidence.
 4. Portfolios & options → configure capital/holdings and support budgets. Existing account links are optional and read-only.
 5. **Apply forms, then Export research JSON before closing. Import that file on reopening to resume.** Research is session-only: no VMI localStorage writes or backend persistence. Unapplied form drafts are excluded from exports, with a warning. Verify downloads. The JSON contains private research and linked-book observations; keep it private.
@@ -25,12 +28,12 @@
 Archive schema `vmi-1` holds companies, independent planner settings and timestamped audit events. Limits: 100 companies, 1,000 plans per profile, 5,000 events and 50 MB import; capacity checks stop additions before producing an oversized compact export. No missing closed-app history is invented.
 
 ### Deliberate limitations and next work
-- Automatic durable collection, SEC ingestion, market-wide discovery, forecast feeds, quarterly/TTM normalization and portfolio optimization remain unimplemented.
+- Durable unattended research storage, complete-market coverage, quarterly/TTM normalization, additional forecast providers and portfolio optimization remain unimplemented. Discovery-only records are session-only; track a company to include its financial observations in export. Public providers can throttle; bounded retries, fallbacks and source dates remain visible. Apple interest observations may be older than its current financials and are not promoted as current.
 - No three newly funded VMI execution books, automated entries/exits, options execution, or point-in-time strategy backtesting.
 - Speculative track-record exceptions do not automatically waive ordinary profitability/moat gates: such names may still display QUALITY FLAG. This is a research warning, not an automatic rejection of every speculative thesis.
 - Preset combinations are app policies drawn from source alternatives, not three named course strategies. The source has not been independently fact-checked end-to-end. Historical examples, tax generalizations and claims of safety are not current facts or guarantees.
 - 20% and 25–30% CAGR are user aspirations, not model forecasts. Losses may exceed 30–50%, including total loss. A zero-floored terminal leverage illustration omits issuer credit, barriers, financing, caps and product terms.
-- Recommended next work: agree a durable local research-storage approach, then add supported filing/forecast refresh and point-in-time history with explicit provenance.
+- Next requested work: stock-ticket handoff, quoted covered-call chain/ticket handoff, and audited retroactive paper-trade recording. These are not implemented by this scanner checkpoint. Then extend sourced coverage and point-in-time history.
 
 ### Updating and development
 The update package replaces `paper_local.html` and adds VMI source, styles, source notes, bundler and tests. Back up your existing app/account export first; close old-version tabs, copy files into the existing project, restart its usual local server and reload the **same localhost origin/browser profile**. This source package does not contain or change your separate browser account data by itself.
