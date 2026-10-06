@@ -314,6 +314,16 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 out = providers._cached(
                     ('q', prov, one('symbol', ''), credential_id), ttl_quote,
                     lambda: providers.cascade('quote', prov, key, symbol=one('symbol', '')))
+            elif kind == 'vmi_scan':
+                import vmi_data
+                mode, page = one('mode', 'moderate'), int(one('page', '0'))
+                if mode not in ('conservative', 'moderate', 'optimistic') or not 0 <= page < 50:
+                    raise ValueError('Invalid VMI scan preset/page')
+                out = providers._cached((kind, mode, page), 900, lambda: vmi_data.scan(mode, page))
+            elif kind == 'vmi_fundamentals':
+                import vmi_data
+                ticker = vmi_data.symbol(one('symbol', ''))
+                out = providers._cached((kind, ticker), 21600, lambda: vmi_data.fundamentals(ticker))
             elif kind == 'search' and prov == 'tws':
                 out = {'results': market.ENGINE.call('search', one('q', '')), 'served_by': 'tws'}
             elif kind == 'chain' and prov == 'tws':
