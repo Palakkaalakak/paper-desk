@@ -324,6 +324,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 import vmi_data
                 ticker = vmi_data.symbol(one('symbol', ''))
                 out = providers._cached((kind, ticker), 21600, lambda: vmi_data.fundamentals(ticker))
+            elif kind == 'vmi_stock':
+                import vmi_data
+                out = market.ENGINE.call('vmi_stock', vmi_data.symbol(one('symbol', '')), timeout=30)
             elif kind == 'search' and prov == 'tws':
                 out = {'results': market.ENGINE.call('search', one('q', '')), 'served_by': 'tws'}
             elif kind == 'chain' and prov == 'tws':

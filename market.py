@@ -403,6 +403,14 @@ class MarketEngine:
             self._contracts[key] = c
         return self._contracts[key]
 
+    async def _vmi_stock(self, symbol):
+        from vmi_data import symbol as validate_symbol
+        c = await self._stock(validate_symbol(symbol))
+        if c.secType != 'STK' or c.currency != 'USD' or not c.conId:
+            raise ValueError('Expected a verified USD stock contract')
+        return dict(symbol=c.symbol, conid=c.conId, secType=c.secType,
+                    currency=c.currency, exch='SMART', mult=1, served_by='tws')
+
     @staticmethod
     def _screen_quote_complete(q,now):
         return (q.get('status')=='LIVE' and not q.get('halted') and not q.get('error') and

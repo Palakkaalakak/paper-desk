@@ -18,6 +18,9 @@
 - Existing read-only `/data/quote?provider=tws&symbol=...` refresh on VMI entry, company addition, archive import and return to a visible VMI page, plus recurring automatic refresh with a five-minute cooldown. There is no manual quote-refresh button. Only timestamped USD-compatible IB last prices are promoted. Older prices remain visibly dated on failure. No GUNS chart-history sweep.
 - Explicit read-only links to existing paper books capture sanitized financial snapshots when changed (manual or every minute while browser is visible). Active books use current state, not a stale book copy.
 
+### Stock ticket handoff
+Company review has **Prepare stock BUY ticket** with whole shares and limit price. `/data/vmi_stock?symbol=META` resolves the actual USD stock through the existing IB owner loop. The explicit handoff targets the currently selected paper book, selects the resolved contract in Trade and prefills a DAY limit ticket. It never calls order submission or the fill engine, never changes account risk settings, and aborts if the book, research selection or active tab changes while resolving. Review the target account and click BUY yourself. This action may add the instrument to the existing watchlist.
+
 ### Using it and retaining research
 1. Discovery → wait for automatic market results, click a listing to track it, or add a ticker and its listing currency. Select the independent research portfolio and rule preset.
 2. Company review → inspect automatically retrieved financial evidence, dates and formulas, then add business/moat evidence and review notes. Manual metrics and SEC import remain available.
@@ -33,12 +36,12 @@ Archive schema `vmi-1` holds companies, independent planner settings and timesta
 - Speculative track-record exceptions do not automatically waive ordinary profitability/moat gates: such names may still display QUALITY FLAG. This is a research warning, not an automatic rejection of every speculative thesis.
 - Preset combinations are app policies drawn from source alternatives, not three named course strategies. The source has not been independently fact-checked end-to-end. Historical examples, tax generalizations and claims of safety are not current facts or guarantees.
 - 20% and 25–30% CAGR are user aspirations, not model forecasts. Losses may exceed 30–50%, including total loss. A zero-floored terminal leverage illustration omits issuer credit, barriers, financing, caps and product terms.
-- Next requested work: stock-ticket handoff, quoted covered-call chain/ticket handoff, and audited retroactive paper-trade recording. These are not implemented by this scanner checkpoint. Then extend sourced coverage and point-in-time history.
+- Next requested work: quoted covered-call chain/ticket handoff and audited retroactive paper-trade recording. These remain unimplemented. Then extend sourced coverage and point-in-time history.
 
 ### Updating and development
 The update package replaces `paper_local.html` and adds VMI source, styles, source notes, bundler and tests. Back up your existing app/account export first; close old-version tabs, copy files into the existing project, restart its usual local server and reload the **same localhost origin/browser profile**. This source package does not contain or change your separate browser account data by itself.
 
-Run `node build_vmi.cjs` after changing VMI JS/CSS/source notes; it embeds assets without changing the Python asset allowlist. Tests: `node --test test_vmi.cjs test_frontend.cjs test_guns.cjs test_trading.cjs`. Earlier in this implementation, an offline Chromium fixture passed forms, SEC/CSV import, JSON roundtrip, independent presets, escaping, market-tick form preservation, read-only snapshots and mobile layouts with zero page errors. That fixture was lost in a sandbox reset; this package retains the numerical regression tests. Live Gateway timing/entitlements remain unverified; interrupted full Python/browser reruns are not counted as passes.
+Run `node build_vmi.cjs` after changing VMI JS/CSS/source notes; it embeds assets without changing the Python asset allowlist. Tests: `node --test test_vmi.cjs test_vmi_handoff.cjs test_frontend.cjs test_guns.cjs test_trading.cjs` (125 passed at stock-handoff checkpoint). Financial/contract tests: `python -m unittest test_vmi_data` (7 passed). Earlier in this implementation, an offline Chromium fixture passed forms, SEC/CSV import, JSON roundtrip, independent presets, escaping, market-tick form preservation, read-only snapshots and mobile layouts with zero page errors. That fixture was lost in a sandbox reset; this package retains the numerical regression tests. Live Gateway timing/entitlements remain unverified; interrupted full Python/browser reruns are not counted as passes.
 
 
 ## Owner account update and safer entries — 2026-10-05

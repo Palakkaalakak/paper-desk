@@ -45,4 +45,19 @@ class VMIDataTests(unittest.TestCase):
             self.assertEqual([x['val'] for x in result['annualTotalDebt']],[3])
             with self.assertRaises(ValueError): v.secondary('MSFT')
 
+class VMIStockTests(unittest.IsolatedAsyncioTestCase):
+    async def test_stock_identity_comes_from_owner_loop_qualification(self):
+        from market import MarketEngine
+        from unittest.mock import AsyncMock
+        from types import SimpleNamespace
+        engine=MarketEngine()
+        engine._stock=AsyncMock(return_value=SimpleNamespace(symbol='META',conId=123,secType='STK',currency='USD'))
+        out=await engine._vmi_stock('meta')
+        engine._stock.assert_awaited_once_with('META')
+        self.assertEqual(out['conid'],123)
+        self.assertEqual(out['served_by'],'tws')
+        engine._stock.return_value.currency='EUR'
+        with self.assertRaises(ValueError): await engine._vmi_stock('META')
+        with self.assertRaises(ValueError): await engine._vmi_stock('../META')
+
 if __name__=='__main__': unittest.main()
