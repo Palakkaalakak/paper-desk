@@ -411,6 +411,14 @@ class MarketEngine:
         return dict(symbol=c.symbol, conid=c.conId, secType=c.secType,
                     currency=c.currency, exch='SMART', mult=1, served_by='tws')
 
+    async def _vmi_chain(self, symbol, expiry=None):
+        from vmi_options import chain
+        return await chain(self, symbol, expiry)
+
+    async def _vmi_option(self, symbol, conid):
+        from vmi_options import quote
+        return await quote(self, symbol, conid)
+
     @staticmethod
     def _screen_quote_complete(q,now):
         return (q.get('status')=='LIVE' and not q.get('halted') and not q.get('error') and

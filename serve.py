@@ -327,6 +327,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
             elif kind == 'vmi_stock':
                 import vmi_data
                 out = market.ENGINE.call('vmi_stock', vmi_data.symbol(one('symbol', '')), timeout=30)
+            elif kind == 'vmi_chain':
+                import vmi_data
+                out = market.ENGINE.call('vmi_chain', vmi_data.symbol(one('symbol', '')), one('expiry') or None, timeout=100)
+            elif kind == 'vmi_option':
+                import vmi_data
+                out = market.ENGINE.call('vmi_option', vmi_data.symbol(one('symbol', '')), int(one('conid', '0')), timeout=45)
             elif kind == 'search' and prov == 'tws':
                 out = {'results': market.ENGINE.call('search', one('q', '')), 'served_by': 'tws'}
             elif kind == 'chain' and prov == 'tws':
