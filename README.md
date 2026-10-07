@@ -1,6 +1,6 @@
 # Paper Desk — IB Gateway paper-trading workstation
 
-## VMI research workspace — 2026-10-06
+## VMI research workspace — 2026-10-07
 
 **First usable research release, not complete investment automation.** The local Python/IB architecture, GUNS, Trading and broker-write protections remain unchanged. Open the existing app at **http://localhost:8765** and select **VMI** beside GUNS. No cloud deployment or new API credentials.
 
@@ -21,12 +21,26 @@
 ### Stock ticket handoff
 Company review has **Prepare stock BUY ticket** with whole shares and limit price. `/data/vmi_stock?symbol=META` resolves the actual USD stock through the existing IB owner loop. The explicit handoff targets the currently selected paper book, selects the resolved contract in Trade and prefills a DAY limit ticket. It never calls order submission or the fill engine, never changes account risk settings, and aborts if the book, research selection or active tab changes while resolving. Review the target account and click BUY yourself. This action may add the instrument to the existing watchlist.
 
+### IB covered calls
+Open **VMI → IB covered calls**. Select an existing stock position, load IB expirations, then select an expiry and listed strike. The selected contract gets an actual IB snapshot, refreshed every 30 seconds while visible. Bid, ask, last, status, observation time and available Greeks are shown; missing values stay missing. The primary workflow no longer asks you to invent a strike or premium.
+
+`/data/vmi_chain?symbol=META[&expiry=YYYYMMDD]` retrieves full contract details, not the old disk cache that loses multiplier metadata. `/data/vmi_option?symbol=META&conid=...` requalifies the contract and uses the existing owner-loop snapshot acquisition with request-ID cancellation. Adjusted, expired, mismatched and ambiguous contracts are excluded. IB standard-class/100-multiplier metadata does **not** prove an OCC deliverable: explicitly confirm 100 ordinary shares with no adjustments before handoff.
+
+The separate **SELL call ticket** handoff recalculates available shares after held short calls, pending sell calls/combo legs and stock-sale reservations, and re-fetches the actual option quote. Unknown existing deliverables block reuse of coverage. It rejects stale/delayed/frozen quotes, changed books/selections, insufficient coverage and strategy-managed underlying positions. It only selects/prefills Trade, never submits. Existing cash-account and short-selling restrictions remain unchanged; no automatic shorting exception is added. A later manual Trade submission follows the existing order engine and risk settings. Early assignment/dividends are not modeled.
+
+### Record missed paper trades
+Open **VMI → Record missed trade** in the intended existing paper account. Enter ticker, BUY/SELL, whole shares, execution price, fees, reason and an explicit-offset timestamp such as `2026-10-01T14:30:00-04:00`. Preview shows cash, realized P&L, quantity/cost basis and any later affected realized results. Editing inputs invalidates the preview. Confirm separately to record; no IB order is sent.
+
+The chronological replay must reconcile retained stock fills with current quantity/cost and realized results. Incomplete/short histories, active strategy-managed exposure, related derivatives, affected working orders and later managed P&L changes are rejected rather than guessed. This does not enroll a missed fill in a GUNS/Trading strategy journal. Historical equity marks and buying power are not reconstructed.
+
+Both execution and recording timestamps are retained. Per-book `paperCorrections` stores reason, request ID, before/after values and original later rows whose P&L/cashAfter was adjusted. Duplicate requests and stale previews are blocked. A full account backup is written to `paperAccount.backup.missed-trade.<requestId>` before the candidate account; failed writes leave in-memory accounting unchanged. Corrections and audits persist in the existing browser-local account, independently of session research. Export your account and close old-version tabs before updating.
+
 ### Using it and retaining research
 1. Discovery → wait for automatic market results, click a listing to track it, or add a ticker and its listing currency. Select the independent research portfolio and rule preset.
 2. Company review → inspect automatically retrieved financial evidence, dates and formulas, then add business/moat evidence and review notes. Manual metrics and SEC import remain available.
 3. Valuation → calculate scenarios, then explicitly adopt an IV for the active preset. Entry & exit → import history and document your chart/decision evidence.
-4. Portfolios & options → configure capital/holdings and support budgets. Existing account links are optional and read-only.
-5. **Apply forms, then Export research JSON before closing. Import that file on reopening to resume.** Research is session-only: no VMI localStorage writes or backend persistence. Unapplied form drafts are excluded from exports, with a warning. Verify downloads. The JSON contains private research and linked-book observations; keep it private.
+4. Portfolios → configure capital/holdings and support budgets. Existing account links are optional and read-only.
+5. **Apply forms, then Export research JSON before closing. Import that file on reopening to resume.** Research is session-only, without backend persistence. Explicit historical paper-trade recording is separate and writes the existing local account and audit. Unapplied form drafts are excluded from exports, with a warning. Verify downloads. The JSON contains private research and linked-book observations; keep it private.
 
 Archive schema `vmi-1` holds companies, independent planner settings and timestamped audit events. Limits: 100 companies, 1,000 plans per profile, 5,000 events and 50 MB import; capacity checks stop additions before producing an oversized compact export. No missing closed-app history is invented.
 
@@ -36,12 +50,12 @@ Archive schema `vmi-1` holds companies, independent planner settings and timesta
 - Speculative track-record exceptions do not automatically waive ordinary profitability/moat gates: such names may still display QUALITY FLAG. This is a research warning, not an automatic rejection of every speculative thesis.
 - Preset combinations are app policies drawn from source alternatives, not three named course strategies. The source has not been independently fact-checked end-to-end. Historical examples, tax generalizations and claims of safety are not current facts or guarantees.
 - 20% and 25–30% CAGR are user aspirations, not model forecasts. Losses may exceed 30–50%, including total loss. A zero-floored terminal leverage illustration omits issuer credit, barriers, financing, caps and product terms.
-- Next requested work: quoted covered-call chain/ticket handoff and audited retroactive paper-trade recording. These remain unimplemented. Then extend sourced coverage and point-in-time history.
+- Remaining work: extend sourced coverage and point-in-time history, reconcile historical strategy-managed trades, and support independently verified adjusted-option deliverables. Selected option observations currently remain in the covered-call session rather than a durable historical quote database.
 
 ### Updating and development
 The update package replaces `paper_local.html` and adds VMI source, styles, source notes, bundler and tests. Back up your existing app/account export first; close old-version tabs, copy files into the existing project, restart its usual local server and reload the **same localhost origin/browser profile**. This source package does not contain or change your separate browser account data by itself.
 
-Run `node build_vmi.cjs` after changing VMI JS/CSS/source notes; it embeds assets without changing the Python asset allowlist. Tests: `node --test test_vmi.cjs test_vmi_handoff.cjs test_frontend.cjs test_guns.cjs test_trading.cjs` (125 passed at stock-handoff checkpoint). Financial/contract tests: `python -m unittest test_vmi_data` (7 passed). Earlier in this implementation, an offline Chromium fixture passed forms, SEC/CSV import, JSON roundtrip, independent presets, escaping, market-tick form preservation, read-only snapshots and mobile layouts with zero page errors. That fixture was lost in a sandbox reset; this package retains the numerical regression tests. Live Gateway timing/entitlements remain unverified; interrupted full Python/browser reruns are not counted as passes.
+Run `node build_vmi.cjs` after changing VMI JS/CSS/source notes; it embeds assets without changing the Python asset allowlist. Verified: `node --test test_vmi.cjs test_vmi_calls.cjs test_vmi_handoff.cjs test_paper_corrections.cjs test_frontend.cjs test_guns.cjs test_trading.cjs` — **133 passed**. `python -m unittest test_vmi_data test_vmi_options test_market test_security` — **83 passed**. `python browser_vmi_check.py` — full-app stock/call handoffs without submission, mocked IB chain/quote routing, historical preview/invalidation/recording, backup, persistence and mobile layout passed with no page errors. The durable fixture uses isolated test data. Live Gateway timing, market-data entitlements and actual option deliverables remain unverified in this environment.
 
 
 ## Owner account update and safer entries — 2026-10-05

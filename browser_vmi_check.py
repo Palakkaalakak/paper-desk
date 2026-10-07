@@ -31,6 +31,11 @@ def main():
             if '/data/vmi_scan' in url: return r.fulfill(json={'rows':[{'symbol':'META','fields':{'ROE':'25%'}}],'nextPage':1,'source':'fixture','retrievedAt':now})
             if '/data/vmi_fundamentals' in url: return r.fulfill(json={'symbol':'META','name':'<img src=x onerror=alert(1)>','currency':'USD','cik':123,'metrics':{'roe':25},'sources':[],'retrievedAt':now})
             if '/data/vmi_stock' in url: return r.fulfill(json={'symbol':'META','conid':123,'secType':'STK','currency':'USD','mult':1,'exch':'SMART','served_by':'tws'})
+            option = dict(conid=456,symbol='META  990116C00100000',secType='OPT',right='C',root='META',underConid=123,currency='USD',mult=100,strike=100,expiry='20990116',exch='SMART',tradingClass='META',deliverableStatus='IB_STANDARD_CLASS_NOT_OCC_VERIFIED')
+            if '/data/vmi_chain' in url:
+                return r.fulfill(json=dict(symbol='META',underConid=123,expirations=['20990116'],calls=[option] if 'expiry=' in url else [],expiry='20990116' if 'expiry=' in url else None,excluded=0,served_by='tws',retrievedAt=now))
+            if '/data/vmi_option' in url:
+                return r.fulfill(json=dict(inst=option,quote=dict(brokerConid=456,bid=2,ask=2.1,last=None,status='LIVE',at=now,greeks={'delta':0.3}),served_by='tws',retrievedAt=now))
             if '/data/stream' in url: return r.fulfill(content_type='text/event-stream',body=': fixture\n\n')
             if '/data/subscriptions' in url:
                 rows = r.request.post_data_json.get('instruments',[])
@@ -75,6 +80,21 @@ def main():
         assert page.evaluate('Object.keys(localStorage).filter(k=>k.startsWith("paperAccount.backup.missed-trade.")).length') == 1
         assert page.evaluate('__paper.S.trades[0].executedAt') == '2026-01-02T15:30:00.000Z'
         assert page.evaluate('__paper.S.trades[0].recordedAt!==__paper.S.trades[0].executedAt')
+        page.locator('[data-page="calls"]').click()
+        page.locator('#vmi-call-chain button').click()
+        page.locator('#vmi-call-expiry').select_option('20990116')
+        page.locator('#vmi-call-ticket').wait_for()
+        assert page.locator('#vmi-call-ticket [name="limit"]').input_value() == '2'
+        page.locator('#vmi-call-ticket [name="confirmed"]').check()
+        account_before = page.evaluate('JSON.stringify([__paper.S.account,__paper.S.settings,__paper.S.cash,__paper.S.positions,__paper.S.orders,__paper.S.trades])')
+        page.locator('#vmi-call-ticket button').click()
+        page.locator('#oQty').wait_for()
+        assert page.locator('#oQty').input_value() == '1'
+        assert page.locator('#oLimit').input_value() == '2'
+        assert page.evaluate('__paper.S.lastSelected.conid') == 456
+        assert page.evaluate('JSON.stringify([__paper.S.account,__paper.S.settings,__paper.S.cash,__paper.S.positions,__paper.S.orders,__paper.S.trades])') == account_before
+        assert sum('/data/vmi_option' in u for u in requests) >= 2
+        page.locator('[data-tab="vmi"]').click()
         page.set_viewport_size({'width':390,'height':844})
         assert page.evaluate('document.documentElement.scrollWidth<=innerWidth+1')
         page.reload(wait_until='domcontentloaded')
@@ -82,7 +102,7 @@ def main():
         assert page.evaluate('__paper.S.paperCorrections.length') == 1
         assert not any('/data/guns_bars' in u for u in requests)
         assert not errors, errors
-        print('VMI browser: stock handoff, automatic discovery, historical preview/invalidation/recording, backup, persistence and mobile passed')
+        print('VMI browser: stock/call handoffs without submission, chain routing, historical preview/recording, backup, persistence and mobile passed')
         browser.close()
 
 if __name__ == '__main__': main()
