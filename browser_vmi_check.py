@@ -3,6 +3,7 @@ import json
 import pathlib
 import re
 import time
+import urllib.parse
 from playwright.sync_api import sync_playwright
 
 ROOT = pathlib.Path(__file__).resolve().parent
@@ -28,7 +29,14 @@ def main():
                 name = url.rsplit('/',1)[-1]
                 if name in ('guns.js','guns-execution.js','guns-workflow.js','guns-tutorial.js','guns-ui.js','guns.css','trading.js','trading-ui.js'):
                     return r.fulfill(content_type='text/css' if name.endswith('.css') else 'text/javascript',body=(ROOT/name).read_text())
-            if '/data/vmi_scan' in url: return r.fulfill(json={'rows':[{'symbol':'META','fields':{'ROE':'25%'}}],'nextPage':1,'source':'fixture','retrievedAt':now})
+            if '/data/vmi_sp500_members' in url:
+                return r.fulfill(json=dict(rows=[dict(symbol='T'+str(i),name='Fixture',industry='Software',sector='IT',cik=i+1) for i in range(502)]+[dict(symbol='META',name='Meta',industry='Software',sector='IT',cik=900)],source='fixture',retrievedAt=now))
+            if '/data/vmi_sp500_batch' in url:
+                q=urllib.parse.parse_qs(urllib.parse.urlsplit(url).query)
+                return r.fulfill(json=dict(rows=[dict(symbol=x,fields={'ROE':'25%'},source='fixture',retrievedAt=now,screen=dict(rejected=x!='META',reasons=['Fixture threshold'])) for x in q['symbols'][0].split(',')],missing=[]))
+            if '/data/vmi_sp500_company' in url:
+                q=urllib.parse.parse_qs(urllib.parse.urlsplit(url).query)
+                return r.fulfill(json=dict(member={'symbol':'META'},evidence={},result=dict(preset=q['mode'][0],status='QUALIFIED',checks=[],failures=[],pending=[]),research=dict(symbol='META',name='Meta',currency='USD',cik=900,metrics={'roe':25},sources=[],retrievedAt=now)))
             if '/data/vmi_fundamentals' in url: return r.fulfill(json={'symbol':'META','name':'<img src=x onerror=alert(1)>','currency':'USD','cik':123,'metrics':{'roe':25},'sources':[],'retrievedAt':now})
             if '/data/vmi_stock' in url: return r.fulfill(json={'symbol':'META','conid':123,'secType':'STK','currency':'USD','mult':1,'exch':'SMART','served_by':'tws'})
             option = dict(conid=456,symbol='META  990116C00100000',secType='OPT',right='C',root='META',underConid=123,currency='USD',mult=100,strike=100,expiry='20990116',exch='SMART',tradingClass='META',deliverableStatus='IB_STANDARD_CLASS_NOT_OCC_VERIFIED')
@@ -51,7 +59,14 @@ def main():
         page.goto('http://paper.test/',wait_until='domcontentloaded')
         page.wait_for_function('window.__paper')
         page.locator('[data-tab="vmi"]').click()
-        page.locator('[data-discovered="META"]').click()
+        page.locator('#vmi-scan-start').wait_for()
+        assert not any('/data/vmi_sp500_' in u for u in requests)
+        page.locator('#vmi-scan-start').click()
+        page.wait_for_function("document.querySelector('#vmi-scan-progress')?.textContent.includes('Scan complete')")
+        assert page.locator('[data-scan-filter="all"] strong').inner_text() == '503'
+        assert page.locator('[data-scan-filter="qualified"] strong').inner_text() == '1'
+        page.locator('[data-scan-filter="qualified"]').click()
+        page.locator('[data-scan-open="META"]').click()
         page.locator('#vmi-stock-ticket [name="qty"]').fill('3')
         page.locator('#vmi-stock-ticket [name="limit"]').fill('99')
         before = page.evaluate('JSON.stringify([__paper.S.cash,__paper.S.positions,__paper.S.orders,__paper.S.trades])')
@@ -100,7 +115,7 @@ def main():
         page.reload(wait_until='domcontentloaded')
         page.wait_for_function('window.__paper && __paper.S.trades.length===1')
         assert page.evaluate('__paper.S.paperCorrections.length') == 1
-        assert not any('/data/guns_bars' in u for u in requests)
+        assert not any('/data/guns_bars' in u or '/data/vmi_scan?' in u for u in requests)
         assert not errors, errors
         print('VMI browser: stock/call handoffs without submission, chain routing, historical preview/recording, backup, persistence and mobile passed')
         browser.close()

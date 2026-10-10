@@ -1,5 +1,32 @@
 # Paper Desk — IB Gateway paper-trading workstation
 
+## S&P 500 scanner checkpoint — 2026-10-10
+
+**Still under development: complete real-data coverage is not yet verified.** This extends the existing local Python application; no cloud deployment, new funded accounts, or broker-write routes were added.
+
+- Open **VMI → S&P 500 scanner → Scan S&P 500**. Scanning is explicit, not automatic discovery. It starts from the complete public constituent mirror with share classes, then applies broad profitability, growth, financial-history/debt, and peer checks. There is no first-100 scanner limit. The separate tracked research archive retains its existing 100-company limit.
+- Scanner qualification excludes moat and is separate from valuation/entry. The older manual company review still includes moat. Native Paper Desk theme replaces the independent green palette.
+- Read-only IBKR enrichment uses the existing owner loop, existing fresh live quote or owned-ID snapshot, and optional ReportSnapshot. Only fresh, identity-matched LIVE quotes become preferred valuation reference prices. No orders, persistent broad subscriptions, or GUNS history requests.
+- SEC/Yahoo evidence retains dates, units and calculation inputs. Incomplete long-term-only debt cannot supply total-debt ROIC/gearing/debt-EBITDA. Yahoo can recover missing analysis-page modules from key-statistics/quote pages; one-year forecasts remain one-year forecasts.
+- Actual issuer inline-XBRL recovery validates CIK, report date, consolidated contexts, units, scales, namespaces, and conflicting facts. Bank of America's official filing mirror supplies dated parent-company CET1 and its issuer-defined NPL ratio; this is not yet coverage for every bank. SEC archive 403/429 responses trigger a cooldown, not repeated requests for every company.
+- Documented treasury-buyback negative-equity exceptions require actual matched treasury/retained-earnings evidence and increasing profits/FCF. Numeric ROE remains undefined; no infinity or automatic ROIC exemption. Operating-margin fallback is tested independently of the earnings fallback.
+- Original course PDF: `docs/VMI_MASTER_DOCUMENT.pdf`; searchable source: `VMI_MASTER_DOCUMENT.md`.
+
+### Scanner routes and evidence
+- `/data/vmi_sp500_members`
+- `/data/vmi_sp500_batch?view=financial|growth&symbols=AAPL,MSFT&mode=conservative|moderate|optimistic` (maximum 20 explicitly named constituents per batch)
+- `/data/vmi_sp500_company?symbol=MSFT&mode=moderate`
+- `/data/vmi_ib?symbol=MSFT` (optional read-only broker evidence)
+
+Use **Export scan evidence** for complete-run JSON, separate from the tracked archive. Provider caches are transient and bounded; raw multi-megabyte SEC blobs are not retained across the universe. Existing paper accounts and research persistence remain unchanged.
+
+### Verification and remaining work
+Final checkpoint verification: **114 Python tests and 136 JavaScript tests passed**, plus `python browser_vmi_check.py` after IB scanner integration. Browser coverage includes an explicit mocked 503-listing scan, stock/call handoffs without submission, historical correction preview/recording, backup/persistence, and mobile layout. `test_vmi_scanner.cjs` covers full-503 orchestration, explicit start, incomplete-universe rejection, and cancellation/preset isolation. Mock coverage does not prove real-data completeness. Run `python -u check_vmi_live.py --live --mode moderate` for the opt-in real-universe audit; unresolved acquisition exits nonzero.
+
+Live probes retrieved dated financial evidence for NVDA, MSFT, JPM and BAC. BAC's June 2026 evidence includes parent CET1 11.2% and issuer-defined NPL 0.47%; those values are fetched, not hardcoded. JPM still had unresolved margin/forecast/capital/credit-risk checks. These probes are not a completed universe audit.
+
+Outstanding: long-term forecasts during provider throttling, remaining bank CET1/NPL adapters, debt/interest/history recovery and net-interest definition alignment, speculative quarterly alternatives, stronger upfront-payment evidence and direct-competitor selection, completed real-universe audit, and live Gateway entitlement verification. GitHub push requires restored authorization. Latest work is preserved in uploaded checkpoints, not represented as pushed or production-deployed.
+
 ## VMI research workspace — 2026-10-07
 
 **First usable research release, not complete investment automation.** The local Python/IB architecture, GUNS, Trading and broker-write protections remain unchanged. Open the existing app at **http://localhost:8765** and select **VMI** beside GUNS. No cloud deployment or new API credentials.
@@ -11,7 +38,7 @@
 - Equal-weight purchase budgets, 3–4 support tranches, whole-share sizing and reduced speculative/turnaround sizes. Plans do not reserve cash or execute orders.
 - Supplemental covered-call expiry payoff and historical terminal-participation versus reset-leverage illustrations. These are not option or bank-note pricing models.
 - Automatic SEC CompanyFacts/submissions retrieval, issuer-link and SEC entity-search fallbacks when the ticker map is unavailable, Finviz snapshot metrics and Yahoo dated statement fallbacks. Annual facts retain tags, filing dates, periods and calculation inputs; they are not labeled TTM. Manual CompanyFacts import remains available.
-- Automatic valuation-neutral US-listing discovery via `/data/vmi_scan?mode=moderate&page=0`, two-minute pagination while VMI is visible. `/data/vmi_fundamentals?symbol=META` supplies financial observations. Up to 1,000 listings/session; sequential financial retrieval for the first 100 plus tracked companies. Backend successful observations are cached for six hours; no new dependency/API key.
+- The former automatic paginated discovery UI has been replaced by the explicit whole-S&P-500 scanner described above. `/data/vmi_scan` remains a legacy compatibility endpoint, not the scanner's universe source. `/data/vmi_fundamentals?symbol=META` and automatic refresh of tracked research companies remain available.
 - Separate Research, Qualified/waiting-for-value and Qualified+undervalued collections. Qualification requires all five business gates; price cannot compensate for failed quality. Entry timing is separate.
 - Automatic annual-FCF valuation proposals when all inputs and a provider forecast exist, with an editable 10% application-default discount rate. One provider forecast is not three independent forecasts. Proposals never override adopted manual IVs or supply fabricated qualitative reviews. Older financial metrics (>550 days) remain in the source evidence but are excluded from active automatic screening.
 - Completed-date CSV import (`date,close`), daily SMA diagnostics, review-date reminders, decision notes and searchable full supplied course notes.

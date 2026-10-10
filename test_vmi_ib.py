@@ -1,0 +1,44 @@
+import asyncio,time,unittest
+from types import SimpleNamespace as NS
+from unittest.mock import AsyncMock,Mock,patch
+from market import MarketEngine
+import vmi_ib as v
+XML='<Report><CoID Type="Ticker">META</CoID><Ratios><Ratio FieldName="TTMROEPCT">25</Ratio><Ratio FieldName="TTMROIPCT">99</Ratio></Ratios></Report>'
+class IBScannerTests(unittest.IsolatedAsyncioTestCase):
+ def fixture(self):
+  e=MarketEngine();e._ib=NS();e.info.update(connected=True,generation=3)
+  c=NS(symbol='META',secType='STK',currency='USD',conId=123);e._stock=AsyncMock(return_value=c)
+  e._snapshot_quote=AsyncMock(return_value=dict(brokerConid=123,last=100,status='LIVE',at=int(time.time()*1000)))
+  return e,c
+ async def test_owned_snapshot_and_report(self):
+  e,c=self.fixture()
+  with patch.object(v,'report',new=AsyncMock(return_value=XML)):
+   r=await e._vmi_observation('META');self.assertEqual(r['fields']['ROE'],'25.0');self.assertNotIn('ROIC',r['fields']);self.assertTrue(v.valid_quote(r['quote'],123))
+  e._snapshot_quote.assert_awaited_once_with(c)
+ async def test_existing_quote_preserves_stream(self):
+  e,c=self.fixture();ticker=object();e._active={123:dict(contract=c,ticker=ticker)};e._quote=Mock(return_value=e._snapshot_quote.return_value)
+  with patch.object(v,'report',new=AsyncMock(return_value=XML)):await e._vmi_observation('META')
+  e._snapshot_quote.assert_not_awaited();self.assertIs(e._active[123]['ticker'],ticker)
+ async def test_no_entitlement_retains_quote_and_cools_down(self):
+  e,c=self.fixture()
+  with patch.object(v,'report',new=AsyncMock(side_effect=ValueError('No entitlement'))) as report:
+   first=await e._vmi_observation('META');second=await e._vmi_observation('META')
+   self.assertTrue(v.valid_quote(first['quote'],123));self.assertEqual(report.await_count,1);self.assertIn('cooldown',second['attempts'][-1]['error'])
+ async def test_generation_change_rejected(self):
+  e,c=self.fixture()
+  async def change(*args):e.info['generation']+=1;return c
+  e._stock=change
+  with self.assertRaises(ConnectionError):await e._vmi_observation('META')
+  e._snapshot_quote.assert_not_awaited()
+ async def test_timeout_only_cancels_owned_report_id(self):
+  future=asyncio.get_running_loop().create_future();client=NS(getReqId=lambda:77,reqFundamentalData=Mock(),cancelFundamentalData=Mock());wrapper=NS(startReq=Mock(return_value=future),_endReq=Mock());e=NS(_ib=NS(client=client,wrapper=wrapper))
+  with self.assertRaises(asyncio.TimeoutError):await v.report(e,object(),timeout=.001)
+  client.cancelFundamentalData.assert_called_once_with(77);wrapper._endReq.assert_called_once_with(77)
+ def test_offline_does_not_connect(self):
+  e=MarketEngine();e.call=Mock();self.assertFalse(v.available(e,'META')['available']);e.call.assert_not_called()
+ def test_unsafe_xml_and_wrong_identity(self):
+  for xml in [XML.replace('META','AAPL'),'<!DOCTYPE x>'+XML]:
+   with self.assertRaises(ValueError):v.parse_report(xml,'META')
+ def test_delayed_stale_wrong_contract_prices_not_promoted(self):
+  q=dict(brokerConid=123,last=100,status='DELAYED',at=int(time.time()*1000));self.assertFalse(v.valid_quote(q,123));q['status']='LIVE';q['at']=0;self.assertFalse(v.valid_quote(q,123));q['at']=int(time.time()*1000);self.assertFalse(v.valid_quote(q,456))
+if __name__=='__main__':unittest.main()

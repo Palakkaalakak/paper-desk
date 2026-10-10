@@ -1,0 +1,80 @@
+import datetime as dt
+import unittest
+from unittest.mock import patch
+import vmi_sp500 as api
+import vmi_metrics as m
+
+class ScannerTests(unittest.TestCase):
+    def setUp(self): api._CACHE.clear()
+    def test_link_identity_not_duplicate_text(self):
+        p=api.Screener();p.feed('<table class="screener_table"><tr><th>No.</th><th>Ticker</th><th>ROE</th><tr><td>1</td><td><a href="stock?t=AAPL&ty=c">AAAPL</a></td><td>20%</td><tr><td>2</td><td><a href="stock?t=A&ty=c">AA</a></td><td>15%</td></table>')
+        self.assertEqual([r[1] for r in p.rows[1:]],['AAPL','A'])
+    def test_membership_retains_share_classes(self):
+        rows=[dict(symbol='X'+str(i),name='Issuer',sector='Information Technology',industry='Software',cik=i+1) for i in range(501)]
+        rows += [dict(symbol='BRK.B',name='B',sector='Financials',industry='Insurance',cik=900),dict(symbol='BRK.A',name='A',sector='Financials',industry='Insurance',cik=900)]
+        self.assertEqual(len(api.validate_members(rows)),503)
+        with self.assertRaises(ValueError): api.validate_members(rows[:100])
+        with self.assertRaises(ValueError): api.validate_members(rows+[rows[0]])
+    def test_quick_no_valuation_or_moat_and_sector_exception(self):
+        member=dict(industry='Systems Software',sector='Information Technology')
+        self.assertFalse(api.quick(member,dict(ROE='20%',ROIC='20%',**{'EPS Next 5Y':'10%','P/E':'900'}),'moderate')['rejected'])
+        self.assertTrue(api.quick(member,dict(ROE='11%'),'moderate')['rejected'])
+        self.assertFalse(api.quick(dict(industry='Diversified Banks',sector='Financials'),dict(ROE='20%',ROIC='1%'),'moderate')['rejected'])
+        self.assertFalse(api.quick(member,{},'moderate')['rejected'])
+    def test_missing_bulk_row_retrieves_individual(self):
+        members=[dict(symbol='A',industry='Software',sector='IT'),dict(symbol='B',industry='Software',sector='IT')]
+        with patch.object(api,'members',return_value={'rows':members}),patch.object(api,'bulk',return_value={'A':dict(symbol='A',fields={},source='bulk')}),patch.object(api,'snapshot',return_value=dict(symbol='B',fields={},source='individual')) as snap:
+            result=api.batch('financial','A,B');self.assertEqual(result['missing'],[]);snap.assert_called_once_with('B')
+            self.assertEqual(len(result['rows']),2)
+        with self.assertRaises(ValueError): api.batch('financial',','.join(['A']*21))
+    def test_no_missing_balance_becomes_zero(self):
+        result=m.calculate({'revenue':[dict(end='2025-12-31',val=100)],'income':[dict(end='2025-12-31',val=20)]})
+        self.assertEqual(result['roe'],[]);self.assertEqual(result.get('ccc',[]),[])
+    def test_incomplete_debt_cannot_produce_total_debt_ratios(self):
+        values=dict(income=20,operatingIncome=25,tax=5,pretax=25,equity=100,debt=30,cash=10,assets=200,ebitda=40)
+        s={k:[dict(end='2025-12-31',val=value)] for k,value in values.items()}
+        s['debt'][0]['completeDebt']=False
+        result=m.calculate(s)
+        for key in ('roic','gearing','debtEbitda'): self.assertEqual(result.get(key,[]),[],key)
+        s['debt'][0]['completeDebt']=True
+        result=m.calculate(s)
+        for key in ('roic','gearing','debtEbitda'): self.assertEqual(len(result[key]),1,key)
+
+    def test_buyback_exception_requires_statement_support(self):
+        year=dt.date.today().year-1;dates=[f'{year-4+i}-12-31' for i in range(5)]
+        s={key:[dict(end=end,val=100+i*10) for i,end in enumerate(dates)] for key in ('income','fcf')}
+        current={key:dict(end=dates[-1],val=value) for key,value in dict(equity=-20,treasury=150,retained=130,income=140).items()}
+        self.assertTrue(m.buyback_exception(s,current)[0])
+        del current['treasury'];self.assertIsNone(m.buyback_exception(s,current)[0])
+        current['treasury']=dict(end=dates[-1],val=10);self.assertFalse(m.buyback_exception(s,current)[0])
+        current['treasury']['val']=150;s['fcf'][-1]['val']=-1;self.assertFalse(m.buyback_exception(s,current)[0])
+        self.assertFalse(api.quick(dict(industry='Restaurants',sector='Consumer Discretionary'),{'ROE':'-50','ROIC':'20'},'moderate')['rejected'])
+
+    def test_margin_fallback_independent_of_earnings(self):
+        year=dt.date.today().year-1;s={}
+        for i in range(5):
+            for k,value in dict(revenue=100+i*30,income=20+i,operatingIncome=(100+i*30)*.3).items():
+                s.setdefault(k,[]).append(dict(end=f'{year-4+i}-12-31',val=value))
+        result=m.evaluate(dict(symbol='TEST',industry='Software',sector='IT'),dict(series=s,current={},market={},sources=[]))
+        earnings=next(c for c in result['checks'] if c['key']=='earnings');margin=next(c for c in result['checks'] if c['key']=='profitMargin')
+        self.assertEqual(earnings['status'],'PASS');self.assertEqual(margin['status'],'PASS')
+        self.assertIn('Operating-margin substitute',margin['detail'])
+
+    def test_consecutive_years_and_declines(self):
+        year=dt.date.today().year-1
+        rows=[dict(end=f'{year-4+i}-12-31',val=v) for i,v in enumerate([100,110,108,130,150])]
+        self.assertTrue(m.growth_test(rows,5))
+        self.assertIsNone(m.growth_test(rows[:-1],5))
+        self.assertFalse(m.growth_test([dict(r,val=10-i) for i,r in enumerate(rows)],5))
+    def test_ttm_uses_ytd_difference(self):
+        annual=[dict(start='2024-01-01',end='2024-12-31',val=100,source='SEC')]
+        facts={'Revenue':{'units':{'USD':[
+            dict(start='2025-01-01',end='2025-06-30',filed='2025-07-20',val=60,form='10-Q'),
+            dict(start='2024-01-01',end='2024-06-30',filed='2025-07-20',val=45,form='10-Q'),
+            dict(start='2025-04-01',end='2025-06-30',filed='2025-07-20',val=35,form='10-Q')]}}}
+        self.assertEqual(m.ttm(facts,['Revenue'],annual)['val'],115)
+    def test_annual_balance_filter_preserves_long_history(self):
+        # A quarterly-heavy sequence must not truncate the annual history to three years.
+        self.assertIn("if r.get('form') in ('10-K','10-K/A','20-F','20-F/A')",__import__('inspect').getsource(m.evidence))
+
+if __name__=='__main__': unittest.main()

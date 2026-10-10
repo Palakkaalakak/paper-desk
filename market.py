@@ -374,7 +374,7 @@ class MarketEngine:
             async def work():
                 try:
                     result = await getattr(self,'_'+name)(*args)
-                    ttl = 21600 if name == 'guns_float' and result.get('status')=='returned' else 30 if name == 'guns_float' else 3600 if name in ('guns_schedule','guns_capabilities') else .25 if name == 'guns_bars' else 0 if name == 'guns_scan' else 10 if name == 'guns_verify' else 30 if name == 'guns_news' else 300 if name in ('search','chain') or name == 'guns_article' and result.get('contentStatus') in ('body_returned','brief','pdf') else 1
+                    ttl = 15 if name == 'vmi_observation' else 21600 if name == 'guns_float' and result.get('status')=='returned' else 30 if name == 'guns_float' else 3600 if name in ('guns_schedule','guns_capabilities') else .25 if name == 'guns_bars' else 0 if name == 'guns_scan' else 10 if name == 'guns_verify' else 30 if name == 'guns_news' else 300 if name in ('search','chain') or name == 'guns_article' and result.get('contentStatus') in ('body_returned','brief','pdf') else 1
                     self._cache[key] = (time.monotonic()+ttl,result)
                     if len(self._cache)>1000:
                         self._cache.pop(next(iter(self._cache)))
@@ -410,6 +410,10 @@ class MarketEngine:
             raise ValueError('Expected a verified USD stock contract')
         return dict(symbol=c.symbol, conid=c.conId, secType=c.secType,
                     currency=c.currency, exch='SMART', mult=1, served_by='tws')
+
+    async def _vmi_observation(self, symbol):
+        from vmi_ib import observe
+        return await observe(self, symbol)
 
     async def _vmi_chain(self, symbol, expiry=None):
         from vmi_options import chain

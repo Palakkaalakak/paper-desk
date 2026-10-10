@@ -314,6 +314,18 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 out = providers._cached(
                     ('q', prov, one('symbol', ''), credential_id), ttl_quote,
                     lambda: providers.cascade('quote', prov, key, symbol=one('symbol', '')))
+            elif kind == 'vmi_sp500_members':
+                import vmi_sp500
+                out = vmi_sp500.members()
+            elif kind == 'vmi_sp500_batch':
+                import vmi_sp500
+                out = vmi_sp500.batch(one('view', 'financial'), one('symbols', ''), one('mode', 'moderate'))
+            elif kind == 'vmi_ib':
+                import vmi_ib, vmi_data
+                out = vmi_ib.available(market.ENGINE, vmi_data.symbol(one('symbol', '')))
+            elif kind == 'vmi_sp500_company':
+                import vmi_sp500
+                out = vmi_sp500.company(one('symbol', ''), one('mode', 'moderate'))
             elif kind == 'vmi_scan':
                 import vmi_data
                 mode, page = one('mode', 'moderate'), int(one('page', '0'))
