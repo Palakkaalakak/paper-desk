@@ -25,7 +25,7 @@ Final checkpoint verification: **114 Python tests and 136 JavaScript tests passe
 
 Live probes retrieved dated financial evidence for NVDA, MSFT, JPM and BAC. BAC's June 2026 evidence includes parent CET1 11.2% and issuer-defined NPL 0.47%; those values are fetched, not hardcoded. JPM still had unresolved margin/forecast/capital/credit-risk checks. These probes are not a completed universe audit.
 
-Outstanding: long-term forecasts during provider throttling, remaining bank CET1/NPL adapters, debt/interest/history recovery and net-interest definition alignment, speculative quarterly alternatives, stronger upfront-payment evidence and direct-competitor selection, completed real-universe audit, and live Gateway entitlement verification. GitHub push requires restored authorization. Latest work is preserved in uploaded checkpoints, not represented as pushed or production-deployed.
+Outstanding: long-term forecasts during provider throttling, remaining bank CET1/NPL adapters, debt/interest/history recovery and net-interest definition alignment, speculative quarterly alternatives, stronger upfront-payment evidence and direct-competitor selection, completed real-universe audit, and live Gateway entitlement verification. GitHub authorization was restored and the tested scanner/PDF checkpoint was pushed to `Palakkaalakak/paper-desk` on `main` (code commit `c72a8d6`). Uploaded recovery checkpoints are also available. This is a local application, not a cloud production deployment; the remaining acquisition work above is not claimed complete.
 
 ## VMI research workspace — 2026-10-07
 
