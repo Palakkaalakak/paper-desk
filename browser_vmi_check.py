@@ -68,6 +68,7 @@ def main():
         assert page.locator('[data-scan-open]').count() == 1
         assert page.locator('[data-scan-open="T0"]').count() == 0
         assert page.locator('[data-scan-filter="qualified"] strong').inner_text() == '1'
+        assert page.locator('#vmi-auto-settings').count() == 0
         page.locator('[data-scan-filter="qualified"]').click()
         page.locator('[data-scan-open="META"]').click()
         page.locator('#vmi-stock-ticket [name="qty"]').fill('3')

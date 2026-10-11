@@ -1,2 +1,5 @@
 # IB Gateway streaming support. Install with: python3 -m pip install -r requirements.txt
 ib_async==2.1.0
+
+# Public dated risk-premium workbook for company-specific discount rates.
+xlrd==2.0.2

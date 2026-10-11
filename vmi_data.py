@@ -165,6 +165,12 @@ FLOW_TAGS = {
 
 def fundamentals(ticker):
     ticker = symbol(ticker)
+    import vmi_sp500 as api
+    from vmi_metrics import evidence
+    try: member=next((r for r in api.members()['rows'] if r['symbol']==ticker),None)
+    except Exception: member=None
+    if member:
+        return api.research_payload(member,api.cached(('evidence',ticker),21600,lambda:evidence(member)))
     sources, attempts, market, html = [], [], {}, ''
     market_url = 'https://finviz.com/quote.ashx?t='+ticker
     try:
@@ -241,9 +247,5 @@ def fundamentals(ticker):
     metrics['years']=len(ends)
     stale=[k for k,p in provenance.items() if p.get('period') and (dt.date.today()-dt.date.fromisoformat(p['period'])).days>550]
     valuation=None
-    if flows['ocf']:
-        ocf=flows['ocf'][-1]; capex=matched(flows['capex'],ocf['end']); cash=balances.get('cash'); shares=balances.get('shares')
-        domestic='10-K' in issuer.get('filings',{}).get('recent',{}).get('form',[])
-        if domestic and capex and cash and debt and shares and shares['val']>0 and ocf['val']>capex['val']:
-            valuation={'method':'FCF','base':ocf['val']-capex['val'],'cash':cash['val'],'debt':debt['val'],'shares':shares['val'],'fx':1,'adr':1,'forecast':metrics.get('growth'),'flowPeriod':ocf['end'],'inputs':[ocf,capex,cash,debt,shares],'basis':'Annual FCF, not TTM; latest available balances. Verify listing/share-class suitability.'}
-    return {'symbol':ticker,'name':raw.get('entityName'),'cik':cik,'currency':'USD','metrics':metrics,'provenance':provenance,'flows':flows,'balances':balances,'secondary':alt,'market':market,'sources':sources,'attempts':attempts,'staleMetrics':stale,'valuationInputs':valuation,'retrievedAt':int(time.time()*1000),'qualitativeMoatVerified':False}
+    decision=dict(status='ACQUIRE',method=None,missing=['Verified industry classification and expanded valuation inputs required for non-S&P listing; legacy blanket FCF removed'])
+    return {'symbol':ticker,'name':raw.get('entityName'),'cik':cik,'currency':'USD','metrics':metrics,'provenance':provenance,'flows':flows,'balances':balances,'secondary':alt,'market':market,'sources':sources,'attempts':attempts,'staleMetrics':stale,'valuationInputs':valuation,'valuationDecision':decision,'retrievedAt':int(time.time()*1000),'qualitativeMoatVerified':False}

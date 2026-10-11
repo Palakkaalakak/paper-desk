@@ -13,3 +13,20 @@ test('Tranches conserve budget and fees, reject invalid supports, retain spent a
 test('Covered call caps upside and rejects uncovered contracts; leveraged paths differ',()=>{const x={owned:100,contracts:1,deliverable:100,cost:50,strike:55,premium:2,fees:5};a.equal(V.coveredCall(x).maxProfit,695);a.equal(V.coveredCall(x).maxLoss,4805);a.throws(()=>V.coveredCall({...x,owned:99}));const bars=[{date:'2020-01-01',close:100},{date:'2020-01-02',close:110},{date:'2020-01-03',close:100}];const r=V.leverage(bars,3,0);a.equal(r.terminal,1);a.ok(r.reset<1);a.throws(()=>V.history([...bars,bars[0]]));a.equal(V.averages(bars)[0].value,null);});
 test('SEC filing cutoff, future restatements, conflicting values and quarterly exclusion',()=>{const f={start:'2020-01-01',end:'2020-12-31',val:100,filed:'2021-02-01',form:'10-K',accn:'0000000123-21-000001'},raw=rows=>({cik:123,facts:{'us-gaap':{NetIncomeLoss:{units:{USD:rows}}}}});a.equal(V.sec(raw([f,{...f,filed:'2022-02-01',val:110}]),'2021-12-31').facts.income[0].val,100);a.equal(V.sec(raw([f,{...f,val:101}]),'2022-01-01').facts.income.length,0);a.equal(V.sec(raw([{...f,start:'2020-10-01'}]),'2022-01-01').facts.income.length,0);});
 test('Independent planners, immutable event payloads, archive roundtrip and malformed imports',()=>{const w=V.workspace();w.portfolios.defensive.mode='conservative';a.equal(w.portfolios.growth.mode,'moderate');const c=company();w.companies.push(c);w.selected=c.symbol;V.append(w,'test',c);c.metrics.roe=99;a.equal(w.events[0].payload.metrics.roe,16);a.deepEqual(V.validate(JSON.stringify({workspace:w})),w);a.throws(()=>V.validate('{"__proto__":{}}'));w.portfolios.growth.count=0;a.throws(()=>V.validate(JSON.stringify(w)));});
+
+test('Automatic valuation uses company rates and clears obsolete proposals but preserves adopted IV',()=>{
+ const d={symbol:'ABC',currency:'USD',retrievedAt:Date.now(),sources:['fixture'],valuationInputs:{...base,forecast:12,discount:8,discountEvidence:{rate:8,beta:1,source:'fixture',formula:'risk-free + beta × ERP'}}};
+ const first=V.automatic(V.company('ABC','USD'),d);a.equal(first.automatic.discount,8);a.ok(first.valuations.moderate.iv>0);
+ const higher=V.automatic(V.company('ABC','USD'),{...d,valuationInputs:{...d.valuationInputs,discount:12,discountEvidence:{...d.valuationInputs.discountEvidence,rate:12}}});a.ok(first.valuations.moderate.iv>higher.valuations.moderate.iv);
+ const cleared=V.automatic(first,{...d,valuationInputs:null});a.deepEqual(cleared.valuations,{});a.equal(cleared.automatic.scenarios,undefined);
+ first.valuations.moderate={iv:50,date:'2026-01-01',source:'Adopted'};
+ a.equal(V.automatic(first,{...d,valuationInputs:null}).valuations.moderate.iv,50);
+ const missing=V.automatic(V.company('ABC','USD'),{...d,valuationInputs:{...base,forecast:12}});a.deepEqual(missing.valuations,{});
+});
+
+test('Automatic PB/PS/NAV bypass DCF and PSG never becomes intrinsic value',()=>{
+ const d={symbol:'ABC',currency:'USD',retrievedAt:Date.now(),sources:[]};
+ for(const method of ['PB','PS','NAV']){const c=V.automatic(V.company('ABC','USD'),{...d,valuationInputs:{method,base:100,shares:10,multiple:1.5,fx:1,adr:1}});a.equal(c.valuations.moderate.iv,15);a.equal(c.automatic.discount,undefined);}
+ const reit=V.automatic(V.company('ABC','USD'),{...d,valuationInputs:{method:'PB',base:100,shares:10,multiple:1.5,fx:1,adr:1,yieldPriceCap:12}});a.equal(reit.valuations.moderate.iv,12);
+ const psg=V.automatic(V.company('ABC','USD'),{...d,valuationInputs:{method:'PSG',ratio:2,revenueGrowth:10}});a.equal(psg.automatic.roughGuide.classification,'Fairly priced');a.deepEqual(psg.valuations,{});
+});

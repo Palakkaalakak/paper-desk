@@ -18,7 +18,7 @@ FLOW=dict(v.FLOW_TAGS,**{
  'interestIncome':['InterestIncomeExpenseNonoperatingNet','InterestAndDividendIncomeOperating'],
 })
 BAL={
- 'cash':['CashAndCashEquivalentsAtCarryingValue'], 'investments':['ShortTermInvestments','MarketableSecuritiesCurrent'],
+ 'cash':['CashAndCashEquivalentsAtCarryingValue'], 'cashInvestments':['CashCashEquivalentsAndShortTermInvestments'], 'investments':['ShortTermInvestments','MarketableSecuritiesCurrent'],
  'equity':['StockholdersEquity','StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest'],
  'retained':['RetainedEarningsAccumulatedDeficit'],
  'treasury':['TreasuryStockValue'], 'assets':['Assets'], 'ca':['AssetsCurrent'], 'cl':['LiabilitiesCurrent'],
@@ -38,6 +38,7 @@ YAHOO={
  'equity':'StockholdersEquity','retained':'RetainedEarnings','treasury':'TreasuryStock','assets':'TotalAssets','ca':'CurrentAssets','cl':'CurrentLiabilities',
  'ar':'AccountsReceivable','inventory':'Inventory','ap':'AccountsPayable','debt':'TotalDebt',
  'ebitda':'EBITDA','deferred':'CurrentDeferredRevenue','shares':'OrdinarySharesNumber',
+ 'dilutedShares':'DilutedAverageShares','cashInvestments':'CashCashEquivalentsAndShortTermInvestments',
 }
 POLICY={
  'history':'Five consecutive fiscal years; conservative ten for revenue, earnings and CFO. Positive linear trend; latest exceeds first; at most two declining years.',
@@ -93,7 +94,7 @@ def ttm(facts,tags,annual):
 
 
 def yahoo(ticker):
-    keys=['annual'+n for n in YAHOO.values()]+['quarterly'+YAHOO[k] for k in ('income','ocf','revenue','debt','cash','shares','ca','cl','assets','equity','deferred')]
+    keys=['annual'+n for n in YAHOO.values()]+['quarterly'+YAHOO[k] for k in ('income','ocf','revenue','debt','cash','cashInvestments','investments','shares','dilutedShares','ca','cl','assets','equity','deferred')]
     url='https://query1.finance.yahoo.com/ws/fundamentals-timeseries/v1/finance/timeseries/'+ticker.replace('.','-')+'?'+urllib.parse.urlencode(dict(type=','.join(keys),period1=1262304000,period2=int(time.time())))
     result={}
     for item in json.loads(v.fetch(url)).get('timeseries',{}).get('result') or []:
@@ -102,7 +103,7 @@ def yahoo(ticker):
             for row in item.get(key,[]):
                 val,end=row.get('reportedValue',{}).get('raw'),row.get('asOfDate')
                 if type(val) not in (int,float) or not math.isfinite(val) or not end or end>dt.date.today().isoformat(): continue
-                shares=key.endswith('SharesNumber')
+                shares=key.endswith(('SharesNumber','AverageShares'))
                 if not shares and row.get('currencyCode')!='USD': continue
                 if key.endswith('CapitalExpenditure'): val=abs(val)
                 result.setdefault(key,[]).append(dict(end=end,val=val,tag=key,source=url,unit='shares' if shares else 'USD',basis='Provider dated fiscal statement'))
@@ -154,6 +155,10 @@ def evidence(member):
             obs=latest(v.observations(facts,tags,unit=unit))
             if obs: current[key]=dict(obs,source=url)
             for r in s[key]: r['source']=url
+        diluted=v.observations(facts,['WeightedAverageNumberOfDilutedSharesOutstanding'],unit='shares',annual=True)
+        if diluted:
+            s['dilutedShares']=[dict(r,source=url) for r in diluted]
+            current['dilutedShares']=dict(diluted[-1],source=url,basis='Latest annual diluted weighted-average shares, not period-end ordinary shares')
         sources += [url,sub]
     except Exception as exc: attempts.append(dict(source=url,error=str(exc),fallback='Yahoo statements'))
     try:
@@ -161,7 +166,7 @@ def evidence(member):
         for key,name in YAHOO.items():
             rows=alt.get('annual'+name,[])
             s[key]=merged(rows,s.get(key,[])) if key=='debt' else merged(s.get(key,[]),rows)
-            if key in BAL or key=='debt':
+            if key in BAL or key in ('debt','dilutedShares'):
                 obs=latest(alt.get('quarterly'+name,[])+rows)
                 if obs and (key not in current or obs['end']>current[key]['end']): current[key]=obs
         for key in ('income','ocf','revenue'): s['quarterly_'+key]=alt.get('quarterly'+YAHOO[key],[])
@@ -205,7 +210,7 @@ def evidence(member):
         if r: current['debt']=r
     shot=api.market_fields(ticker);sources+=shot['sources'];attempts+=shot['attempts']
     for rows in s.values(): rows.sort(key=lambda r:r['end'])
-    return dict(symbol=ticker,cik=cik,series=s,current=current,market=shot['fields'],sources=sources,attempts=attempts,retrievedAt=int(time.time()*1000),policies=POLICY)
+    return dict(symbol=ticker,cik=cik,shareClassCount=len(issuer.get('tickers',[])) or None,series=s,current=current,market=shot['fields'],sources=sources,attempts=attempts,retrievedAt=int(time.time()*1000),policies=POLICY)
 
 
 def window(rows,n=5):

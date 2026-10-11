@@ -127,7 +127,7 @@ def financial_row(ticker):
 
 def sector(member):
     industry=member['industry'].lower()
-    return dict(bank='bank' in industry,insurance='insurance' in industry or 'reinsurance' in industry,
+    return dict(bank=('banks' in industry or industry.endswith('bank')) and 'investment banking' not in industry,insurance='insurance' in industry or 'reinsurance' in industry,
                 reit='reit' in industry,utility=member['sector']=='Utilities',
                 excluded=member['sector']=='Energy' or any(x in industry for x in ('airline','real estate development','mining','steel','aluminum','gold','copper')))
 
@@ -236,7 +236,7 @@ def _company(ticker,mode='moderate'):
         result['failures']=[c['label'] for c in result['checks'] if c['status']=='FAIL']
         result['pending']=[c['key'] for c in result['checks'] if c['status']=='ACQUIRE']
         result['status']='REJECTED' if result['failures'] else 'ACQUIRING' if result['pending'] else 'QUALIFIED'
-    return dict(member=member,evidence=data,result=result,research=research_payload(member,data))
+    return dict(member=member,evidence=data,result=result,research=research_payload(member,data,acquire=result['status']=='QUALIFIED'))
 
 
 def peer_check(member,data):
@@ -261,7 +261,7 @@ def peer_check(member,data):
     return dict(key='peers',label='Margins vs comparable businesses',status='FAIL' if failed else 'ACQUIRE' if missing else 'PASS',detail='Each of up to three largest distinct S&P 500 issuers in the same GICS sub-industry. Industry-comparable proxy, not an exhaustive direct-competitor map.',observations=comparisons,attempts=errors)
 
 
-def research_payload(member,data):
+def research_payload(member,data,acquire=True):
     from vmi_metrics import calculate,latest
     current=data['current'];s=calculate(data['series']);metrics={}
     for key,target in [('roe','roe'),('roic','roic'),('currentRatio','current'),('service','service'),('debtEbitda','debtEbitda')]:
@@ -269,8 +269,6 @@ def research_payload(member,data):
         if row: metrics[target]=row['val']
     growth=v.number(data['market'].get('EPS next 5Y'));metrics['growth']=growth
     metrics['years']=len(data['series'].get('revenue',[]));valuation=None
-    ocf,capex,cash,debt,shares=[current.get(k) for k in ('ocf','capex','cash','debt','shares')]
-    # No missing balance or absent capex is silently zeroed.
-    if all(r is not None for r in (ocf,capex,cash,debt,shares)) and ocf['end']==capex['end'] and shares['val']>0 and ocf['val']>capex['val'] and debt.get('completeDebt',True):
-        valuation=dict(method='FCF',base=ocf['val']-capex['val'],cash=cash['val'],debt=debt['val'],shares=shares['val'],forecast=growth,fx=1,adr=1,flowPeriod=ocf['end'],inputs=[ocf,capex,cash,debt,shares],basis='Trailing cash flow and latest available balances; method suitability remains separate')
-    return dict(symbol=member['symbol'],name=member['name'],cik=member['cik'],currency='USD',metrics=metrics,flows=data['series'],balances=current,market=data['market'],sources=data['sources'],provenance={},staleMetrics=[],valuationInputs=valuation,retrievedAt=data['retrievedAt'],scannerEvidence=data)
+    from vmi_valuation import proposal
+    valuation,decision=proposal(member,data,acquire=acquire)
+    return dict(symbol=member['symbol'],name=member['name'],cik=member['cik'],currency='USD',metrics=metrics,flows=data['series'],balances=current,market=data['market'],sources=data['sources'],provenance={},staleMetrics=[],valuationInputs=valuation,valuationDecision=decision,retrievedAt=data['retrievedAt'],scannerEvidence=data)

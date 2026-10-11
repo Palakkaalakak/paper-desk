@@ -22,7 +22,7 @@ function dcf(x,m){const r=policy(m);need(['FCF','NORMALIZED','OCF','NI'].include
  const iv=(pv+x.cash-x.debt)/x.shares*x.fx*x.adr;need(finite(iv),'Valuation overflow');return {iv,base,pv,terminalValue:0,rows};
 }
 function scenarios(x,estimates){need(Array.isArray(estimates)&&estimates.length>0&&estimates.length<=10&&estimates.every(v=>finite(v)&&v>-100&&v<=100),'Enter 1–10 growth estimates');return Object.keys(rules).map(m=>{const g=m==='conservative'?Math.min(...estimates):m==='optimistic'?Math.max(...estimates):estimates.reduce((a,b)=>a+b,0)/estimates.length;const inputs={...x,g1:g,g2:m==='conservative'?g/2:g,g3:rules[m].late};try{return {preset:m,inputs,...dcf(inputs,m)};}catch(e){return {preset:m,inputs,error:e.message};}});}
-function multiple(x){need(['PB','PS','NAV'].includes(x.method),'Choose PB, PS or NAV');need(positive(x.base)&&positive(x.shares)&&positive(x.fx)&&positive(x.adr)&&(x.method==='NAV'||positive(x.multiple)),'Positive basis, shares, conversion and comparison multiple required');return {iv:x.base/x.shares*(x.method==='NAV'?1:x.multiple)*x.fx*x.adr};}
+function multiple(x){need(['PB','PS','NAV'].includes(x.method),'Choose PB, PS or NAV');need(positive(x.base)&&positive(x.shares)&&positive(x.fx)&&positive(x.adr)&&positive(x.method==='NAV'&&x.multiple===undefined?1:x.multiple),'Positive basis, shares, conversion and comparison multiple required');return {iv:x.base/x.shares*(x.method==='NAV'&&x.multiple===undefined?1:x.multiple)*x.fx*x.adr};}
 function ratio(x){need(['PEG','PSG'].includes(x.method)&&positive(x.ratio)&&positive(x.growth),'Choose PEG/PSG with positive matching ratio and growth');const value=x.ratio/x.growth;return {value,classification:x.method==='PSG'?(value<.2?'Undervalued':value<=.3?'Fairly priced':'Overvalued'):(value<1?'Cheap rough guide':value<=1.5?'Reasonable rough guide':'Expensive rough guide'),note:'Rough guide, not an intrinsic valuation'};}
 function screen(c,m){const r=policy(m),v=c.metrics;
  const check=(label,value,fn)=>({label,status:!finite(value)?'UNKNOWN':fn(value)?'PASS':'FAIL'});
@@ -50,16 +50,35 @@ function sec(raw,cutoff){need(date(cutoff)&&raw&&Number.isInteger(raw.cik)&&raw.
  const facts=[];for(const end of [...new Set(candidates.map(f=>f.end))].sort()){const all=candidates.filter(f=>f.end===end),latest=all.map(f=>f.filed).sort().at(-1),eligible=all.filter(f=>f.filed===latest);if(new Set(eligible.map(f=>JSON.stringify([f.val,f.start||null]))).size!==1){out.warnings.push(name+' '+end+': conflicting values/periods omitted');continue;}facts.push(eligible[0]);}out.facts[name]=facts;if(!facts.length)out.warnings.push(name+': no supported annual USD facts');}return out;}
 function company(symbol,currency){need(/^[A-Z]{3}$/.test(currency),'Three-letter currency required');return {symbol:ticker(symbol),currency,category:'growth',sector:'ordinary',metrics:{},reviews:{},valuations:{},price:null,financials:null,history:null,notes:'',nextReview:''};}
 function collection(c,m){const s=screen(c,m);return !s.quality?'research':s.steps[5].status==='PASS'?'opportunities':'qualified';}
-function automatic(c,d,discount=10){
+function automatic(c,d,override){
  need(d&&d.symbol===c.symbol&&d.currency===c.currency,'Financial identity/currency mismatch');
- need(positive(discount)&&discount<=100&&finite(d.retrievedAt),'Invalid valuation assumptions/date');
+ need(finite(d.retrievedAt)&&d.retrievedAt<=Date.now()+60000,'Invalid financial observation date');
+ if(override!==undefined)need(positive(override)&&override<=100,'Invalid explicit discount override');
  const next=copy(c);next.automatic=copy(d);
+ for(const [m,value] of Object.entries(next.valuations))if(value.automatic)delete next.valuations[m];
+ // Imported old automatic fields must not survive a failed fresh proposal.
+ delete next.automatic.scenarios;delete next.automatic.roughGuide;delete next.automatic.discount;
  for(const [k,v] of Object.entries(d.metrics||{}))if(Object.hasOwn(metrics,k)&&finite(v))next.metrics[k]=d.staleMetrics?.includes(k)?null:v;
  const x=d.valuationInputs;
- if(x&&finite(x.forecast)&&x.forecast>-100&&x.forecast<=100){
-  next.automatic.scenarios=scenarios({...x,discount},[x.forecast]);next.automatic.discount=discount;
-  for(const r of next.automatic.scenarios)if(positive(r.iv)&&(!next.valuations[r.preset]||next.valuations[r.preset].automatic))next.valuations[r.preset]={iv:r.iv,date:new Date(d.retrievedAt).toISOString().slice(0,10),automatic:true,source:x.basis+'; annual period '+x.flowPeriod+'; discount '+discount+'%; one provider forecast '+x.forecast+'%; '+d.sources.join(' | ')};
- }
+ if(!x||Date.now()-d.retrievedAt>86400000){next.automatic.valuationNote=!x?'Method-specific acquisition incomplete':'Stale financial observation; refresh required';return next;}
+ let proposals=[];
+ try{
+  if(['PB','PS','NAV'].includes(x.method)){
+   const result=multiple(x);if(x.yieldPriceCap!==undefined){need(positive(x.yieldPriceCap),'Invalid yield ceiling');result.iv=Math.min(result.iv,x.yieldPriceCap);}
+   proposals=Object.keys(rules).map(preset=>({preset,inputs:copy(x),...result}));
+  }else if(x.method==='PSG'){
+   next.automatic.roughGuide=ratio({method:'PSG',ratio:x.ratio,growth:x.revenueGrowth});
+  }else{
+   const discount=override??x.discount;
+   need(positive(discount)&&discount<=100,'Sourced company discount rate unavailable');
+   need(override!==undefined||x.discountEvidence?.rate===discount&&finite(x.discountEvidence?.beta)&&typeof x.discountEvidence?.source==='string','Discount provenance unavailable');
+   need(finite(x.forecast)&&x.forecast>-100&&x.forecast<=100,'Long-term growth estimate unavailable');
+   proposals=scenarios({...x,discount},[x.forecast]);next.automatic.discount=discount;
+   next.automatic.discountBasis=override!==undefined?'Explicit manual override':x.discountEvidence.formula;
+  }
+ }catch(e){next.automatic.valuationNote=e.message;}
+ next.automatic.scenarios=proposals;
+ for(const r of proposals)if(positive(r.iv)&&!next.valuations[r.preset])next.valuations[r.preset]={iv:r.iv,date:new Date(d.retrievedAt).toISOString().slice(0,10),automatic:true,method:x.method,source:x.method+'; '+x.basis+'; flow period '+x.flowPeriod+(next.automatic.discount!==undefined?'; '+next.automatic.discountBasis+' '+next.automatic.discount+'%':'')+'; '+(d.sources||[]).join(' | ')};
  return next;
 }
 function workspace(){return {schema:VERSION,profile:'balanced',selected:null,companies:[],portfolios:Object.fromEntries(profiles.map(p=>[p,{mode:'moderate',capital:100000,count:20,bookId:'',plans:[]}])),events:[]};}
