@@ -75,7 +75,10 @@ def universe():
             else:
                 p=v.Tables('wikitable');p.feed(text)
                 rows=[dict(symbol=r[0],name=r[1],sector=r[2],industry=r[3],cik=int(r[6])) for r in p.rows if len(r)>=8 and r[6].isdigit()]
-            return dict(rows=validate_members(rows),source=source,retrievedAt=int(time.time()*1000),attempts=attempts,
+            rows=validate_members(rows)
+            for member in rows:
+                member['industryExcluded']=sector(member)['excluded']
+            return dict(rows=rows,source=source,retrievedAt=int(time.time()*1000),attempts=attempts,
                         basis='Public current-constituent mirror; share classes retained. Retrieval time is not an index effective date.')
         except Exception as exc: attempts.append(dict(source=source,error=str(exc)))
     raise ValueError('Constituent retrieval exhausted independent sources: '+json.dumps(attempts))

@@ -319,15 +319,18 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 import vmi_trace
                 with vmi_trace.task(one('work'), 'S&P 500 membership'):
                     out = vmi_sp500.members()
+                if one('work'): out = dict(out,diagnostics=vmi_trace.status(one('work')))
             elif kind == 'vmi_sp500_batch':
                 import vmi_sp500
                 import vmi_trace
                 with vmi_trace.task(one('work'), 'Bulk '+one('view','financial')+' '+one('symbols','')):
                     out = vmi_sp500.batch(one('view','financial'),one('symbols',''),one('mode','moderate'),defer=one('recovery')=='deferred')
+                if one('work'): out = dict(out,diagnostics=vmi_trace.status(one('work')))
             elif kind == 'vmi_sp500_recover':
                 import vmi_sp500, vmi_trace
                 with vmi_trace.task(one('work'), 'Recover '+one('symbol','')):
                     out = vmi_sp500.recover_one(one('symbol',''),one('mode','moderate'))
+                if one('work'): out = dict(out,diagnostics=vmi_trace.status(one('work')))
             elif kind == 'vmi_sp500_status':
                 import vmi_trace, vmi_sources
                 out = dict(vmi_trace.status(one('ids','')),cooldowns=vmi_sources.cooldowns())
@@ -339,6 +342,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 import vmi_trace
                 with vmi_trace.task(one('work'), 'Detailed '+one('symbol','')):
                     out = vmi_sp500.company(one('symbol',''),one('mode','moderate'))
+                if one('work'): out = dict(out,diagnostics=vmi_trace.status(one('work')))
             elif kind == 'vmi_scan':
                 import vmi_data
                 mode, page = one('mode', 'moderate'), int(one('page', '0'))
