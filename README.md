@@ -1,5 +1,17 @@
 # Paper Desk — IB Gateway paper-trading workstation
 
+## Bulk-stage stall fix and live diagnostics — 2026-10-11
+
+**Update both server and embedded page, restart `serve.py`, and reload Paper Desk.** Existing running scans use the old code and cannot acquire these changes in place. Export any session research before reloading.
+
+- The previous parallel implementation still blocked each bulk response on as many as 20 individual fallbacks. The browser now requests `recovery=deferred`: cheap bulk checks return their available rows promptly, and missing rows are explicitly queued, never passed.
+- Execution order: **verified industry exclusions → parallel bulk profitability → parallel bulk growth of survivors → individual broad-data recovery → detailed statements/efficiency/debt/peers**. Three bulk requests or four individual requests run concurrently. Businesses rejected in an earlier stage receive no later-stage work.
+- Fast Finviz calls use an 8-second socket timeout, no HTTP retries, and a 3-second provider-slot acquisition limit. A provider timeout/block opens a cooldown instead of repeatedly stalling all batches. Yahoo public-page 403/429 responses suppress repeated page attempts; independent statement sources remain available. Missing evidence remains unfinished acquisition, not qualification.
+- **Live scanner diagnostics** refresh every second, with server polling every two seconds: active batch/company, elapsed time, last completion, provider operation, pacing/queue/shared-cache waits, download/retry/error counts, cooldowns, recent activity, and per-stage visited/excluded/unresolved counts. The progress bar now measures current-stage work; final business decisions have a separate count. A 20-second no-completion warning does not falsely advance progress.
+- New read-only routes: `/data/vmi_sp500_recover?symbol=...&mode=...&work=...` and `/data/vmi_sp500_status?ids=...`. Existing batch routes accept optional `recovery=deferred` and diagnostic `work` IDs. Diagnostics are request-scoped, bounded (256 server records / 30 events each), transient, and contain no credentials or raw financial payloads. Existing route authentication is unchanged. The scan export includes diagnostic history.
+- Verified: **137 Python and 140 JavaScript tests passed**, plus the full-app browser regression with an intentionally delayed request. Tests confirm cheap stages finish before fallback/deep work, rejected companies do not reach later stages, throttled providers do not cause repeated page loops, and the visible diagnostic clock/provider activity continue updating during the delay. Existing paper-trade/call/stock safeguards remain tested.
+- These checks do **not** establish a completed real-data whole-universe scan or a measured end-to-end speedup on the user's connection. Remaining acquisition coverage gaps below still apply.
+
 ## Scanner performance and company valuation — 2026-10-11
 
 This update extends the existing **local Python application at http://localhost:8765**. No Cloudflare migration, new execution accounts, broker-write routes, or changes to GUNS/Trading execution were introduced. The notes in this section supersede the earlier automatic-FCF/global-discount description below.
