@@ -171,7 +171,9 @@ def _batch(view,symbols,mode='moderate',defer=False):
         with _LOCK:
             for ticker in tickers:
                 hit=_CACHE.get(('row',view,ticker))
-                if hit and time.monotonic()-hit[0]<900: result[ticker]=hit[1]
+                if hit and time.monotonic()-hit[0]<900:
+                    trace.event('cache_hit','row '+view+' '+ticker)
+                    result[ticker]=hit[1]
         for ticker in tickers:
             if sector(membership[ticker])['excluded']:
                 result[ticker]=dict(symbol=ticker,fields={},source='S&P 500 GICS industry classification',retrievedAt=int(time.time()*1000))

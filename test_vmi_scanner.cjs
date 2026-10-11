@@ -61,3 +61,28 @@ test('browser workers are bounded and inconsistent passes stay unproven',async()
  try{const scanner=create({mode:()=> 'moderate'});await scanner.start();assert.equal(peakBatch,3);assert.equal(peakDeep,4);assert.equal(scanner.state().stats.qualified,502);assert.equal(scanner.state().rows.find(r=>r.symbol==='X0').status,'ACQUIRING');}
  finally{global.fetch=original;}
 });
+
+test('all cheap gates finish before recovery; exclusions never receive deep work',async()=>{
+ const original=global.fetch,calls=[];
+ global.fetch=async path=>{
+  const u=new URL(path,'http://localhost');calls.push(u);
+  if(u.pathname.endsWith('members'))return response({rows:universe.map((r,i)=>({...r,industryExcluded:i===0}))});
+  if(u.pathname.endsWith('batch')){
+   assert.equal(u.searchParams.get('recovery'),'deferred');
+   const symbols=u.searchParams.get('symbols').split(',');assert.ok(!symbols.includes('X0'));
+   const growth=u.searchParams.get('view')==='growth';
+   if(growth)assert.ok(!symbols.includes('X1'));
+   return response({rows:symbols.filter(s=>s!=='X3').map(symbol=>({symbol,fields:{},source:'fixture',screen:{rejected:symbol==='X1'||growth&&symbol==='X2',reasons:['fixture gate']}})),missing:symbols.includes('X3')?['X3']:[]});
+  }
+  if(u.pathname.endsWith('recover')){
+   assert.equal(u.searchParams.get('symbol'),'X3');
+   assert.ok(calls.some(c=>c.pathname.endsWith('batch')&&c.searchParams.get('view')==='growth'&&c.searchParams.get('symbols').includes('X502')));
+   return response({rows:[{symbol:'X3',fields:{},source:'fixture',screen:{rejected:true,reasons:['recovery gate']}}],missing:[]});
+  }
+  assert.equal(u.pathname,'/data/vmi_sp500_company');
+  const symbol=u.searchParams.get('symbol');assert.ok(!['X0','X1','X2','X3'].includes(symbol));
+  return response({member:{symbol},result:{preset:'moderate',status:'QUALIFIED',failures:[],pending:[]},evidence:{},research:null});
+ };
+ try{const scanner=create({mode:()=> 'moderate'});await scanner.start();const s=scanner.state();assert.equal(s.stats.rejected,4);assert.equal(s.stats.qualified,499);assert.deepEqual(s.diagnostics.stages.map(s=>s.excluded),[1,1,1,1,0]);assert.equal(s.diagnostics.stages[1].done,502);assert.equal(s.diagnostics.stages[3].done,1);assert.equal(s.diagnostics.active.length,0);}
+ finally{global.fetch=original;}
+});

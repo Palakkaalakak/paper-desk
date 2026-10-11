@@ -29,6 +29,9 @@ def main():
                 name = url.rsplit('/',1)[-1]
                 if name in ('guns.js','guns-execution.js','guns-workflow.js','guns-tutorial.js','guns-ui.js','guns.css','trading.js','trading-ui.js'):
                     return r.fulfill(content_type='text/css' if name.endswith('.css') else 'text/javascript',body=(ROOT/name).read_text())
+            if '/data/vmi_sp500_status' in url:
+                q=urllib.parse.parse_qs(urllib.parse.urlsplit(url).query)
+                return r.fulfill(json=dict(version=1,at=now,cooldowns={'finvizSeconds':42,'yahooSeconds':0},requests=[dict(id=x,label='Detailed META',state='running',phase='download',provider='data.sec.gov',detail='Waiting for fixture response',elapsedSeconds=1,idleSeconds=1,counts={'download':1,'cache_hit':2},events=[]) for x in q.get('ids',[''])[0].split(',')]))
             if '/data/vmi_sp500_members' in url:
                 return r.fulfill(json=dict(rows=[dict(symbol='T'+str(i),name='Fixture',industry='Software',sector='IT',cik=i+1) for i in range(502)]+[dict(symbol='META',name='Meta',industry='Software',sector='IT',cik=900)],source='fixture',retrievedAt=now))
             if '/data/vmi_sp500_batch' in url:
@@ -61,9 +64,19 @@ def main():
         page.locator('[data-tab="vmi"]').click()
         page.locator('#vmi-scan-start').wait_for()
         assert not any('/data/vmi_sp500_' in u for u in requests)
+        page.evaluate('''() => {const original=window.fetch;window.fetch=(url,options)=>String(url).includes('/data/vmi_sp500_company?')?new Promise(resolve=>setTimeout(resolve,4500)).then(()=>original(url,options)):original(url,options);}''')
         page.locator('#vmi-scan-start').click()
+        page.wait_for_function("document.querySelector('#vmi-scan-debug')?.textContent.includes('Waiting for fixture response')")
+        before_heartbeat=page.locator('#vmi-scan-debug > p').first.inner_text()
+        page.wait_for_timeout(1100)
+        assert page.locator('#vmi-scan-debug > p').first.inner_text()!=before_heartbeat
+        assert 'Cache hits 2' in page.locator('#vmi-scan-debug').inner_text()
+        assert 'Finviz 42s' in page.locator('#vmi-scan-debug').inner_text()
         page.wait_for_function("document.querySelector('#vmi-scan-progress')?.textContent.includes('Scan complete')")
-        assert page.locator('#vmi-scanner progress').get_attribute('max') == '503'
+        assert page.locator('#vmi-scan-debug tbody tr').first.locator('td').nth(1).inner_text() == '503 / 503'
+        assert page.locator('#vmi-scanner progress').get_attribute('max') == '1'
+        assert page.locator('#vmi-scanner progress').get_attribute('value') == '1'
+        assert any('/data/vmi_sp500_status?' in u for u in requests)
         assert page.locator('[data-scan-filter="all"], [data-scan-filter="rejected"], [data-scan-filter="acquiring"]').count() == 0
         assert page.locator('[data-scan-open]').count() == 1
         assert page.locator('[data-scan-open="T0"]').count() == 0
