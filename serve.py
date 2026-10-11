@@ -316,16 +316,29 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     lambda: providers.cascade('quote', prov, key, symbol=one('symbol', '')))
             elif kind == 'vmi_sp500_members':
                 import vmi_sp500
-                out = vmi_sp500.members()
+                import vmi_trace
+                with vmi_trace.task(one('work'), 'S&P 500 membership'):
+                    out = vmi_sp500.members()
             elif kind == 'vmi_sp500_batch':
                 import vmi_sp500
-                out = vmi_sp500.batch(one('view', 'financial'), one('symbols', ''), one('mode', 'moderate'))
+                import vmi_trace
+                with vmi_trace.task(one('work'), 'Bulk '+one('view','financial')+' '+one('symbols','')):
+                    out = vmi_sp500.batch(one('view','financial'),one('symbols',''),one('mode','moderate'),defer=one('recovery')=='deferred')
+            elif kind == 'vmi_sp500_recover':
+                import vmi_sp500, vmi_trace
+                with vmi_trace.task(one('work'), 'Recover '+one('symbol','')):
+                    out = vmi_sp500.recover_one(one('symbol',''),one('mode','moderate'))
+            elif kind == 'vmi_sp500_status':
+                import vmi_trace, vmi_sources
+                out = dict(vmi_trace.status(one('ids','')),cooldowns=vmi_sources.cooldowns())
             elif kind == 'vmi_ib':
                 import vmi_ib, vmi_data
                 out = vmi_ib.available(market.ENGINE, vmi_data.symbol(one('symbol', '')))
             elif kind == 'vmi_sp500_company':
                 import vmi_sp500
-                out = vmi_sp500.company(one('symbol', ''), one('mode', 'moderate'))
+                import vmi_trace
+                with vmi_trace.task(one('work'), 'Detailed '+one('symbol','')):
+                    out = vmi_sp500.company(one('symbol',''),one('mode','moderate'))
             elif kind == 'vmi_scan':
                 import vmi_data
                 mode, page = one('mode', 'moderate'), int(one('page', '0'))

@@ -9,6 +9,7 @@ import time
 import urllib.parse
 import providers
 import vmi_data as v
+import vmi_trace as trace
 from vmi_sources import finviz_fetch, yahoo_market
 
 CSV_URL='https://raw.githubusercontent.com/datasets/s-and-p-500-companies/main/data/constituents.csv'
@@ -21,19 +22,25 @@ _INFLIGHT={}
 _FALLBACK_POOL=ThreadPoolExecutor(max_workers=4,thread_name_prefix='vmi-source')
 _COMPANY_SLOTS=threading.BoundedSemaphore(4)
 _BATCH_SLOTS=threading.BoundedSemaphore(3)
+_RECOVERY_SLOTS=threading.BoundedSemaphore(4)
 
 
 def cached(key, ttl, fn):
     now=time.monotonic()
     with _LOCK:
         hit=_CACHE.get(key)
-        if hit and now-hit[0]<ttl: return hit[1]
+        if hit and now-hit[0]<ttl:
+            trace.event('cache_hit',str(key[0]))
+            return hit[1]
         pending=_INFLIGHT.get(key)
         owner=pending is None
         if owner:
             pending=Future()
             _INFLIGHT[key]=pending
-    if not owner: return pending.result(timeout=180)
+    if not owner:
+        trace.event('cache_wait','Shared acquisition: '+str(key[0]))
+        return pending.result(timeout=180)
+    trace.event('cache_miss',str(key[0]))
     try:
         result=fn()
         with _LOCK:
@@ -105,11 +112,11 @@ def snapshot(ticker):
     return dict(symbol=ticker,fields=fields,source=url,retrievedAt=int(time.time()*1000))
 
 
-def bulk(view,tickers):
+def bulk(view,tickers, *, fast=False):
     if view not in ('financial','growth') or not 1<=len(tickers)<=20 or len(set(tickers))!=len(tickers): raise ValueError('Invalid bulk view/size/duplicates')
     aliases={v.symbol(s).replace('.','-'):s for s in tickers}
     url='https://finviz.com/screener.ashx?'+urllib.parse.urlencode(dict(v=161 if view=='financial' else 121,t=','.join(aliases),o='ticker'))
-    p=Screener();p.feed(finviz_fetch(url));header=next((r for r in p.rows if 'Ticker' in r),None)
+    p=Screener();p.feed(finviz_fetch(url,fast=fast));header=next((r for r in p.rows if 'Ticker' in r),None)
     if not header: raise ValueError('Bulk financial table absent')
     result={}
     for row in p.rows:
@@ -145,12 +152,13 @@ def quick(member,fields,mode):
     return dict(rejected=bool(reasons),reasons=reasons)
 
 
-def batch(view,symbols,mode='moderate'):
+def batch(view,symbols,mode='moderate',defer=False):
+    trace.event('worker_wait','Waiting for bulk slot')
     with _BATCH_SLOTS:
-        return _batch(view,symbols,mode)
+        return _batch(view,symbols,mode,defer)
 
 
-def _batch(view,symbols,mode='moderate'):
+def _batch(view,symbols,mode='moderate',defer=False):
     tickers=[v.symbol(s) for s in symbols.split(',')]
     if view not in ('financial','growth') or not 1<=len(tickers)<=20 or len(set(tickers))!=len(tickers) or mode not in MODES: raise ValueError('Invalid batch request')
     membership={r['symbol']:r for r in members()['rows']}
@@ -166,7 +174,9 @@ def _batch(view,symbols,mode='moderate'):
                 result[ticker]=dict(symbol=ticker,fields={},source='S&P 500 GICS industry classification',retrievedAt=int(time.time()*1000))
         needed=[t for t in tickers if t not in result]
         if needed:
-            try: result.update(bulk(view,needed))
+            try:
+                trace.event('bulk','Bulk '+view+': '+','.join(needed),provider='finviz.com')
+                result.update(bulk(view,needed,fast=True) if defer else bulk(view,needed))
             except Exception as exc: attempts.append(dict(source='Finviz bulk',error=str(exc)))
         def recover(ticker):
             errors=[]
@@ -177,17 +187,46 @@ def _batch(view,symbols,mode='moderate'):
                 except Exception as other:
                     errors.append(dict(symbol=ticker,source='Yahoo independent source',error=str(other)))
                     return ticker,None,errors
-        futures=[_FALLBACK_POOL.submit(recover,t) for t in needed if t not in result]
+        futures=[] if defer else [_FALLBACK_POOL.submit(recover,t) for t in needed if t not in result]
         for future in futures:
             ticker,row,errors=future.result()
             attempts+=errors
             if row: result[ticker]=row
         with _LOCK:
             for ticker,row in result.items(): _CACHE[('row',view,ticker)]=(time.monotonic(),row)
-        return dict(rows=list(result.values()),missing=[s for s in tickers if s not in result],attempts=attempts,retrievedAt=int(time.time()*1000))
-    response=cached(('batch',view,tuple(tickers)),900,load)
+        missing=[s for s in tickers if s not in result]
+        trace.event('bulk_done',str(len(result))+' rows; '+str(len(missing))+' need recovery')
+        return dict(rows=list(result.values()),missing=missing,deferred=missing if defer else [],attempts=attempts,retrievedAt=int(time.time()*1000))
+    response=cached(('batch',view,tuple(tickers),defer),30 if defer else 900,load)
     # Preset results are not stored in the provider cache.
     return dict(response,rows=[dict(row,screen=quick(membership[row['symbol']],row['fields'],mode)) for row in response['rows']])
+
+
+def recover_one(ticker,mode='moderate'):
+    ticker=v.symbol(ticker)
+    if mode not in MODES: raise ValueError('Invalid preset')
+    member=next((r for r in members()['rows'] if r['symbol']==ticker),None)
+    if not member: raise ValueError('Not an S&P 500 constituent')
+    trace.event('worker_wait','Waiting for individual recovery slot')
+    with _RECOVERY_SLOTS:
+        def load():
+            attempts=[];row=None
+            for key,loader,label in [(('snapshot',ticker),lambda:snapshot(ticker),'Finviz snapshot'),(('yahoo-market',ticker),lambda:yahoo_market(ticker),'Yahoo independent source')]:
+                try:
+                    trace.event('fallback',ticker+' / '+label)
+                    row=cached(key,900,loader);break
+                except Exception as exc: attempts.append(dict(source=label,error=str(exc)))
+            if row:
+                with _LOCK:
+                    for view in ('financial','growth'):
+                        prior=_CACHE.get(('row',view,ticker));fields=dict(row['fields'])
+                        if prior and time.monotonic()-prior[0]<900: fields.update(prior[1]['fields'])
+                        _CACHE[('row',view,ticker)]=(time.monotonic(),dict(row,fields=fields))
+            return dict(row=row,attempts=attempts)
+        outcome=cached(('recovery',ticker),120,load)
+    row=outcome['row']
+    trace.event('recovery_done',ticker+(' recovered; detailed checks remain' if row else ' unresolved; statements still required'))
+    return dict(rows=[dict(row,screen=quick(member,row['fields'],mode))] if row else [],missing=[] if row else [ticker],attempts=outcome['attempts'])
 
 
 def market_fields(ticker):
@@ -205,6 +244,7 @@ def market_fields(ticker):
 
 
 def company(ticker,mode='moderate'):
+    trace.event('worker_wait','Waiting for detailed company slot')
     with _COMPANY_SLOTS:
         return _company(ticker,mode)
 
@@ -215,11 +255,13 @@ def _company(ticker,mode='moderate'):
     if mode not in MODES: raise ValueError('Invalid preset')
     member=next((r for r in members()['rows'] if r['symbol']==ticker),None)
     if not member: raise ValueError('Not an S&P 500 constituent')
+    trace.event('statements',ticker+' / financial statements')
     data=cached(('evidence',ticker),21600,lambda:evidence(member))
     import copy
     import market
     from vmi_ib import available,valid_quote
     data=copy.deepcopy(data)
+    trace.event('ibkr',ticker+' / read-only IB enrichment')
     broker=available(market.ENGINE,ticker)
     data['ibkr']=broker
     if broker.get('available'):
@@ -229,13 +271,16 @@ def _company(ticker,mode='moderate'):
         if valid_quote(broker.get('quote',{}),broker['conid']):
             data['market']['Price']=str(broker['quote']['last'])
             data['market']['Price source']='IBKR LIVE / conid '+str(broker['conid'])
+    trace.event('evaluate',ticker+' / all applicable business gates')
     result=evaluate(member,data,mode)
     if not result['failures']:
+        trace.event('peers',ticker+' / comparisons')
         check=peer_check(member,data)
         result['checks']=[check if c['key']=='peers' else c for c in result['checks']]
         result['failures']=[c['label'] for c in result['checks'] if c['status']=='FAIL']
         result['pending']=[c['key'] for c in result['checks'] if c['status']=='ACQUIRE']
         result['status']='REJECTED' if result['failures'] else 'ACQUIRING' if result['pending'] else 'QUALIFIED'
+    trace.event('valuation',ticker+' / '+result['status'])
     return dict(member=member,evidence=data,result=result,research=research_payload(member,data,acquire=result['status']=='QUALIFIED'))
 
 

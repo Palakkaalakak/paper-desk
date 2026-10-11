@@ -11,6 +11,7 @@ import urllib.parse
 import urllib.request
 from html.parser import HTMLParser
 import providers
+import vmi_trace as trace
 
 _LOCK = threading.Lock()
 _LAST = {}
@@ -23,28 +24,38 @@ def symbol(value):
     return value
 
 
-def fetch(url, *, binary=False, retry_429=True):
+def fetch(url, *, binary=False, retry_429=True, timeout=20, retries=2):
     host = urllib.parse.urlsplit(url).hostname
     sec = host.endswith('.sec.gov')
     headers = {'User-Agent': os.environ.get('PAPER_SEC_USER_AGENT', 'PaperDesk/2.0 personal investment research') if sec else 'Mozilla/5.0', 'Accept': 'application/json,text/html'}
-    for attempt in range(3):
+    for attempt in range(retries+1):
         with _LOCK:
             delay = .2 if sec else 1.0
             now = time.monotonic()
             slot = max(now, _LAST.get(host, 0) + delay)
             _LAST[host] = slot
         # Provider pacing must not hold the cross-host lock.
-        time.sleep(max(0, slot - time.monotonic()))
+        wait=max(0,slot-time.monotonic())
+        if wait: trace.event("pacing","Provider spacing",provider=host,waitSeconds=round(wait,1))
+        time.sleep(wait)
         try:
-            with urllib.request.urlopen(urllib.request.Request(url, headers=headers), timeout=20) as response:
+            trace.event("download","Waiting for HTTP response",provider=host,attempt=attempt+1)
+            with urllib.request.urlopen(urllib.request.Request(url, headers=headers), timeout=timeout) as response:
                 body = response.read(25_000_001)
             if len(body) > 25_000_000:
                 raise ValueError('Source response exceeds 25 MB limit')
+            trace.event('received','Response received',provider=host,bytes=len(body))
             return body if binary else body.decode('utf-8', 'replace')
         except urllib.error.HTTPError as exc:
-            if (exc.code == 429 and not retry_429) or exc.code not in (429, 500, 502, 503, 504) or attempt == 2:
+            trace.event("http_error","Upstream error",provider=host,status=exc.code)
+            if (exc.code == 429 and not retry_429) or exc.code not in (429, 500, 502, 503, 504) or attempt == retries:
                 raise
+            trace.event("retry","Backoff",provider=host,waitSeconds=2**(attempt+1),attempt=attempt+2)
             time.sleep(2 ** (attempt + 1))
+
+        except (urllib.error.URLError,TimeoutError,OSError) as exc:
+            trace.event("network_error",type(exc).__name__,provider=host)
+            raise
 
 
 class Tables(HTMLParser):

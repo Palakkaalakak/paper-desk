@@ -6,21 +6,37 @@ import time
 import threading
 import urllib.error
 import vmi_data as v
+import vmi_trace as trace
 
 _FINVIZ_UNTIL=0
 _FINVIZ_LOCK=threading.Lock()
+_YAHOO_LOCK=threading.Lock()
+_YAHOO_UNTIL=0
 
 
-def finviz_fetch(url):
+def cooldowns():
+    now=time.monotonic()
+    return dict(finvizSeconds=max(0,round(_FINVIZ_UNTIL-now)),yahooSeconds=max(0,round(_YAHOO_UNTIL-now)))
+
+
+def finviz_fetch(url, *, fast=False):
     global _FINVIZ_UNTIL
-    with _FINVIZ_LOCK:
-        if time.monotonic()<_FINVIZ_UNTIL:
-            raise ValueError('Finviz cooldown after HTTP 429; use independent source')
-        try: return v.fetch(url,retry_429=False)
+    if time.monotonic()<_FINVIZ_UNTIL:
+        trace.event('cooldown','Finviz cooldown; independent recovery required',provider='finviz.com',waitSeconds=round(_FINVIZ_UNTIL-time.monotonic()))
+        raise ValueError('Finviz cooldown; independent recovery required')
+    trace.event('provider_wait','Waiting for Finviz slot',provider='finviz.com')
+    if not _FINVIZ_LOCK.acquire(timeout=3 if fast else 25): raise ValueError('Finviz slot busy; defer recovery')
+    try:
+        if time.monotonic()<_FINVIZ_UNTIL: raise ValueError('Finviz cooldown; independent recovery required')
+        try: return v.fetch(url,retry_429=False,timeout=8 if fast else 15,retries=0 if fast else 1)
         except urllib.error.HTTPError as exc:
-            if exc.code==429: _FINVIZ_UNTIL=time.monotonic()+900
+            if exc.code in (403,429): _FINVIZ_UNTIL=time.monotonic()+(900 if exc.code==429 else 120)
+            elif exc.code>=500: _FINVIZ_UNTIL=time.monotonic()+30
             raise
-
+        except (urllib.error.URLError,TimeoutError,OSError):
+            _FINVIZ_UNTIL=time.monotonic()+30
+            raise
+    finally: _FINVIZ_LOCK.release()
 
 
 def decode_yahoo(text,ticker,url):
@@ -67,15 +83,25 @@ def decode_yahoo(text,ticker,url):
 
 
 def yahoo_market(ticker):
+    global _YAHOO_UNTIL
     base='https://finance.yahoo.com/quote/'+v.symbol(ticker).replace('.','-')+'/'
     attempts=[]
     # Some analysis pages lack quoteSummary while key-statistics has the data.
     for suffix in ('analysis/', 'key-statistics/', ''):
         url=base+suffix
+        with _YAHOO_LOCK: until=_YAHOO_UNTIL
+        if time.monotonic()<until:
+            trace.event('cooldown','Yahoo public-page cooldown; statements remain independent',provider='finance.yahoo.com',waitSeconds=round(until-time.monotonic()))
+            raise ValueError('Yahoo public-page cooldown; statement recovery remains independent')
+        trace.event('fallback','Yahoo '+ticker+' '+(suffix or 'quote'),provider='finance.yahoo.com')
         try:
-            row=decode_yahoo(v.fetch(url),ticker,url)
+            row=decode_yahoo(v.fetch(url,retry_429=False,timeout=12,retries=0),ticker,url)
             row['attempts']=attempts
             return row
-        except (ValueError, urllib.error.URLError) as exc:
+        except (ValueError,urllib.error.URLError,TimeoutError,OSError) as exc:
             attempts.append(dict(source=url,error=str(exc)))
+            if isinstance(exc,urllib.error.HTTPError) and exc.code in (403,429):
+                with _YAHOO_LOCK: _YAHOO_UNTIL=time.monotonic()+(900 if exc.code==429 else 120)
+                trace.event('cooldown','Yahoo blocked; further page retries suppressed',provider='finance.yahoo.com',status=exc.code)
+                break
     raise ValueError('Yahoo financial page recovery exhausted: '+json.dumps(attempts))
