@@ -111,7 +111,9 @@ def select(member,data):
         growth=v.number(data.get('market',{}).get('Revenue Growth Forecast'))
         speculative=member.get('category')=='speculative' or growth is not None and growth>=50
         return dict(method='PSG' if speculative else 'PB',reason='Loss-making business: no cash-flow extrapolation',distressed=not speculative)
-    if sector=='Financials' or any(k in industry for k in ('insurance','broker','asset management','capital markets','financial services')):
+    # Payment networks/exchanges can have ordinary operating cash flows (the
+    # course uses Mastercard/SGX as FCF examples); GICS Financials alone is NOT NI.
+    if any(k in industry for k in ('insurance','broker','asset management','capital markets','financial services','consumer finance','mortgage finance')):
         return dict(method='NI',reason='Financial business with loan/fund-flow-distorted cash flows; income consistency required')
     if not rising(s.get('ocf',[])): return dict(method=None,reason='Consistent positive five-year CFO trend not established')
     caps=five(s.get('capex',[]))

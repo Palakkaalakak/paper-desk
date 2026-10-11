@@ -36,7 +36,7 @@ class ValuationTests(unittest.TestCase):
             with self.assertRaises(ValueError): v.discount(beta,a,'source',stamp)
 
     def test_sector_methods_not_blanket_dcf(self):
-        for industry,sector,method in [('Diversified Banks','Financials','PB'),('Investment Banking & Brokerage','Financials','NI'),('Insurance','Financials','NI'),('Retail REITs','Real Estate','PB'),('Utilities','Utilities','PS'),('Airlines','Industrials','PS')]:
+        for industry,sector,method in [('Diversified Banks','Financials','PB'),('Investment Banking & Brokerage','Financials','NI'),('Insurance','Financials','NI'),('Retail REITs','Real Estate','PB'),('Utilities','Utilities','PS'),('Airlines','Industrials','PS'),('Transaction & Payment Processing Services','Financials','FCF'),('Financial Exchanges & Data','Financials','FCF')]:
             self.assertEqual(v.select(dict(self.member,industry=industry,sector=sector),self.data)['method'],method)
 
     def test_financial_shape_selects_fcf_normalized_ocf(self):

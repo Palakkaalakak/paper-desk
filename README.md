@@ -1,5 +1,38 @@
 # Paper Desk — IB Gateway paper-trading workstation
 
+## Scanner performance and company valuation — 2026-10-11
+
+This update extends the existing **local Python application at http://localhost:8765**. No Cloudflare migration, new execution accounts, broker-write routes, or changes to GUNS/Trading execution were introduced. The notes in this section supersede the earlier automatic-FCF/global-discount description below.
+
+### Completed in this update
+
+- **Bounded parallel acquisition:** browser batches run three at a time; detailed reviews run four at a time. Server-wide semaphores bound simultaneous batches and deep companies across tabs. A shared four-worker fallback pool and per-key single-flight cache prevent duplicate downloads. Per-host pacing sleeps outside the shared lock; Finviz enters cooldown immediately on 429 rather than retrying each waiting caller. Industry exclusions run before financial acquisition. No screening criterion was removed for speed.
+- **Passing businesses only:** the scanner results table contains only `QUALIFIED` businesses. Rejected and unresolved companies remain in the full audit export, not a browsable results group. Qualified companies do not need to be undervalued. Rendering is throttled to 150 ms; detailed evidence JSON is serialized when expanded. Run-generation and cancellation checks protect restarted scans.
+- **Automatic company discount rates:** the global 10% setting is removed from automatic workflows. `vmi_valuation.py` acquires listing beta and computes `riskFree + beta × marketPremium`, using five completed consecutive years of public macro observations. Dates, source columns, observations and formula are retained. Manual valuation overrides remain optional.
+- **Course-led method selection:** banks → P/B; REIT/property → P/B plus yield (not accounting equity relabeled NAV); cyclicals → P/S; insurance/brokers/asset managers/loan-finance businesses → discounted NI with a consistent income history. Payment networks and exchanges are not forced into NI simply because GICS places them in Financials. Other businesses use FCF, five-year normalized capex, or the course's CFO/NI ≤1.2 alternative according to dated financial patterns. Speculative loss-making growth can use PSG as a rough guide, never as an intrinsic value.
+- **Evidence guards:** DCF requires diluted weighted-average shares, cash plus short-term investments, complete debt, compatible dates, a verified single-class share basis, and a long-term forecast. Multiple valuations require five genuine consecutive annual ratios; four are not relabeled five. REIT proposals apply the 5% yield ceiling. Missing inputs withdraw automatic IVs but never overwrite manually adopted IVs. Non-DCF calculations no longer run through DCF. Manual NAV supports a supplied comparison multiple while preserving 1× when omitted.
+- **Same automatic path for tracked S&P listings:** `/data/vmi_fundamentals?symbol=MSFT` uses the scanner's financial evidence and valuation selection. The valuation page shows the selected method, sourced rate components, missing acquisition and automatically filled inputs. Valuation-only network requests are skipped for rejected/unresolved scanner companies.
+
+### Source convention and live checks
+
+The course formula and decision table were checked against `VMI_MASTER_DOCUMENT.md` lines 2708–2733, 3234–3248 and 5570–5572. The public implementation uses the arithmetic mean of five **year-end** `T.Bond Rate` and `Implied ERP (FCFE)` observations from:
+
+`https://www.stern.nyu.edu/~adamodar/pc/datasets/histimpl.xls`
+
+This is **not** a claim to reproduce the private course lookup table or daily five-year averages. Historical lesson beta/rate examples are not hardcoded. Install the updated dependency with `python -m pip install -r requirements.txt` (`xlrd==2.0.2` is pinned), restart the existing local server, then reload Paper Desk.
+
+Live checks during this update returned 2021–2025 observations: mean risk-free **3.606%**, mean ERP **4.668%**. Retrieved beta **1.05** produced **8.5074%** for MSFT; beta **2.19** produced **13.82892%** for NVDA. These are dated probe results, not constants. MSFT acquired sufficient inputs for a **NORMALIZED** proposal. NVDA's statement acquisition was incomplete and did not produce a valuation. JPM's historical P/B endpoint returned only **four** annual observations (2022–2025), so it cannot support the five-year-mean proposal yet.
+
+Two-company parallel financial acquisition took **31.82 seconds** in that live probe. This is not a controlled before/after speed benchmark or a completed full-universe scan; provider pacing, throttling and recovery still govern real scan time.
+
+### Validation, usage and remaining work
+
+- Full regressions: **131 Python tests and 139 JavaScript tests passed**. The full-app browser regression passed after integration, including the explicit 503-member fixture, qualified-only display, mobile layout, stock/call handoff without submission, and historical-trade preview/recording/backup persistence.
+- Open **VMI → Scan S&P 500**. Open a passing company, then **Valuation**, to inspect the automatic method/rate and evidence. Export scan evidence to retain all results, including exclusions and unfinished acquisition.
+- Existing route signatures remain unchanged (`/data/vmi_sp500_members`, `/data/vmi_sp500_batch`, `/data/vmi_sp500_company`, `/data/vmi_fundamentals`). No new API credentials or cloud services. Research stays session-based/exportable; paper accounts remain in their existing browser-local storage. The server caches are transient, not account storage.
+- **Still unfinished:** independent recovery of missing fifth historical multiples, comprehensive NAV/distressed tangible-book evidence, multi-class share allocation, non-S&P automatic classification/valuation, all-bank capital/credit-risk coverage, long-term forecast recovery, and the earlier whole-universe financial coverage gaps. Complete real-data S&P 500 verification and real user-Gateway entitlement testing remain outstanding. Missing acquisition is unfinished development, not a claimed finished scanner feature.
+
+
 ## S&P 500 scanner checkpoint — 2026-10-10
 
 **Still under development: complete real-data coverage is not yet verified.** This extends the existing local Python application; no cloud deployment, new funded accounts, or broker-write routes were added.
@@ -40,7 +73,7 @@ Outstanding: long-term forecasts during provider throttling, remaining bank CET1
 - Automatic SEC CompanyFacts/submissions retrieval, issuer-link and SEC entity-search fallbacks when the ticker map is unavailable, Finviz snapshot metrics and Yahoo dated statement fallbacks. Annual facts retain tags, filing dates, periods and calculation inputs; they are not labeled TTM. Manual CompanyFacts import remains available.
 - The former automatic paginated discovery UI has been replaced by the explicit whole-S&P-500 scanner described above. `/data/vmi_scan` remains a legacy compatibility endpoint, not the scanner's universe source. `/data/vmi_fundamentals?symbol=META` and automatic refresh of tracked research companies remain available.
 - Separate Research, Qualified/waiting-for-value and Qualified+undervalued collections. Qualification requires all five business gates; price cannot compensate for failed quality. Entry timing is separate.
-- Automatic annual-FCF valuation proposals when all inputs and a provider forecast exist, with an editable 10% application-default discount rate. One provider forecast is not three independent forecasts. Proposals never override adopted manual IVs or supply fabricated qualitative reviews. Older financial metrics (>550 days) remain in the source evidence but are excluded from active automatic screening.
+- Automatic company-specific valuation now follows the 2026-10-11 section above; the former blanket annual-FCF proposal and global 10% default have been removed. One provider forecast is still not three independent forecasts. Proposals never override adopted manual IVs or fabricate qualitative reviews.
 - Completed-date CSV import (`date,close`), daily SMA diagnostics, review-date reminders, decision notes and searchable full supplied course notes.
 - Existing read-only `/data/quote?provider=tws&symbol=...` refresh on VMI entry, company addition, archive import and return to a visible VMI page, plus recurring automatic refresh with a five-minute cooldown. There is no manual quote-refresh button. Only timestamped USD-compatible IB last prices are promoted. Older prices remain visibly dated on failure. No GUNS chart-history sweep.
 - Explicit read-only links to existing paper books capture sanitized financial snapshots when changed (manual or every minute while browser is visible). Active books use current state, not a stale book copy.
