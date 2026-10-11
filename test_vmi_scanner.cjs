@@ -45,3 +45,19 @@ test('late response cannot contaminate a restarted preset',async()=>{
   assert.equal(scanner.state().stats.rejected,503);
  }finally{global.fetch=original;}
 });
+
+test('browser workers are bounded and inconsistent passes stay unproven',async()=>{
+ const original=global.fetch;let batch=0,deep=0,peakBatch=0,peakDeep=0;
+ global.fetch=async path=>{
+  const u=new URL(path,'http://localhost');
+  if(u.pathname.endsWith('members'))return response({rows:universe});
+  const isBatch=u.pathname.endsWith('batch');
+  if(isBatch){batch++;peakBatch=Math.max(peakBatch,batch);}else{deep++;peakDeep=Math.max(peakDeep,deep);}
+  await new Promise(r=>setTimeout(r,2));
+  if(isBatch){batch--;return response({rows:u.searchParams.get('symbols').split(',').map(symbol=>({symbol,fields:{},source:'fixture',screen:{rejected:false,reasons:[]}})),missing:[]});}
+  deep--;const symbol=u.searchParams.get('symbol');
+  return response({member:{symbol},result:{preset:'moderate',status:'QUALIFIED',failures:[],pending:symbol==='X0'?['unproven']:[]},evidence:{},research:null});
+ };
+ try{const scanner=create({mode:()=> 'moderate'});await scanner.start();assert.equal(peakBatch,3);assert.equal(peakDeep,4);assert.equal(scanner.state().stats.qualified,502);assert.equal(scanner.state().rows.find(r=>r.symbol==='X0').status,'ACQUIRING');}
+ finally{global.fetch=original;}
+});

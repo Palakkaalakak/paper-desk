@@ -63,7 +63,10 @@ def main():
         assert not any('/data/vmi_sp500_' in u for u in requests)
         page.locator('#vmi-scan-start').click()
         page.wait_for_function("document.querySelector('#vmi-scan-progress')?.textContent.includes('Scan complete')")
-        assert page.locator('[data-scan-filter="all"] strong').inner_text() == '503'
+        assert page.locator('#vmi-scanner progress').get_attribute('max') == '503'
+        assert page.locator('[data-scan-filter="all"], [data-scan-filter="rejected"], [data-scan-filter="acquiring"]').count() == 0
+        assert page.locator('[data-scan-open]').count() == 1
+        assert page.locator('[data-scan-open="T0"]').count() == 0
         assert page.locator('[data-scan-filter="qualified"] strong').inner_text() == '1'
         page.locator('[data-scan-filter="qualified"]').click()
         page.locator('[data-scan-open="META"]').click()
