@@ -77,4 +77,62 @@ class ScannerTests(unittest.TestCase):
         # A quarterly-heavy sequence must not truncate the annual history to three years.
         self.assertIn("if r.get('form') in ('10-K','10-K/A','20-F','20-F/A')",__import__('inspect').getsource(m.evidence))
 
+class ConcurrencyTests(unittest.TestCase):
+    def setUp(self): api._CACHE.clear()
+
+    def test_single_flight_success_failure_and_retry(self):
+        import threading,time
+        from concurrent.futures import ThreadPoolExecutor
+        for fail in (False,True):
+            api._CACHE.clear();calls=[];barrier=threading.Barrier(8)
+            def load():
+                calls.append(1);time.sleep(.1)
+                if fail: raise ValueError('fixture')
+                return 42
+            def worker(_):
+                barrier.wait()
+                try: return api.cached(('flight',),60,load)
+                except ValueError: return 'failure'
+            with ThreadPoolExecutor(max_workers=8) as pool: results=list(pool.map(worker,range(8)))
+            self.assertEqual(len(calls),1);self.assertEqual(len(set(results)),1)
+            self.assertNotIn(('flight',),api._INFLIGHT)
+            if fail: self.assertEqual(api.cached(('flight',),60,lambda:3),3)
+        self.assertEqual(api.cached(('outer',),60,lambda:api.cached(('inner',),60,lambda:5)),5)
+
+    def test_excluded_industry_needs_no_provider(self):
+        member=dict(symbol='OIL',industry='Oil & Gas',sector='Energy')
+        with patch.object(api,'members',return_value={'rows':[member]}),patch.object(api,'bulk') as bulk,patch.object(api,'snapshot') as snap:
+            result=api.batch('financial','OIL')
+            bulk.assert_not_called();snap.assert_not_called()
+            self.assertTrue(result['rows'][0]['screen']['rejected'])
+
+    def test_parallel_fallback_bound_and_cached_rows(self):
+        import threading,time
+        active=peak=0;lock=threading.Lock()
+        members=[dict(symbol='X'+str(i),industry='Software',sector='IT') for i in range(10)]
+        def load(ticker):
+            nonlocal active,peak
+            with lock: active+=1;peak=max(peak,active)
+            time.sleep(.02)
+            with lock: active-=1
+            return dict(symbol=ticker,fields={'ROE':'20'},source='fixture')
+        with patch.object(api,'members',return_value={'rows':members}),patch.object(api,'bulk',return_value={}) as bulk,patch.object(api,'snapshot',side_effect=load) as snap:
+            result=api.batch('financial',','.join(r['symbol'] for r in members))
+            self.assertEqual(len(result['rows']),10);self.assertGreater(peak,1);self.assertLessEqual(peak,4)
+            api.batch('financial','X1,X0');self.assertEqual(snap.call_count,10);self.assertEqual(bulk.call_count,1)
+
+    def test_company_slots_bounded_across_callers(self):
+        import threading,time
+        from concurrent.futures import ThreadPoolExecutor
+        active=peak=0;lock=threading.Lock()
+        def load(ticker,mode):
+            nonlocal active,peak
+            with lock: active+=1;peak=max(peak,active)
+            time.sleep(.02)
+            with lock: active-=1
+            return ticker
+        with patch.object(api,'_company',side_effect=load),ThreadPoolExecutor(max_workers=12) as pool:
+            self.assertEqual(list(pool.map(api.company,range(12))),list(range(12)))
+        self.assertEqual(peak,4)
+
 if __name__=='__main__': unittest.main()

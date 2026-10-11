@@ -3,20 +3,24 @@ import json
 import math
 import re
 import time
+import threading
 import urllib.error
 import vmi_data as v
 
 _FINVIZ_UNTIL=0
+_FINVIZ_LOCK=threading.Lock()
 
 
 def finviz_fetch(url):
     global _FINVIZ_UNTIL
-    if time.monotonic()<_FINVIZ_UNTIL:
-        raise ValueError('Finviz cooldown after HTTP 429; use independent source')
-    try: return v.fetch(url)
-    except urllib.error.HTTPError as exc:
-        if exc.code==429: _FINVIZ_UNTIL=time.monotonic()+900
-        raise
+    with _FINVIZ_LOCK:
+        if time.monotonic()<_FINVIZ_UNTIL:
+            raise ValueError('Finviz cooldown after HTTP 429; use independent source')
+        try: return v.fetch(url,retry_429=False)
+        except urllib.error.HTTPError as exc:
+            if exc.code==429: _FINVIZ_UNTIL=time.monotonic()+900
+            raise
+
 
 
 def decode_yahoo(text,ticker,url):
@@ -42,6 +46,15 @@ def decode_yahoo(text,ticker,url):
     for key,label in [('marketCap','Market Cap'),('regularMarketPrice','Price')]:
         value=number(price,key)
         if value is not None: fields[label]=str(value)
+    for module,key,label in [('defaultKeyStatistics','beta','Beta'),('defaultKeyStatistics','bookValue','Book/sh'),('defaultKeyStatistics','priceToBook','P/B'),('summaryDetail','priceToSalesTrailing12Months','P/S'),('summaryDetail','dividendRate','Dividend/share')]:
+        value=number(modules.get(module,{}),key)
+        if value is not None: fields[label]=str(value)
+    revenue=next((r for r in modules.get('earningsTrend',{}).get('trend',[]) if r.get('period')=='+1y'),None)
+    if revenue:
+        growth=number(revenue.get('revenueEstimate',{}),'growth')
+        if growth is not None:
+            fields['Revenue Growth Forecast']=str(growth*100)
+            fields['Revenue Forecast Horizon']='+1y'
     for period in ('+5y','+1y'):
         forecast=next((r for r in modules.get('earningsTrend',{}).get('trend',[]) if r.get('period')==period),None)
         if forecast:

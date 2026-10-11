@@ -1,4 +1,5 @@
 """Explicit S&P 500 scanner acquisition. Read-only, no IB/chart subscriptions."""
+from concurrent.futures import Future, ThreadPoolExecutor
 import csv
 import io
 import json
@@ -16,6 +17,10 @@ MODES=('conservative','moderate','optimistic')
 # Transient request cache, not historical storage. Never cache raw CompanyFacts blobs.
 _CACHE={}
 _LOCK=threading.RLock()
+_INFLIGHT={}
+_FALLBACK_POOL=ThreadPoolExecutor(max_workers=4,thread_name_prefix='vmi-source')
+_COMPANY_SLOTS=threading.BoundedSemaphore(4)
+_BATCH_SLOTS=threading.BoundedSemaphore(3)
 
 
 def cached(key, ttl, fn):
@@ -23,12 +28,25 @@ def cached(key, ttl, fn):
     with _LOCK:
         hit=_CACHE.get(key)
         if hit and now-hit[0]<ttl: return hit[1]
-    result=fn()
-    with _LOCK:
-        if len(_CACHE)>=2400:
-            for k in sorted(_CACHE,key=lambda k:_CACHE[k][0])[:300]: del _CACHE[k]
-        _CACHE[key]=(time.monotonic(),result)
-    return result
+        pending=_INFLIGHT.get(key)
+        owner=pending is None
+        if owner:
+            pending=Future()
+            _INFLIGHT[key]=pending
+    if not owner: return pending.result(timeout=180)
+    try:
+        result=fn()
+        with _LOCK:
+            if len(_CACHE)>=2400:
+                for k in sorted(_CACHE,key=lambda k:_CACHE[k][0])[:300]: del _CACHE[k]
+            _CACHE[key]=(time.monotonic(),result)
+        pending.set_result(result)
+        return result
+    except BaseException as exc:
+        pending.set_exception(exc)
+        raise
+    finally:
+        with _LOCK: _INFLIGHT.pop(key,None)
 
 
 def validate_members(rows):
@@ -128,21 +146,42 @@ def quick(member,fields,mode):
 
 
 def batch(view,symbols,mode='moderate'):
+    with _BATCH_SLOTS:
+        return _batch(view,symbols,mode)
+
+
+def _batch(view,symbols,mode='moderate'):
     tickers=[v.symbol(s) for s in symbols.split(',')]
     if view not in ('financial','growth') or not 1<=len(tickers)<=20 or len(set(tickers))!=len(tickers) or mode not in MODES: raise ValueError('Invalid batch request')
     membership={r['symbol']:r for r in members()['rows']}
     if not set(tickers)<=membership.keys(): raise ValueError('Non-constituent in batch')
     def load():
         result={};attempts=[]
-        try: result=bulk(view,tickers)
-        except Exception as exc: attempts.append(dict(source='Finviz bulk',error=str(exc)))
+        with _LOCK:
+            for ticker in tickers:
+                hit=_CACHE.get(('row',view,ticker))
+                if hit and time.monotonic()-hit[0]<900: result[ticker]=hit[1]
         for ticker in tickers:
-            if ticker not in result:
-                try: result[ticker]=cached(('snapshot',ticker),900,lambda:snapshot(ticker))
-                except Exception as exc:
-                    attempts.append(dict(symbol=ticker,source='Finviz individual fallback',error=str(exc)))
-                    try: result[ticker]=cached(('yahoo-market',ticker),1800,lambda:yahoo_market(ticker))
-                    except Exception as other: attempts.append(dict(symbol=ticker,source='Yahoo independent source',error=str(other)))
+            if sector(membership[ticker])['excluded']:
+                result[ticker]=dict(symbol=ticker,fields={},source='S&P 500 GICS industry classification',retrievedAt=int(time.time()*1000))
+        needed=[t for t in tickers if t not in result]
+        if needed:
+            try: result.update(bulk(view,needed))
+            except Exception as exc: attempts.append(dict(source='Finviz bulk',error=str(exc)))
+        def recover(ticker):
+            errors=[]
+            try: return ticker,cached(('snapshot',ticker),900,lambda:snapshot(ticker)),errors
+            except Exception as exc:
+                errors.append(dict(symbol=ticker,source='Finviz individual fallback',error=str(exc)))
+                try: return ticker,cached(('yahoo-market',ticker),1800,lambda:yahoo_market(ticker)),errors
+                except Exception as other:
+                    errors.append(dict(symbol=ticker,source='Yahoo independent source',error=str(other)))
+                    return ticker,None,errors
+        futures=[_FALLBACK_POOL.submit(recover,t) for t in needed if t not in result]
+        for future in futures:
+            ticker,row,errors=future.result()
+            attempts+=errors
+            if row: result[ticker]=row
         with _LOCK:
             for ticker,row in result.items(): _CACHE[('row',view,ticker)]=(time.monotonic(),row)
         return dict(rows=list(result.values()),missing=[s for s in tickers if s not in result],attempts=attempts,retrievedAt=int(time.time()*1000))
@@ -166,6 +205,11 @@ def market_fields(ticker):
 
 
 def company(ticker,mode='moderate'):
+    with _COMPANY_SLOTS:
+        return _company(ticker,mode)
+
+
+def _company(ticker,mode='moderate'):
     from vmi_metrics import evidence,evaluate
     ticker=v.symbol(ticker)
     if mode not in MODES: raise ValueError('Invalid preset')
