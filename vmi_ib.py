@@ -52,39 +52,83 @@ async def report(engine,contract,timeout=6):
         elif not future.cancelled(): future.exception()
 
 
+OBSERVATION_BUDGET=8
+
+
+def _blocked(engine):
+    if not engine.info.get('connected',False):
+        return 'Gateway disconnected; public sources continue'
+    if '10197' in str(engine.info.get('problem') or ''):
+        return 'IB 10197 competing live session; scanner broker requests skipped, public screening continues'
+    state=getattr(engine,'_vmi_scan_cooldown',None)
+    if state and state[0]==engine.info.get('generation',0) and time.monotonic()<state[1]:
+        return 'Scanner IB circuit open after unavailable data: '+state[2]
+    return None
+
+
+def _cooldown(engine,reason):
+    with engine.changed:
+        engine._vmi_scan_cooldown=(engine.info.get('generation',0),time.monotonic()+120,str(reason)[:200])
+
+
 async def observe(engine,ticker):
     ticker=symbol(ticker)
+    reason=_blocked(engine)
+    if reason: return dict(available=False,source='IBKR',reason=reason)
     if not hasattr(engine,'_vmi_scanner_lock'): engine._vmi_scanner_lock=asyncio.Lock()
+    # Optional scanner work must not queue behind other symbols or touch streams.
+    if engine._vmi_scanner_lock.locked():
+        return dict(available=False,source='IBKR',reason='Scanner IB slot busy; public evidence retained')
     async with engine._vmi_scanner_lock:
-        ib,generation=engine._ib,engine.info.get('generation',0)
-        def check():
-            if engine._ib is not ib or engine.info.get('generation',0)!=generation: raise ConnectionError('Gateway changed during VMI acquisition')
-        c=await asyncio.wait_for(engine._stock(ticker.replace('.',' ').replace('-',' ')),10);check()
-        if c.secType!='STK' or c.currency!='USD' or not c.conId or identity(c.symbol)!=identity(ticker): raise ValueError('IB stock identity/currency mismatch')
-        out=dict(symbol=ticker,conid=c.conId,fields={},source='IBKR',served_by='tws',retrievedAt=int(time.time()*1000),attempts=[])
         try:
-            existing=next((r['ticker'] for r in engine._active.values() if r['contract'].conId==c.conId),None)
-            q=engine._quote(existing) if existing is not None else {}
-            if not valid_quote(q,c.conId): q=await engine._snapshot_quote(c)
-            check()
-            if q.get('brokerConid')!=c.conId: raise ValueError('IB quote conid mismatch')
-            out['quote']=q
-        except asyncio.CancelledError: raise
-        except Exception as exc: out['attempts'].append(dict(source='IBKR snapshot',error=str(exc)))
-        if time.monotonic()>=getattr(engine,'_vmi_report_cooldown',0):
-            try:
-                raw=await report(engine,c);check();parsed=parse_report(raw,ticker)
-                out['fundamentals']=parsed;out['fields']=parsed['fields']
-            except asyncio.CancelledError: raise
-            except Exception as exc:
-                engine._vmi_report_cooldown=time.monotonic()+900
-                out['attempts'].append(dict(source='IBKR ReportSnapshot',error=str(exc),fallback='Public financial evidence retained'))
-        else: out['attempts'].append(dict(source='IBKR ReportSnapshot',error='Entitlement/service cooldown'))
-        check();return out
+            result=await asyncio.wait_for(_observe(engine,ticker),OBSERVATION_BUDGET)
+            if not result.get('fields') and not valid_quote(result.get('quote',{}),result.get('conid')):
+                _cooldown(engine,'No usable live quote or financial report')
+            return result
+        except TimeoutError as exc:
+            _cooldown(engine,type(exc).__name__)
+            return dict(available=False,source='IBKR',reason='Scanner IB deadline/service unavailable; public evidence retained')
 
+
+async def _observe(engine,ticker):
+    ib,generation=engine._ib,engine.info.get('generation',0)
+    def check():
+        if engine._ib is not ib or engine.info.get('generation',0)!=generation: raise ConnectionError('Gateway changed during VMI acquisition')
+    c=await asyncio.wait_for(engine._stock(ticker.replace('.',' ').replace('-',' ')),3);check()
+    if c.secType!='STK' or c.currency!='USD' or not c.conId or identity(c.symbol)!=identity(ticker): raise ValueError('IB stock identity/currency mismatch')
+    out=dict(symbol=ticker,conid=c.conId,fields={},source='IBKR',served_by='tws',retrievedAt=int(time.time()*1000),attempts=[])
+    try:
+        existing=next((r['ticker'] for r in engine._active.values() if r['contract'].conId==c.conId),None)
+        q=engine._quote(existing) if existing is not None else {}
+        if not valid_quote(q,c.conId): q=await asyncio.wait_for(engine._snapshot_quote(c),3)
+        check()
+        if q.get('brokerConid')!=c.conId: raise ValueError('IB quote conid mismatch')
+        out['quote']=q
+    except asyncio.CancelledError: raise
+    except Exception as exc: out['attempts'].append(dict(source='IBKR snapshot',error=str(exc)))
+    if time.monotonic()>=getattr(engine,'_vmi_report_cooldown',0):
+        try:
+            raw=await report(engine,c);check();parsed=parse_report(raw,ticker)
+            out['fundamentals']=parsed;out['fields']=parsed['fields']
+        except asyncio.CancelledError: raise
+        except Exception as exc:
+            engine._vmi_report_cooldown=time.monotonic()+900
+            out['attempts'].append(dict(source='IBKR ReportSnapshot',error=str(exc),fallback='Public financial evidence retained'))
+    else: out['attempts'].append(dict(source='IBKR ReportSnapshot',error='Entitlement/service cooldown'))
+    check();return out
 
 def available(engine,ticker):
-    with engine.changed: connected=engine.info.get('connected',False)
-    if not connected: return dict(available=False,source='IBKR',reason='Gateway disconnected; public sources continue')
-    try: return dict(engine.call('vmi_observation',symbol(ticker),timeout=35),available=True)
-    except Exception as exc: return dict(available=False,source='IBKR',reason=str(exc))
+    with engine.changed:
+        reason=_blocked(engine)
+        if reason: return dict(available=False,source='IBKR',reason=reason)
+        if getattr(engine,'_vmi_scan_http_busy',False):
+            return dict(available=False,source='IBKR',reason='Scanner IB slot busy; no queued broker request')
+        engine._vmi_scan_http_busy=True
+    try:
+        result=engine.call('vmi_observation',symbol(ticker),timeout=9)
+        return dict(result,available=result.get('available',True))
+    except Exception as exc:
+        _cooldown(engine,type(exc).__name__)
+        return dict(available=False,source='IBKR',reason=str(exc))
+    finally:
+        with engine.changed: engine._vmi_scan_http_busy=False

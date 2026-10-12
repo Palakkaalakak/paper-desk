@@ -27,6 +27,16 @@ class ScannerTests(unittest.TestCase):
             result=api.batch('financial','A,B');self.assertEqual(result['missing'],[]);snap.assert_called_once_with('B')
             self.assertEqual(len(result['rows']),2)
         with self.assertRaises(ValueError): api.batch('financial',','.join(['A']*21))
+    def test_rejected_business_skips_ib_peers_and_valuation(self):
+        member=dict(symbol='TEST',cik=1,industry='Software',sector='IT')
+        data=dict(series={},current={},market={},sources=[])
+        rejected=dict(status='REJECTED',failures=['Sourced failure'],pending=[])
+        with patch.object(api,'members',return_value={'rows':[member]}),patch.object(m,'evidence',return_value=data),patch.object(m,'evaluate',return_value=rejected),patch('vmi_ib.available') as ib,patch.object(api,'peer_check') as peers,patch.object(api,'research_payload') as research:
+            result=api.company('TEST')
+        ib.assert_not_called();peers.assert_not_called();research.assert_not_called()
+        self.assertIsNone(result['research']);self.assertFalse(result['evidence']['ibkr']['available'])
+        self.assertNotIn('ibkr',data)  # Cached source evidence remains immutable.
+
     def test_no_missing_balance_becomes_zero(self):
         result=m.calculate({'revenue':[dict(end='2025-12-31',val=100)],'income':[dict(end='2025-12-31',val=20)]})
         self.assertEqual(result['roe'],[]);self.assertEqual(result.get('ccc',[]),[])

@@ -266,18 +266,22 @@ def _company(ticker,mode='moderate'):
     import market
     from vmi_ib import available,valid_quote
     data=copy.deepcopy(data)
-    trace.event('ibkr',ticker+' / read-only IB enrichment')
-    broker=available(market.ENGINE,ticker)
-    data['ibkr']=broker
-    if broker.get('available'):
-        data['providerAlternatives']=dict(data['market'])
-        data['market'].update(broker.get('fields',{}))
-        data['sources'].append('IBKR API / conid '+str(broker['conid']))
-        if valid_quote(broker.get('quote',{}),broker['conid']):
-            data['market']['Price']=str(broker['quote']['last'])
-            data['market']['Price source']='IBKR LIVE / conid '+str(broker['conid'])
-    trace.event('evaluate',ticker+' / all applicable business gates')
+    trace.event('evaluate',ticker+' / public business gates before optional IB')
     result=evaluate(member,data,mode)
+    if not result['failures']:
+        trace.event('ibkr',ticker+' / read-only IB enrichment')
+        broker=available(market.ENGINE,ticker)
+        data['ibkr']=broker
+        if broker.get('available'):
+            data['providerAlternatives']=dict(data['market'])
+            data['market'].update(broker.get('fields',{}))
+            data['sources'].append('IBKR API / conid '+str(broker['conid']))
+            if valid_quote(broker.get('quote',{}),broker['conid']):
+                data['market']['Price']=str(broker['quote']['last'])
+                data['market']['Price source']='IBKR LIVE / conid '+str(broker['conid'])
+        result=evaluate(member,data,mode)
+    else:
+        data['ibkr']=dict(available=False,source='IBKR',reason='Skipped optional enrichment: business already rejected by sourced public gates')
     if not result['failures']:
         trace.event('peers',ticker+' / comparisons')
         check=peer_check(member,data)
@@ -286,7 +290,7 @@ def _company(ticker,mode='moderate'):
         result['pending']=[c['key'] for c in result['checks'] if c['status']=='ACQUIRE']
         result['status']='REJECTED' if result['failures'] else 'ACQUIRING' if result['pending'] else 'QUALIFIED'
     trace.event('valuation',ticker+' / '+result['status'])
-    return dict(member=member,evidence=data,result=result,research=research_payload(member,data,acquire=result['status']=='QUALIFIED'))
+    return dict(member=member,evidence=data,result=result,research=research_payload(member,data) if result['status']=='QUALIFIED' else None)
 
 
 def peer_check(member,data):
@@ -321,4 +325,4 @@ def research_payload(member,data,acquire=True):
     metrics['years']=len(data['series'].get('revenue',[]));valuation=None
     from vmi_valuation import proposal
     valuation,decision=proposal(member,data,acquire=acquire)
-    return dict(symbol=member['symbol'],name=member['name'],cik=member['cik'],currency='USD',metrics=metrics,flows=data['series'],balances=current,market=data['market'],sources=data['sources'],provenance={},staleMetrics=[],valuationInputs=valuation,valuationDecision=decision,retrievedAt=data['retrievedAt'],scannerEvidence=data)
+    return dict(symbol=member['symbol'],name=member['name'],cik=member['cik'],currency='USD',metrics=metrics,flows=data['series'],balances=current,market=data['market'],sources=data['sources'],provenance={},staleMetrics=[],valuationInputs=valuation,valuationDecision=decision,retrievedAt=data['retrievedAt'])
