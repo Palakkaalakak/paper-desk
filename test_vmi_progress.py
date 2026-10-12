@@ -34,6 +34,31 @@ class ProgressTests(unittest.TestCase):
                 with patch.object(api,'bulk') as bulk:
                     self.assertEqual(api.batch(view,'TEST',defer=True)['rows'][0]['fields'],row['fields']);bulk.assert_not_called()
 
+    def test_failed_pages_shared_across_views_then_retry_after_expiry(self):
+        with patch.object(api,'bulk',side_effect=ValueError('blocked')) as bulk,patch.object(api,'snapshot',side_effect=ValueError('blocked')) as snap,patch.object(api,'yahoo_market',side_effect=ValueError('three pages absent')) as yahoo:
+            first=api.market_fields('TEST');second=api.market_fields('TEST')
+            self.assertEqual(first['fields'],{});self.assertEqual(second['fields'],{})
+            self.assertEqual(snap.call_count,1);self.assertEqual(yahoo.call_count,1);self.assertEqual(bulk.call_count,2)
+            self.assertEqual(len(first['attempts']),2)
+            for key,(at,value) in list(api._CACHE.items()): api._CACHE[key]=(at-121,value)
+            api.market_fields('TEST');self.assertEqual(yahoo.call_count,2)
+
+    def test_recovered_rows_survive_original_81_minute_run(self):
+        row=dict(symbol='TEST',fields={'ROE':'20'},source='dated fixture',retrievedAt=123)
+        with patch.object(api,'members',return_value={'rows':[self.member]}),patch.object(api,'snapshot',return_value=row) as snap,patch.object(api,'bulk') as bulk:
+            api.recover_one('TEST')
+            for key,(at,value) in list(api._CACHE.items()): api._CACHE[key]=(at-4861,value)
+            result=api.market_fields('TEST')
+            self.assertEqual(result['fields']['ROE'],'20');snap.assert_called_once();bulk.assert_not_called()
+            self.assertEqual(result['fieldSources']['ROE'],dict(source='dated fixture',retrievedAt=123))
+
+    def test_parallel_failed_views_share_one_fallback_chain(self):
+        from concurrent.futures import ThreadPoolExecutor
+        def missing(ticker): time.sleep(.02);raise ValueError('absent modules')
+        with patch.object(api,'bulk',side_effect=ValueError('blocked')),patch.object(api,'snapshot',side_effect=ValueError('blocked')),patch.object(api,'yahoo_market',side_effect=missing) as yahoo,ThreadPoolExecutor(max_workers=8) as pool:
+            results=list(pool.map(lambda _:api.market_fields('TEST'),range(8)))
+        self.assertTrue(all(r['fields']=={} for r in results));yahoo.assert_called_once_with('TEST')
+
     def test_failed_recovery_remains_missing(self):
         with patch.object(api,'members',return_value={'rows':[self.member]}),patch.object(api,'snapshot',side_effect=ValueError('blocked')),patch.object(api,'yahoo_market',side_effect=ValueError('blocked')):
             out=api.recover_one('TEST')

@@ -25,11 +25,32 @@ _BATCH_SLOTS=threading.BoundedSemaphore(3)
 _RECOVERY_SLOTS=threading.BoundedSemaphore(4)
 
 
-def cached(key, ttl, fn):
+# Dated research observations, never live execution-price subscriptions.
+MARKET_TTL=21600
+MARKET_FAILURE_TTL=120
+
+
+class _CachedFailure:
+    def __init__(self,error,ttl):
+        self.error=str(error)
+        self.ttl=ttl
+
+
+def _cache_put(key,value):
+    # Called under _LOCK; bound failures and direct row writes as well as successes.
+    if key not in _CACHE and len(_CACHE)>=4096:
+        for old in sorted(_CACHE,key=lambda k:_CACHE[k][0])[:256]: del _CACHE[old]
+    _CACHE[key]=(time.monotonic(),value)
+
+
+def cached(key, ttl, fn, *, failure_ttl=0):
     now=time.monotonic()
     with _LOCK:
         hit=_CACHE.get(key)
-        if hit and now-hit[0]<ttl:
+        if hit and now-hit[0]<(hit[1].ttl if isinstance(hit[1],_CachedFailure) else ttl):
+            if isinstance(hit[1],_CachedFailure):
+                trace.event('negative_cache_hit',str(key[0])+' / '+hit[1].error)
+                raise ValueError(hit[1].error)
             trace.event('cache_hit',str(key[0]))
             return hit[1]
         pending=_INFLIGHT.get(key)
@@ -44,12 +65,13 @@ def cached(key, ttl, fn):
     try:
         result=fn()
         with _LOCK:
-            if len(_CACHE)>=2400:
-                for k in sorted(_CACHE,key=lambda k:_CACHE[k][0])[:300]: del _CACHE[k]
-            _CACHE[key]=(time.monotonic(),result)
+            _cache_put(key,result)
         pending.set_result(result)
         return result
     except BaseException as exc:
+        if failure_ttl and isinstance(exc,Exception):
+            # Do not retain exception tracebacks and their raw provider payloads.
+            with _LOCK: _cache_put(key,_CachedFailure(exc,failure_ttl))
         pending.set_exception(exc)
         raise
     finally:
@@ -130,9 +152,36 @@ def bulk(view,tickers, *, fast=False):
     return result
 
 
+def recovered_market(ticker):
+    """One shared fallback chain per listing, independent of requested view."""
+    def load():
+        attempts=[]
+        for loader,label in ((snapshot,'Finviz snapshot'),(yahoo_market,'Yahoo independent source')):
+            try:
+                trace.event('fallback',ticker+' / '+label)
+                return dict(row=loader(ticker),attempts=attempts)
+            except Exception as exc: attempts.append(dict(source=label,error=str(exc)))
+        raise ValueError(json.dumps(attempts))
+    try:
+        return cached(('market-recovery',ticker),MARKET_TTL,load,failure_ttl=MARKET_FAILURE_TTL)
+    except ValueError as exc:
+        return dict(row=None,attempts=json.loads(str(exc)))
+
+
 def financial_row(ticker):
-    try: return bulk('financial',[ticker]).get(ticker) or snapshot(ticker)
-    except Exception: return cached(('yahoo-market',ticker),1800,lambda:yahoo_market(ticker))
+    return market_view('financial',ticker)
+
+
+def market_view(view,ticker):
+    def load():
+        try:
+            row=bulk(view,[ticker]).get(ticker)
+            if row: return row
+        except Exception: pass
+        outcome=recovered_market(ticker)
+        if outcome['row']: return outcome['row']
+        raise ValueError(json.dumps(outcome['attempts']))
+    return cached(('row',view,ticker),MARKET_TTL,load,failure_ttl=MARKET_FAILURE_TTL)
 
 
 def sector(member):
@@ -171,7 +220,7 @@ def _batch(view,symbols,mode='moderate',defer=False):
         with _LOCK:
             for ticker in tickers:
                 hit=_CACHE.get(('row',view,ticker))
-                if hit and time.monotonic()-hit[0]<900:
+                if hit and not isinstance(hit[1],_CachedFailure) and time.monotonic()-hit[0]<MARKET_TTL:
                     trace.event('cache_hit','row '+view+' '+ticker)
                     result[ticker]=hit[1]
         for ticker in tickers:
@@ -184,21 +233,15 @@ def _batch(view,symbols,mode='moderate',defer=False):
                 result.update(bulk(view,needed,fast=True) if defer else bulk(view,needed))
             except Exception as exc: attempts.append(dict(source='Finviz bulk',error=str(exc)))
         def recover(ticker):
-            errors=[]
-            try: return ticker,cached(('snapshot',ticker),900,lambda:snapshot(ticker)),errors
-            except Exception as exc:
-                errors.append(dict(symbol=ticker,source='Finviz individual fallback',error=str(exc)))
-                try: return ticker,cached(('yahoo-market',ticker),1800,lambda:yahoo_market(ticker)),errors
-                except Exception as other:
-                    errors.append(dict(symbol=ticker,source='Yahoo independent source',error=str(other)))
-                    return ticker,None,errors
+            outcome=recovered_market(ticker)
+            return ticker,outcome['row'],[dict(a,symbol=ticker) for a in outcome['attempts']]
         futures=[] if defer else [_FALLBACK_POOL.submit(recover,t) for t in needed if t not in result]
         for future in futures:
             ticker,row,errors=future.result()
             attempts+=errors
             if row: result[ticker]=row
         with _LOCK:
-            for ticker,row in result.items(): _CACHE[('row',view,ticker)]=(time.monotonic(),row)
+            for ticker,row in result.items(): _cache_put(('row',view,ticker),row)
         missing=[s for s in tickers if s not in result]
         trace.event('bulk_done',str(len(result))+' rows; '+str(len(missing))+' need recovery')
         return dict(rows=list(result.values()),missing=missing,deferred=missing if defer else [],attempts=attempts,retrievedAt=int(time.time()*1000))
@@ -214,38 +257,36 @@ def recover_one(ticker,mode='moderate'):
     if not member: raise ValueError('Not an S&P 500 constituent')
     trace.event('worker_wait','Waiting for individual recovery slot')
     with _RECOVERY_SLOTS:
-        def load():
-            attempts=[];row=None
-            for key,loader,label in [(('snapshot',ticker),lambda:snapshot(ticker),'Finviz snapshot'),(('yahoo-market',ticker),lambda:yahoo_market(ticker),'Yahoo independent source')]:
-                try:
-                    trace.event('fallback',ticker+' / '+label)
-                    row=cached(key,900,loader);break
-                except Exception as exc: attempts.append(dict(source=label,error=str(exc)))
-            if row:
-                with _LOCK:
-                    for view in ('financial','growth'):
-                        prior=_CACHE.get(('row',view,ticker));fields=dict(row['fields'])
-                        if prior and time.monotonic()-prior[0]<900: fields.update(prior[1]['fields'])
-                        _CACHE[('row',view,ticker)]=(time.monotonic(),dict(row,fields=fields))
-            return dict(row=row,attempts=attempts)
-        outcome=cached(('recovery',ticker),120,load)
+        outcome=recovered_market(ticker)
+        row=outcome['row']
+        if row:
+            with _LOCK:
+                for view in ('financial','growth'):
+                    key=('row',view,ticker);prior=_CACHE.get(key)
+                    fields=dict(row['fields'])
+                    provenance={k:dict(source=row['source'],retrievedAt=row.get('retrievedAt')) for k in fields}
+                    if prior and not isinstance(prior[1],_CachedFailure) and time.monotonic()-prior[0]<MARKET_TTL:
+                        fields.update(prior[1]['fields'])
+                        provenance.update(prior[1].get('fieldSources') or {k:dict(source=prior[1]['source'],retrievedAt=prior[1].get('retrievedAt')) for k in prior[1]['fields']})
+                    _cache_put(key,dict(row,fields=fields,fieldSources=provenance))
     row=outcome['row']
     trace.event('recovery_done',ticker+(' recovered; detailed checks remain' if row else ' unresolved; statements still required'))
     return dict(rows=[dict(row,screen=quick(member,row['fields'],mode))] if row else [],missing=[] if row else [ticker],attempts=outcome['attempts'])
 
 
 def market_fields(ticker):
-    fields={};sources=[];attempts=[]
+    ticker=v.symbol(ticker);fields={};sources=[];attempts=[];provenance={}
     for view in ('financial','growth'):
-        def load():
-            try: return bulk(view,[ticker]).get(ticker) or snapshot(ticker)
-            except Exception: return cached(('yahoo-market',ticker),1800,lambda:yahoo_market(ticker))
         try:
-            row=cached(('row',view,ticker),900,load);fields.update(row['fields']);sources.append(row['source'])
-        except Exception as exc: attempts.append(dict(source='Finviz '+view,error=str(exc)))
+            row=market_view(view,ticker);fields.update(row['fields']);sources.append(row['source'])
+            provenance.update(row.get('fieldSources') or {k:dict(source=row['source'],retrievedAt=row.get('retrievedAt')) for k in row['fields']})
+        except Exception as exc: attempts.append(dict(source='Market '+view,error=str(exc)))
     for a,b in [('EPS Next 5Y','EPS next 5Y'),('Curr R','Current Ratio'),('Gross M','Gross Margin'),('Profit M','Profit Margin')]:
-        if a in fields: fields[b]=fields[a]
-    return dict(fields=fields,sources=sources,attempts=attempts)
+        if a in fields:
+            fields[b]=fields[a]
+            if a in provenance: provenance[b]=provenance[a]
+    sources=list(dict.fromkeys(sources+[r['source'] for r in provenance.values()]))
+    return dict(fields=fields,sources=sources,attempts=attempts,fieldSources=provenance)
 
 
 def company(ticker,mode='moderate'):
@@ -299,7 +340,7 @@ def peer_check(member,data):
         if r['industry']==member['industry'] and r['cik'] not in seen:
             seen.add(r['cik'])
             try:
-                row=cached(('row','financial',r['symbol']),900,lambda r=r:financial_row(r['symbol']))
+                row=financial_row(r['symbol'])
                 peers.append(row)
             except Exception as exc: errors.append(dict(symbol=r['symbol'],error=str(exc)))
     peers.sort(key=lambda r:v.number(r['fields'].get('Market Cap')) or 0,reverse=True)
