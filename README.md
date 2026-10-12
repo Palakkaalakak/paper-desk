@@ -1,5 +1,47 @@
 # Paper Desk — IB Gateway paper-trading workstation
 
+## Actual-run repair checkpoint — 2026-10-12
+
+**Local Python application only; not a Cloudflare migration.** Pull `main`, stop and restart your existing `serve.py` process, and reload `http://localhost:8765`. Export any in-progress research first. Paper-account storage, automatic IB quote streams, GUNS, Trading, stock/call ticket handoffs without submission, and historical paper-trade safeguards remain unchanged.
+
+### Findings from the user's actual scan
+
+The uploaded version-1 export was **306,031,935 bytes**, with **4,861 seconds**, **3,545 HTTP downloads**, **246 upstream errors**, **486 rejected** and **17 unresolved** listings. Of 361 detailed reviews, 358 reported the broker request timeout; retained traces measured approximately 35 seconds between IB acquisition and evaluation. Broad recovery took about 993 seconds and detailed review about 3,867 seconds. These measurements supersede any inference of acceptable speed from mocked tests.
+
+Offline replay of all 361 detailed records reproduced **344 rejected / 17 unresolved**, with **zero changed check statuses**, retaining recorded peer observations rather than refetching them. This establishes reproducibility, **not correctness of every source or rejection**. In 315 detailed records, non-peer gates already failed before optional IB. Missing five-year growth forecasts, debt/ROIC history and bank capital/credit-risk evidence remain acquisition defects, not passing values.
+
+### Implemented repairs
+
+- **Optional IB cannot create a scanner backlog:** competing-session error 10197 skips broker acquisition immediately; HTTP and owner-loop scanner slots refuse to queue; the coroutine has an 8-second total budget, stock qualification/snapshot waits are capped at 3 seconds each, and the caller waits at most 9 seconds. Unavailable data opens a scanner-specific 120-second circuit, scoped to the connection generation. Existing streamed quotes, request ownership/cleanup and generation-change rejection are preserved.
+- **Public gates precede IB:** a sourced business rejection skips IB, peer acquisition and valuation. Rejected/unresolved businesses no longer carry a duplicated research/candidate payload; full financial evidence and gate observations remain in their audit records.
+- **Shared per-ticker market recovery:** financial/growth views and peer requests reuse the same fallback chain. Failed lookups are retained for 120 seconds with source errors, not converted to empty successes; concurrent requests share one attempt. Dated market research observations are cached for six hours, avoiding the previous 15-minute expiry during an 81-minute scan. Field-level source/retrieval timestamps survive merged views. These are reference observations, not executable/live prices. All cache writes, including failures, are bounded at 4,096 entries.
+- **Conservative staged financial acquisition:** a complete 5-year (or conservative 10-year) SEC revenue/CFO failure can stop optional downloads only when its latest annual date equals the latest filed annual period in verified issuer metadata. Missing/stale history, earnings substitutions, partial debt and bank CFO never trigger this shortcut. Skipped acquisition is explicitly recorded; preset-specific partial evidence cannot poison full tracked-company research. No thresholds were loosened.
+- **Derive debt before downloading another filing:** available dated components are combined first; incomplete totals still require recovery, and newly acquired components can upgrade an incomplete estimate without replacing a reported total.
+- **Live diagnostics:** avoided repeat failures and early annual rejections are counted alongside downloads, provider errors and existing request progress.
+
+### Lossless export version 2
+
+Exports use `kind: "paper-desk-vmi-sp500"`, `version: 2`, `encoding: "json-dag-v1"`, a `root` reference and a `nodes` array. Each `{"$ref": N}` points to a local node; objects, arrays and long source strings are stored once. No network references are resolved. All financial observations, calculation inputs, result checks and diagnostics are retained. This is separate from account backups and tracked-company import/export.
+
+Decode both old and new scans with the pure utility in `vmi-scanner.js`:
+
+```js
+const { decodeExport } = require('./vmi-scanner.js');
+const scan = decodeExport(JSON.parse(require('node:fs').readFileSync('scan.json', 'utf8')));
+```
+
+The decoder also exists as `VMIScanner.decodeExport` in the browser. Decoding does not adopt research, mutate an account or submit orders. Invalid and cyclic references are rejected; literal `$ref` and `__proto__` source keys round-trip safely.
+
+**Measured on every one of the original 503 uploaded rows:** 305,837,356 serialized row-wrapper bytes became **39,075,211 bytes**, an **87.22% reduction**, with deep-equality round-trip verification for every row. This is the sum of independently encoded rows, including the old redundant proposals; it is **not** an asserted new whole-export file size or a live-scan timing result.
+
+### Verification and outstanding work
+
+- **150 Python tests and 142 JavaScript tests passed.** Full-app browser regression passed: explicit scanner, stock/call handoffs without submission, historical preview/recording, backup/persistence and mobile layout.
+- `python -u check_vmi_live.py --live --mode moderate` now follows the browser's actual cheap-first stages and concurrency bounds and emits per-request timings/download counts plus an end-to-end summary. Exit 2 explicitly means unfinished acquisition.
+- The attempted full real-data run was interrupted by a sandbox reset before completion. **No completed whole-universe runtime, before/after speedup, or comprehensive acquisition coverage is claimed.** The user's live Gateway entitlement situation still needs verification.
+- Current direct SEC archive probes for two previously rejected filings returned HTTP 403. CIK/report-date validation was **not** disabled. Combined-filer identity/date handling, five-year forecasts during throttling, remaining financial history/sector recovery, direct-peer accuracy and the full rejection/source audit remain unfinished.
+- No cloud deployment or new API credentials. Existing read-only routes and paper-account data models remain unchanged. See the earlier sections for valuation methodology and remaining coverage work.
+
 ## Bulk-stage stall fix and live diagnostics — 2026-10-11
 
 **Update both server and embedded page, restart `serve.py`, and reload Paper Desk.** Existing running scans use the old code and cannot acquire these changes in place. Export any session research before reloading.
