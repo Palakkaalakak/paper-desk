@@ -37,6 +37,33 @@ class ScannerTests(unittest.TestCase):
         self.assertIsNone(result['research']);self.assertFalse(result['evidence']['ibkr']['available'])
         self.assertNotIn('ibkr',data)  # Cached source evidence remains immutable.
 
+    def test_early_gate_requires_complete_latest_filing_history(self):
+        year=dt.date.today().year-1
+        rows=[dict(end=f'{y}-12-31',val=100-i*10) for i,y in enumerate(range(year-4,year+1))]
+        issuer={'filings':{'recent':{'form':['10-K'],'filingDate':[f'{year+1}-02-01'],'reportDate':[rows[-1]['end']]}}}
+        member=dict(industry='Software',sector='IT')
+        self.assertEqual(m.reported_rejections(member,{'revenue':rows},issuer,'moderate'),['revenue'])
+        self.assertEqual(m.reported_rejections(member,{'revenue':rows[:-1]},issuer,'moderate'),[])
+        self.assertEqual(m.reported_rejections(member,{'revenue':rows},issuer,'conservative'),[])
+        self.assertEqual(m.reported_rejections(member,{'revenue':rows},issuer,None),[])
+        self.assertEqual(m.reported_rejections(dict(industry='Diversified Banks',sector='Financials'),{'ocf':rows},issuer,'moderate'),[])
+        issuer['filings']['recent']['reportDate']=[f'{year+1}-01-31']
+        self.assertEqual(m.reported_rejections(member,{'revenue':rows},issuer,'moderate'),[])
+
+    def test_reported_failure_skips_optional_downloads_not_full_research(self):
+        import json
+        year=dt.date.today().year-1;rows=[dict(start=f'{y}-01-01',end=f'{y}-12-31',filed=f'{y+1}-02-01',form='10-K',val=100-i*10) for i,y in enumerate(range(year-4,year+1))]
+        raw={'cik':1,'facts':{'us-gaap':{'Revenues':{'units':{'USD':rows}}}}}
+        issuer={'tickers':['TEST'],'filings':{'recent':{'form':['10-K'],'filingDate':[rows[-1]['filed']],'reportDate':[rows[-1]['end']]}}}
+        member=dict(symbol='TEST',cik=1,sector='IT',industry='Software')
+        with patch.object(m.v,'fetch',side_effect=lambda url:json.dumps(raw if 'companyfacts' in url else issuer)),patch.object(m,'yahoo',return_value={}) as yahoo,patch.object(api,'market_fields',return_value=dict(fields={},sources=[],attempts=[])) as market,patch('vmi_filings.recover',return_value=dict(attempts=[],source=None)) as filing:
+            result=m.evidence(member,mode='moderate')
+            yahoo.assert_not_called();market.assert_not_called();filing.assert_not_called()
+            self.assertEqual(result['acquisition']['failedKeys'],['revenue'])
+            self.assertEqual(m.evaluate(member,result)['status'],'REJECTED')
+            m.evidence(member)
+            yahoo.assert_called_once();market.assert_called_once();filing.assert_called_once()
+
     def test_no_missing_balance_becomes_zero(self):
         result=m.calculate({'revenue':[dict(end='2025-12-31',val=100)],'income':[dict(end='2025-12-31',val=20)]})
         self.assertEqual(result['roe'],[]);self.assertEqual(result.get('ccc',[]),[])

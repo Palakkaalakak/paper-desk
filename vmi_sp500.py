@@ -302,7 +302,8 @@ def _company(ticker,mode='moderate'):
     member=next((r for r in members()['rows'] if r['symbol']==ticker),None)
     if not member: raise ValueError('Not an S&P 500 constituent')
     trace.event('statements',ticker+' / financial statements')
-    data=cached(('evidence',ticker),21600,lambda:evidence(member))
+    # A preset-specific early rejection must never poison full tracked research.
+    data=cached(('scanner-evidence',ticker,mode),21600,lambda:evidence(member,mode=mode))
     import copy
     import market
     from vmi_ib import available,valid_quote

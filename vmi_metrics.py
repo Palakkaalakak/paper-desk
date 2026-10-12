@@ -135,7 +135,28 @@ def derive_debt(series):
     return sorted(output,key=lambda r:r['end'])
 
 
-def evidence(member):
+def reported_rejections(member,series,issuer,mode):
+    """Stop only on complete, latest filed annual gates with no substitution.
+
+    Missing/stale history, earnings (operating-income fallback), ratios and
+    partial debt never cause this early stop. Full research acquisition remains
+    available separately from this preset-specific scanner optimization.
+    """
+    from vmi_sp500 import sector,MODES
+    if mode not in MODES: return []
+    recent=issuer.get('filings',{}).get('recent',{});today=dt.date.today().isoformat()
+    dates=[end for form,filed,end in zip(recent.get('form',[]),recent.get('filingDate',[]),recent.get('reportDate',[])) if form in ('10-K','10-K/A','20-F','20-F/A') and filed<=today and end and end<=today]
+    if not dates: return []
+    newest=max(dates);years=10 if mode=='conservative' else 5;failed=[]
+    for key in ('revenue','ocf'):
+        if key=='ocf' and sector(member)['bank']: continue
+        rows=window(series.get(key,[]),years)
+        if rows and rows[-1]['end']==newest and growth_test(rows,years) is False:
+            failed.append(key)
+    return failed
+
+
+def evidence(member,mode=None):
     import vmi_sp500 as api
     ticker,cik=member['symbol'],member['cik'];s={};current={};attempts=[];sources=[];issuer={};facts={}
     url=f'https://data.sec.gov/api/xbrl/companyfacts/CIK{cik:010d}.json';sub=f'https://data.sec.gov/submissions/CIK{cik:010d}.json'
@@ -164,6 +185,11 @@ def evidence(member):
             current['dilutedShares']=dict(diluted[-1],source=url,basis='Latest annual diluted weighted-average shares, not period-end ordinary shares')
         sources += [url,sub]
     except Exception as exc: attempts.append(dict(source=url,error=str(exc),fallback='Yahoo statements'))
+    early=reported_rejections(member,s,issuer,mode) if sources else []
+    if early:
+        import vmi_trace as trace
+        trace.event('early_rejection',ticker+' / latest filed annual '+', '.join(early))
+        return dict(symbol=ticker,cik=cik,shareClassCount=len(issuer.get('tickers',[])) or None,series=s,current=current,market={},marketFieldSources={},sources=sources,attempts=attempts,retrievedAt=int(time.time()*1000),policies=POLICY,acquisition=dict(stoppedAfter='SEC reported annual gates',preset=mode,failedKeys=early,deferred=['Yahoo statements','issuer filing recovery','market recovery']))
     try:
         alt=api.cached(('yahoo',ticker),21600,lambda:yahoo(ticker))
         for key,name in YAHOO.items():
