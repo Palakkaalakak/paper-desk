@@ -1,7 +1,26 @@
 'use strict';
 const test=require('node:test');
 const assert=require('node:assert/strict');
-const {create}=require('./vmi-scanner.js');
+const {create,encodeExport,decodeExport}=require('./vmi-scanner.js');
+
+test('audit export deduplicates without dropping any evidence or proposal',()=>{
+ const observation={end:'2025-12-31',val:123,tag:'Revenue',source:'https://issuer.example/'+ 'source-path/'.repeat(100),filed:'2026-02-01',unit:'USD'};
+ const evidence={series:{revenue:[observation]},current:{revenue:structuredClone(observation)}};
+ const research={scannerEvidence:structuredClone(evidence),flows:evidence.series,balances:evidence.current,valuationDecision:{method:'FCF',missing:['growth']}};
+ const content={kind:'paper-desk-vmi-sp500',version:1,rows:Array.from({length:20},(_,i)=>({symbol:'X'+i,result:{checks:[{status:'ACQUIRE',observations:[observation]}]},evidence,research,candidate:{automatic:structuredClone(research)}})),diagnostics:{requests:[]}};
+ const packed=encodeExport(content),restored=decodeExport(JSON.parse(JSON.stringify(packed)));
+ assert.deepEqual(restored,content);assert.equal(packed.version,2);
+ assert.ok(JSON.stringify(packed).length<JSON.stringify(content).length/4);
+ assert.strictEqual(decodeExport(content),content);
+});
+
+test('export codec preserves literal ref keys and rejects invalid reference graphs',()=>{
+ const content={kind:'paper-desk-vmi-sp500',version:1,rows:[JSON.parse('{"$ref":2,"__proto__":{"safe":true}}')]};
+ assert.deepEqual(decodeExport(encodeExport(content)),content);assert.equal({}.safe,undefined);
+ const invalid={kind:'paper-desk-vmi-sp500',version:2,encoding:'json-dag-v1',root:{$ref:0},nodes:[{loop:{$ref:0}}]};
+ assert.throws(()=>decodeExport(invalid),/Cyclic/);
+ invalid.root={$ref:99};assert.throws(()=>decodeExport(invalid),/Invalid/);
+});
 const universe=Array.from({length:503},(_,i)=>({symbol:'X'+i,name:'Issuer '+i,industry:'Software'}));
 const response=data=>({ok:true,json:async()=>data});
 
