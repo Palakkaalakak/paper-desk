@@ -186,7 +186,7 @@ class ConcurrencyTests(unittest.TestCase):
         import threading,time
         from concurrent.futures import ThreadPoolExecutor
         active=peak=0;lock=threading.Lock()
-        def load(ticker,mode):
+        def load(ticker,mode,supplement=False):
             nonlocal active,peak
             with lock: active+=1;peak=max(peak,active)
             time.sleep(.02)
@@ -195,5 +195,35 @@ class ConcurrencyTests(unittest.TestCase):
         with patch.object(api,'_company',side_effect=load),ThreadPoolExecutor(max_workers=12) as pool:
             self.assertEqual(list(pool.map(api.company,range(12))),list(range(12)))
         self.assertEqual(peak,4)
+
+class RefreshTests(unittest.TestCase):
+    def setUp(self): api._CACHE.clear()
+
+    def test_force_bypasses_cik_and_ticker_keys_without_mutating_other_workers(self):
+        keys=[('issuer',123),('filing-evidence',123),('evidence','TEST')]
+        for key in keys: api.cached(key,100,lambda:'old')
+        with api.fresh_sources(True):
+            for key in keys:
+                self.assertEqual(api.cached(key,100,lambda:'fresh'),'fresh')
+                self.assertEqual(api.cached(key,100,lambda:'unexpected'),'fresh')
+        for key in keys: self.assertEqual(api.cached(key,100,lambda:'unexpected'),'old')
+
+    def test_force_bypasses_old_inflight_download(self):
+        from concurrent.futures import Future
+        key=('issuer',123);pending=Future();api._INFLIGHT[key]=pending
+        try:
+            with api.fresh_sources(True): self.assertEqual(api.cached(key,100,lambda:'new'),'new')
+            self.assertIs(api._INFLIGHT[key],pending)
+        finally: api._INFLIGHT.pop(key,None)
+
+    def test_bulk_keeps_all_preset_decisions_and_force_bypasses_rows(self):
+        member=dict(symbol='TEST',industry='Software',sector='IT')
+        row=dict(symbol='TEST',fields={'ROE':'13'},source='fixture')
+        api.cached(('row','financial','TEST'),100,lambda:dict(row,fields={'ROE':'1'}))
+        with patch.object(api,'members',return_value={'rows':[member]}),patch.object(api,'bulk',return_value={'TEST':row}) as load:
+            out=api.batch('financial','TEST',defer=True,force=True)
+        load.assert_called_once();r=out['rows'][0]
+        self.assertTrue(r['screens']['conservative']['rejected'])
+        self.assertFalse(r['screens']['moderate']['rejected'])
 
 if __name__=='__main__': unittest.main()

@@ -1,5 +1,7 @@
 """Explicit S&P 500 scanner acquisition. Read-only, no IB/chart subscriptions."""
 from concurrent.futures import Future, ThreadPoolExecutor
+from contextvars import ContextVar
+from contextlib import contextmanager
 import csv
 import io
 import json
@@ -17,6 +19,18 @@ WIKI_URL='https://en.wikipedia.org/wiki/List_of_S%26P_500_companies'
 MODES=('conservative','moderate','optimistic')
 # Transient request cache, not historical storage. Never cache raw CompanyFacts blobs.
 _CACHE={}
+_FRESH=ContextVar('vmi_fresh_sources',default=None)
+
+
+@contextmanager
+def fresh_sources(enabled):
+    # Request-local memo bypasses both old values and in-flight old downloads,
+    # including CIK-keyed issuer/filing sources. Never invalidate another worker.
+    token=_FRESH.set({}) if enabled else None
+    try: yield
+    finally:
+        if token is not None: _FRESH.reset(token)
+
 _LOCK=threading.RLock()
 _INFLIGHT={}
 _FALLBACK_POOL=ThreadPoolExecutor(max_workers=4,thread_name_prefix='vmi-source')
@@ -44,6 +58,10 @@ def _cache_put(key,value):
 
 
 def cached(key, ttl, fn, *, failure_ttl=0):
+    fresh=_FRESH.get()
+    if fresh is not None:
+        if key not in fresh: fresh[key]=fn()
+        return fresh[key]
     now=time.monotonic()
     with _LOCK:
         hit=_CACHE.get(key)
@@ -106,7 +124,8 @@ def universe():
     raise ValueError('Constituent retrieval exhausted independent sources: '+json.dumps(attempts))
 
 
-def members(): return cached(('members',),3600,universe)
+def members(force=False):
+    with fresh_sources(force): return cached(('members',),3600,universe)
 
 
 class Screener(v.Tables):
@@ -204,9 +223,9 @@ def quick(member,fields,mode):
     return dict(rejected=bool(reasons),reasons=reasons)
 
 
-def batch(view,symbols,mode='moderate',defer=False):
+def batch(view,symbols,mode='moderate',defer=False,force=False):
     trace.event('worker_wait','Waiting for bulk slot')
-    with _BATCH_SLOTS:
+    with _BATCH_SLOTS, fresh_sources(force):
         return _batch(view,symbols,mode,defer)
 
 
@@ -219,7 +238,7 @@ def _batch(view,symbols,mode='moderate',defer=False):
         result={};attempts=[]
         with _LOCK:
             for ticker in tickers:
-                hit=_CACHE.get(('row',view,ticker))
+                hit=_CACHE.get(('row',view,ticker)) if _FRESH.get() is None else None
                 if hit and not isinstance(hit[1],_CachedFailure) and time.monotonic()-hit[0]<MARKET_TTL:
                     trace.event('cache_hit','row '+view+' '+ticker)
                     result[ticker]=hit[1]
@@ -241,13 +260,14 @@ def _batch(view,symbols,mode='moderate',defer=False):
             attempts+=errors
             if row: result[ticker]=row
         with _LOCK:
-            for ticker,row in result.items(): _cache_put(('row',view,ticker),row)
+            if _FRESH.get() is None:
+                for ticker,row in result.items(): _cache_put(('row',view,ticker),row)
         missing=[s for s in tickers if s not in result]
         trace.event('bulk_done',str(len(result))+' rows; '+str(len(missing))+' need recovery')
         return dict(rows=list(result.values()),missing=missing,deferred=missing if defer else [],attempts=attempts,retrievedAt=int(time.time()*1000))
     response=cached(('batch',view,tuple(tickers),defer),30 if defer else 900,load)
     # Preset results are not stored in the provider cache.
-    return dict(response,rows=[dict(row,screen=quick(membership[row['symbol']],row['fields'],mode)) for row in response['rows']])
+    return dict(response,rows=[dict(row,screen=quick(membership[row['symbol']],row['fields'],mode),screens={m:quick(membership[row['symbol']],row['fields'],m) for m in MODES}) for row in response['rows']])
 
 
 def recover_one(ticker,mode='moderate'):
@@ -289,18 +309,13 @@ def market_fields(ticker):
     return dict(fields=fields,sources=sources,attempts=attempts,fieldSources=provenance)
 
 
-def company(ticker,mode='moderate',force=False):
+def company(ticker,mode='moderate',force=False,supplement=False):
     trace.event('worker_wait','Waiting for detailed company slot')
-    with _COMPANY_SLOTS:
-        if force:
-            ticker=v.symbol(ticker)
-            with _LOCK:
-                for key in list(_CACHE):
-                    if ticker in key or key[0]=='batch': _CACHE.pop(key,None)
-        return _company(ticker,mode)
+    with _COMPANY_SLOTS, fresh_sources(force):
+        return _company(ticker,mode,supplement=supplement)
 
 
-def _company(ticker,mode='moderate'):
+def _company(ticker,mode='moderate',supplement=False):
     from vmi_metrics import evidence,evaluate
     ticker=v.symbol(ticker)
     if mode not in MODES: raise ValueError('Invalid preset')
@@ -308,7 +323,7 @@ def _company(ticker,mode='moderate'):
     if not member: raise ValueError('Not an S&P 500 constituent')
     trace.event('statements',ticker+' / financial statements')
     # Raw evidence is independent of the selected planner and preset.
-    data=cached(('evidence',ticker),21600,lambda:evidence(member))
+    data=evidence(member) if supplement else cached(('evidence',ticker),21600,lambda:evidence(member))
     import copy
     import market
     from vmi_ib import available,valid_quote
@@ -350,7 +365,7 @@ def _company(ticker,mode='moderate'):
         evaluations[preset]=other
     trace.event('valuation',ticker+' / '+result['status'])
     research=research_payload(member,data) if any(r['status']=='QUALIFIED' for r in evaluations.values()) else None
-    return dict(member=member,evidence=data,result=result,evaluations=evaluations,research=research,cacheVersion=2,collectedAt=data.get('retrievedAt',int(time.time()*1000)))
+    return dict(member=member,evidence=data,result=result,evaluations=evaluations,research=research,cacheVersion=2,acquiredModes=[mode],collectedAt=data.get('retrievedAt',int(time.time()*1000)))
 
 
 def peer_check(member,data):

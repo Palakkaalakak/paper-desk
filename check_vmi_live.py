@@ -49,18 +49,8 @@ def main():
                 except Exception as exc:
                     recovery.update(r['symbol'] for r in group);emit(stage=view,error=str(exc))
         emit(stage=view+' summary',seconds=round(time.monotonic()-at,3),rejected=len(rejected),recovery=len(recovery-rejected))
-    candidates=sorted(recovery-rejected);at=time.monotonic()
-    with ThreadPoolExecutor(max_workers=4) as pool:
-        futures={pool.submit(measured,'recovery '+s,lambda s=s:api.recover_one(s,args.mode)):s for s in candidates}
-        for future in as_completed(futures):
-            ticker=futures[future]
-            try:
-                data=future.result()
-                for row in data['rows']:
-                    if row['screen']['rejected']: rejected.add(row['symbol'])
-                emit(stage='recovery',symbol=ticker,missing=data['missing'])
-            except Exception as exc: emit(stage='recovery',symbol=ticker,error=str(exc))
-    emit(stage='recovery summary',seconds=round(time.monotonic()-at,3),visited=len(candidates),rejected=len(rejected))
+    # Missing broad fields go straight to independent dated statements; do not
+    # hold all companies behind a separate Yahoo quote-page recovery sweep.
     outcomes=Counter(REJECTED=len(rejected));pending=Counter();at=time.monotonic()
     candidates=[r for r in members if r['symbol'] not in rejected]
     with ThreadPoolExecutor(max_workers=4) as pool:
