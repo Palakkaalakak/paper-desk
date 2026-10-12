@@ -190,6 +190,23 @@ def evidence(member,mode=None):
         import vmi_trace as trace
         trace.event('early_rejection',ticker+' / latest filed annual '+', '.join(early))
         return dict(symbol=ticker,cik=cik,shareClassCount=len(issuer.get('tickers',[])) or None,series=s,current=current,market={},marketFieldSources={},sources=sources,attempts=attempts,retrievedAt=int(time.time()*1000),policies=POLICY,acquisition=dict(stoppedAfter='SEC reported annual gates',preset=mode,failedKeys=early,deferred=['Yahoo statements','issuer filing recovery','market recovery']))
+    # Independent HTML tables supply annual history when API coverage is short.
+    s['debt']=derive_debt(s)
+    required=('revenue','income','ocf','capex','equity','debt','cash','operatingIncome','tax','pretax','ar')
+    if any(window([r for r in s.get(k,[]) if k!='debt' or r.get('completeDebt',True)],10) is None for k in required):
+        try:
+            from vmi_web import statements
+            scraped=api.cached(('html-statements',ticker),21600,lambda:statements(ticker,issuer.get('exchanges',[])))
+            for key,rows in scraped['series'].items():
+                primary=s.get(key,[])
+                if key=='debt': primary=[r for r in primary if r.get('completeDebt',True)]
+                s[key]=merged(primary,rows)
+                if key in BAL or key=='debt':
+                    obs=latest(scraped['quarterly'].get(key,[])+rows)
+                    if obs and (key not in current or obs['end']>current[key]['end']): current[key]=obs
+            for key in ('income','ocf','revenue'): s['quarterly_'+key]=scraped['quarterly'].get(key,[])
+            sources.append(scraped['source']);attempts+=scraped.get('attempts',[])
+        except Exception as exc: attempts.append(dict(source='MarketBeat HTML statements',error=str(exc)))
     try:
         alt=api.cached(('yahoo',ticker),21600,lambda:yahoo(ticker))
         for key,name in YAHOO.items():
@@ -198,7 +215,7 @@ def evidence(member,mode=None):
             if key in BAL or key in ('debt','dilutedShares'):
                 obs=latest(alt.get('quarterly'+name,[])+rows)
                 if obs and (key not in current or obs['end']>current[key]['end']): current[key]=obs
-        for key in ('income','ocf','revenue'): s['quarterly_'+key]=alt.get('quarterly'+YAHOO[key],[])
+        for key in ('income','ocf','revenue'): s['quarterly_'+key]=merged(s.get('quarterly_'+key,[]),alt.get('quarterly'+YAHOO[key],[]))
         sources+=sorted({r['source'] for rows in alt.values() for r in rows})
     except Exception as exc: attempts.append(dict(source='Yahoo financial timeseries',error=str(exc),fallback='SEC reported and derived facts'))
     # Existing dated components may already establish total debt; derive first.

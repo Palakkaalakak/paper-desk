@@ -341,7 +341,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 import vmi_sp500
                 import vmi_trace
                 with vmi_trace.task(one('work'), 'Detailed '+one('symbol','')):
-                    out = vmi_sp500.company(one('symbol',''),one('mode','moderate'))
+                    out = vmi_sp500.company(one('symbol',''),one('mode','moderate'),force=one('force')=='1')
                 if one('work'): out = dict(out,diagnostics=vmi_trace.status(one('work')))
             elif kind == 'vmi_scan':
                 import vmi_data

@@ -289,9 +289,14 @@ def market_fields(ticker):
     return dict(fields=fields,sources=sources,attempts=attempts,fieldSources=provenance)
 
 
-def company(ticker,mode='moderate'):
+def company(ticker,mode='moderate',force=False):
     trace.event('worker_wait','Waiting for detailed company slot')
     with _COMPANY_SLOTS:
+        if force:
+            ticker=v.symbol(ticker)
+            with _LOCK:
+                for key in list(_CACHE):
+                    if ticker in key or key[0]=='batch': _CACHE.pop(key,None)
         return _company(ticker,mode)
 
 
@@ -302,8 +307,8 @@ def _company(ticker,mode='moderate'):
     member=next((r for r in members()['rows'] if r['symbol']==ticker),None)
     if not member: raise ValueError('Not an S&P 500 constituent')
     trace.event('statements',ticker+' / financial statements')
-    # A preset-specific early rejection must never poison full tracked research.
-    data=cached(('scanner-evidence',ticker,mode),21600,lambda:evidence(member,mode=mode))
+    # Raw evidence is independent of the selected planner and preset.
+    data=cached(('evidence',ticker),21600,lambda:evidence(member))
     import copy
     import market
     from vmi_ib import available,valid_quote
@@ -331,8 +336,21 @@ def _company(ticker,mode='moderate'):
         result['failures']=[c['label'] for c in result['checks'] if c['status']=='FAIL']
         result['pending']=[c['key'] for c in result['checks'] if c['status']=='ACQUIRE']
         result['status']='REJECTED' if result['failures'] else 'ACQUIRING' if result['pending'] else 'QUALIFIED'
+    evaluations={mode:result}
+    peer=next((c for c in result.get('checks',[]) if c['key']=='peers' and c['status']!='ACQUIRE'),None)
+    for preset in MODES:
+        if preset==mode: continue
+        other=evaluate(member,data,preset)
+        if not other['failures']:
+            if peer is None: peer=peer_check(member,data)
+            other['checks']=[peer if c['key']=='peers' else c for c in other['checks']]
+            other['failures']=[c['label'] for c in other['checks'] if c['status']=='FAIL']
+            other['pending']=[c['key'] for c in other['checks'] if c['status']=='ACQUIRE']
+            other['status']='REJECTED' if other['failures'] else 'ACQUIRING' if other['pending'] else 'QUALIFIED'
+        evaluations[preset]=other
     trace.event('valuation',ticker+' / '+result['status'])
-    return dict(member=member,evidence=data,result=result,research=research_payload(member,data) if result['status']=='QUALIFIED' else None)
+    research=research_payload(member,data) if any(r['status']=='QUALIFIED' for r in evaluations.values()) else None
+    return dict(member=member,evidence=data,result=result,evaluations=evaluations,research=research,cacheVersion=2,collectedAt=data.get('retrievedAt',int(time.time()*1000)))
 
 
 def peer_check(member,data):
