@@ -50,6 +50,30 @@ class ScannerTests(unittest.TestCase):
         result=m.calculate(s)
         for key in ('roic','gearing','debtEbitda'): self.assertEqual(len(result[key]),1,key)
 
+    def test_debt_recovery_upgrades_incomplete_not_reported_totals(self):
+        s={'longDebt':[dict(end='2025-12-31',val=40)]}
+        s['debt']=m.derive_debt(s);self.assertFalse(s['debt'][0]['completeDebt'])
+        s['shortDebt']=[dict(end='2025-12-31',val=10)]
+        upgraded=m.derive_debt(s);self.assertEqual(upgraded[0]['val'],50);self.assertTrue(upgraded[0]['completeDebt'])
+        reported=dict(end='2025-12-31',val=60,source='reported total')
+        s['debt']=[reported];self.assertEqual(m.derive_debt(s),[reported])
+
+    def test_derive_before_filing_but_incomplete_debt_still_recovers(self):
+        import json
+        member=dict(symbol='TEST',cik=1,industry='Software',sector='IT');year=dt.date.today().year-1
+        facts={}
+        for tag,flow,val in [('InterestExpenseNonoperating',True,2),('PaymentsToAcquirePropertyPlantAndEquipment',True,5),('LongTermDebt',False,40),('ShortTermBorrowings',False,10)]:
+            rows=[]
+            for y in range(year-4,year+1):
+                row=dict(end=f'{y}-12-31',filed=f'{y+1}-02-01',val=val,form='10-K')
+                if flow: row['start']=f'{y}-01-01'
+                rows.append(row)
+            facts[tag]={'units':{'USD':rows}}
+        def fetch(url): return json.dumps({'cik':1,'facts':{'us-gaap':facts}} if 'companyfacts' in url else {'tickers':['TEST']})
+        with patch.object(m.v,'fetch',side_effect=fetch),patch.object(m,'yahoo',return_value={}),patch.object(api,'market_fields',return_value=dict(fields={},sources=[],attempts=[])),patch('vmi_filings.recover',return_value=dict(attempts=[],source=None)) as recover:
+            m.evidence(member);recover.assert_not_called()
+            del facts['ShortTermBorrowings'];m.evidence(member);recover.assert_called_once()
+
     def test_buyback_exception_requires_statement_support(self):
         year=dt.date.today().year-1;dates=[f'{year-4+i}-12-31' for i in range(5)]
         s={key:[dict(end=end,val=100+i*10) for i,end in enumerate(dates)] for key in ('income','fcf')}

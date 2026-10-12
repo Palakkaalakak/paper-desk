@@ -112,10 +112,12 @@ def yahoo(ticker):
 
 
 def derive_debt(series):
+    # Re-derive incomplete estimates when recovery supplies missing components.
     output=list(series.get('debt',[]))
     dates=sorted({r['end'] for k in ('longDebt','debtNoncurrent','debtCurrent') for r in series.get(k,[])})
     for end in dates:
-        if match(output,end): continue
+        existing=match(output,end)
+        if existing and existing.get('completeDebt',True): continue
         long=match(series.get('longDebt',[]),end);non=match(series.get('debtNoncurrent',[]),end);cur=match(series.get('debtCurrent',[]),end)
         short=match(series.get('shortDebt',[]),end);longcur=match(series.get('longCurrent',[]),end)
         if non and cur: inputs=[non,cur];method='Noncurrent debt + total current debt'
@@ -128,6 +130,7 @@ def derive_debt(series):
         else: continue
         row=calc(end,sum(r['val'] for r in inputs),method,inputs)
         row['completeDebt']=len(inputs)>1
+        if existing: output.remove(existing)
         output.append(row)
     return sorted(output,key=lambda r:r['end'])
 
@@ -172,7 +175,10 @@ def evidence(member):
         for key in ('income','ocf','revenue'): s['quarterly_'+key]=alt.get('quarterly'+YAHOO[key],[])
         sources+=sorted({r['source'] for rows in alt.values() for r in rows})
     except Exception as exc: attempts.append(dict(source='Yahoo financial timeseries',error=str(exc),fallback='SEC reported and derived facts'))
-    needs_filing=api.sector(member)['bank'] or any(len(s.get(k,[]))<5 for k in ('interest','capex','debt'))
+    # Existing dated components may already establish total debt; derive first.
+    s['debt']=derive_debt(s)
+    debt_history=[r for r in s['debt'] if r.get('completeDebt',True)]
+    needs_filing=api.sector(member)['bank'] or window(debt_history) is None or any(window(s.get(k,[])) is None for k in ('interest','capex'))
     if needs_filing and issuer:
         try:
             from vmi_filings import recover
@@ -210,7 +216,7 @@ def evidence(member):
         if r: current['debt']=r
     shot=api.market_fields(ticker);sources+=shot['sources'];attempts+=shot['attempts']
     for rows in s.values(): rows.sort(key=lambda r:r['end'])
-    return dict(symbol=ticker,cik=cik,shareClassCount=len(issuer.get('tickers',[])) or None,series=s,current=current,market=shot['fields'],sources=sources,attempts=attempts,retrievedAt=int(time.time()*1000),policies=POLICY)
+    return dict(symbol=ticker,cik=cik,shareClassCount=len(issuer.get('tickers',[])) or None,series=s,current=current,market=shot['fields'],marketFieldSources=shot.get('fieldSources',{}),sources=sources,attempts=attempts,retrievedAt=int(time.time()*1000),policies=POLICY)
 
 
 def window(rows,n=5):
