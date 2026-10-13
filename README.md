@@ -1,6 +1,51 @@
 # Paper Desk — IB Gateway paper-trading workstation
 
-## Latest verified checkpoint — 2026-10-13
+## Current verification and remaining evidence limits — 2026-10-13
+
+This section supersedes the historical checkpoints below. The application remains the existing local Python Paper Desk at `http://localhost:8765`. No Cloudflare migration, funded research portfolios, broker order submission, or account-storage changes were introduced.
+
+### Completed and verified repairs
+
+- Browser-compatible, size-bounded HTTP now acquires actual Finviz forecast pages and SEC Archives that rejected the previous transport. HTTP errors, pacing, source identity checks and acquisition diagnostics remain enforced; public-source availability is not guaranteed.
+- Asset managers in GICS **Asset Management & Custody Banks** no longer incorrectly receive bank-only exemptions. The known custody-bank issuers retain them.
+- Capital recovery distinguishes actual parent standardized CET1 from subsidiaries, minimum requirements and advanced-approach ratios. Live filed observations verified during development: JPM **14.2%**, WFC **10.26%**, Citigroup **12.78%**. Citigroup's displayed ratio is reconciled to the same table's capital and risk-weighted assets.
+- JPM's loan-risk ratio is derived from its dated consumer and wholesale loan tables, requiring the filing's explicit nonperforming-assets definition. The verified June 30, 2026 result was **0.6070814062%**. Credit cards remain in total loans; derivatives, foreclosed assets and lending commitments are excluded. Missing credit-card observations are not silently treated as zero.
+- Explicit GAAP nonperforming-loans/all-loans facts now support narrowly allowed parent/performance contexts. A WFC-only table adapter requires its explicit loan-only NPA definition, dates and reconciled commercial/consumer totals. These newest adapters have positive/negative tests; a subsequent live WFC/PNC retry encountered SEC HTTP 429 and did **not** establish a fresh successful integrated result.
+- Singleton GICS groups acquire labelled Finviz comparison peers, restricted to existing S&P constituents and distinct issuers. The fallback can cross GICS sectors and records its selection source. It never changes or prefilters the scan universe. This is a disclosed comparison proxy, not an exhaustive direct-competitor map.
+- A conflicting scraped observation is quarantined without discarding the issuer's other validated financial statements. Both conflicting values and the reason are retained; neither conflicting value passes a gate. Filed tax benefits now remain in the explicitly unadjusted ROIC formula instead of being mislabeled missing data.
+- Existing seven-day evidence storage, original collection-based expiry, protected supplementation, audit alternatives, preset replay, account isolation and no-submit stock/call handoffs remain in place.
+
+### Completed whole-universe measurement
+
+The uninterrupted scan of commit `59b51aa` visited **503 listings**, including share classes, in **271.282 seconds (4 minutes 31 seconds)**. It finished 282 names in cheap stages and 221 detailed reviews, with **492 rejected, 3 qualified and 8 unresolved**. Diagnostics recorded 967 download attempts, 963 received responses and 4 HTTP errors. This measures the research scan, not live IB entitlements or execution quotes. There is no ten-minute abandonment cutoff.
+
+The full dated JSONL audit is preserved at:
+https://www.genspark.ai/api/files/s/8trnXPNN
+
+The audit deliberately distinguishes `scanFinished` from `decisionsResolved` and `complete`. It also counts missing detailed criteria in already-rejected companies, separately from 192 intentionally skipped final peer checks. **A sourced rejection is not a claim of complete financial-data coverage.** The latest WFC/explicit-NPL adapter was added after this whole-universe run; no second post-adapter whole-universe timing is claimed.
+
+Remaining unresolved names in that run:
+
+| Listing | Unresolved evidence/calculation |
+| --- | --- |
+| ACGL | Operating-margin fallback after the net-margin test |
+| AON | Five comparable ROE years; observed historical negative equity makes some annual ratios undefined |
+| CINF | Operating-income fallback after the net-income test |
+| JPM | Operating-margin fallback after the net-margin test |
+| NFLX | Aligned five-year receivables observations |
+| SNDK | Required standalone multi-year statement/ratio history |
+| VLTO | Required multi-year ROE, ROIC and receivables history |
+| VYLR | Multi-year financial evidence, five-year forecast and peer comparison; no recent 10-K/10-Q in the acquired metadata |
+
+These remain **unqualified**, not assumed passes or fabricated evidence. Required standalone history cannot be silently replaced with a predecessor's unrelated consolidated accounts. Other rejected companies still have incomplete criteria in the audit. Comprehensive acquisition coverage is therefore **not finished**, despite the completed run and faster runtime.
+
+### Final regression and use
+
+At code commit `bb20a68`, **187 Python tests and 150 JavaScript tests passed**. The real Chromium full-app workflow also passed with isolated mocked market data: explicit 503-listing scan, IndexedDB restoration/preset/planner reuse, refresh/cache deletion, stock and covered-call handoffs without submission, historical trade preview/recording, backup, persistence and mobile layout. Python tests additionally exercise the authenticated supplementary endpoint; JavaScript tests cover partial supplementation and original-expiry preservation. No live broker order or user account was used.
+
+Pull `main`, run `python -m pip install -r requirements.txt`, restart your existing `serve.py`, and reload `http://localhost:8765`. Use **Rescan anyway** once to acquire these repaired sources rather than reuse earlier cached verdicts. This does not alter `localStorage.paperAccount`. Subsequent ordinary scans and research-profile/preset changes reuse the seven-day evidence cache. No production deployment was performed.
+
+## Historical verified checkpoint — 2026-10-13
 
 - **174 Python and 150 JavaScript tests passed** at code commit `52b9f2b`; embedded `paper_local.html` is rebuilt. These include financial acquisition, security, scanner persistence, historical accounting, handoffs, GUNS and Trading. The earlier Chromium workflow pass predates these latest changes; it was not rerun for this checkpoint.
 - Supplemental scans now send browser-held evidence to authenticated, same-origin protected `POST /data/vmi_sp500_supplement?work=<id>`. It requires JSON and `X-Paper-Desk-Research: 1`, an at-most-8-MiB body, matching ticker/CIK, supported schema, finite observations and collection dates within seven days. This route performs research only, not brokerage operations or account writes. It never fetches URLs supplied in the request body or seeds browser data into shared source caches.
