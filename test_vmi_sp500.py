@@ -190,6 +190,31 @@ class SupplementMergeTests(unittest.TestCase):
         new=dict(series={'debt':[dict(row,val=80,completeDebt=False)]},current={},retrievedAt=2000)
         self.assertEqual(m.merge_evidence(old,new)['series']['debt'][0],row)
 
+class SupplementValidationTests(unittest.TestCase):
+    def test_validated_merge_recomputes_presets_and_does_not_seed_shared_cache(self):
+        import time,copy
+        api._CACHE.clear();stamp=int(time.time()*1000)-1000
+        member=dict(symbol='TEST',cik=1,industry='Software',sector='IT')
+        row=dict(end='2025-12-31',val=100,source='prior')
+        old=dict(symbol='TEST',cik=1,retrievedAt=stamp,series={'income':[row]},current={},market={},sources=[],attempts=[])
+        prior=dict(cacheVersion=2,member=member,collectedAt=stamp,evidence=old)
+        self.assertEqual(api.validate_prior(prior,member),old)
+        for key,value in [('collectedAt',0),('cacheVersion',99),('member',dict(symbol='OTHER',cik=1))]:
+            bad=copy.deepcopy(prior);bad[key]=value
+            with self.assertRaises(ValueError):api.validate_prior(bad,member)
+        bad=copy.deepcopy(prior);bad['evidence']['series']['income'][0]['val']=float('nan')
+        with self.assertRaises(ValueError):api.validate_prior(bad,member)
+        new=dict(old,series={},retrievedAt=stamp+500);seen=[]
+        def evaluate(member,data,mode):
+            seen.append((mode,data['series']['income'][0]['val']))
+            return dict(preset=mode,status='REJECTED',failures=['fixture'],pending=[],checks=[])
+        with patch.object(api,'members',return_value={'rows':[member]}),patch.object(m,'evidence',return_value=new),patch.object(m,'evaluate',side_effect=evaluate):
+            result=api.company('TEST',supplement=True,prior=prior)
+        self.assertEqual({mode for mode,val in seen},set(api.MODES))
+        self.assertTrue(all(val==100 for mode,val in seen))
+        self.assertEqual(result['collectedAt'],stamp)
+        self.assertNotIn(('evidence','TEST'),api._CACHE)
+
 class ConcurrencyTests(unittest.TestCase):
     def setUp(self): api._CACHE.clear()
 

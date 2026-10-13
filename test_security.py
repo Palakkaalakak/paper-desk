@@ -60,6 +60,22 @@ class ServerSecurityTests(unittest.TestCase):
     def authed(self, **extra):
         return {'Cookie': 'pd_token=test-access-token', **extra}
 
+    def test_research_supplement_auth_origin_body_and_no_broker_proxy(self):
+        path='/data/vmi_sp500_supplement?work=research-test'
+        headers=self.authed(**{'Content-Type':'application/json','X-Paper-Desk-Research':'1'})
+        body=json.dumps({'symbol':'TEST','mode':'moderate','prior':{'evidence':{}}})
+        with patch('vmi_sp500.company',return_value={'collectedAt':123}) as company:
+            for hs in [{},self.authed(),{**headers,'Origin':'https://evil.example'}]:
+                self.assertEqual(self.request('POST',path,hs,body)[0],403)
+            company.assert_not_called()
+            self.assertEqual(self.request('POST',path,headers,'{"x":NaN}')[0],400)
+            self.assertEqual(self.request('POST',path,headers,'{}')[0],400)
+            self.assertEqual(self.request('POST',path,{**headers,'Content-Length':str(9*1024*1024)},'{}')[0],413)
+            status,_,out=self.request('POST',path,headers,body)
+            self.assertEqual(status,200);self.assertEqual(json.loads(out)['collectedAt'],123)
+            company.assert_called_once_with('TEST','moderate',supplement=True,prior={'evidence':{}})
+        self.urlopen.assert_not_called()
+
     def test_fmp_settings_requires_auth_and_local_form_headers(self):
         headers=self.authed(**{'Content-Type':'application/json','X-Paper-Desk-Settings':'1'})
         body=json.dumps({'key':'fixture_key_not_real'})

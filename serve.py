@@ -432,6 +432,31 @@ class Handler(http.server.BaseHTTPRequestHandler):
         except OSError: return self._reject(500,'Cannot write local .env settings; check folder permissions')
         return self._send(json.dumps({'configured':True,'message':'Saved on this Paper Desk server; active immediately. Provider coverage still applies.'}),'application/json')
 
+    def _vmi_supplement(self):
+        # Research-only: no brokerage proxy, account writes or URL downloads from the body.
+        if self.headers.get('X-Paper-Desk-Research')!='1' or self.headers.get('Content-Type','').split(';')[0]!='application/json':
+            return self._reject(403,'Use the Paper Desk research scanner')
+        lengths=self.headers.get_all('Content-Length') or []
+        if self.headers.get('Transfer-Encoding') or len(lengths)!=1 or not lengths[0].isdigit() or len(lengths[0])>10:
+            return self._reject(400,'Invalid research payload length')
+        length=int(lengths[0])
+        if not 0<length<=8*1024*1024: return self._reject(413,'Research payload too large or empty')
+        try:
+            def invalid(value): raise ValueError('Nonfinite JSON')
+            payload=json.loads(self.rfile.read(length),parse_constant=invalid)
+            if not isinstance(payload,dict) or not isinstance(payload.get('prior'),dict): raise ValueError('Expected prior evidence object')
+            import vmi_sp500, vmi_trace
+            work=(urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query).get('work') or [''])[0]
+            if not re.fullmatch(r'[A-Za-z0-9_-]{1,120}',work): raise ValueError('Invalid work ID')
+            with vmi_trace.task(work,'supplementary financial evidence'):
+                out=vmi_sp500.company(payload.get('symbol',''),payload.get('mode','moderate'),supplement=True,prior=payload['prior'])
+            out['diagnostics']=vmi_trace.status(work)
+        except (ValueError,TypeError,KeyError,UnicodeError,RecursionError) as exc:
+            return self._reject(400,'Invalid research evidence: '+str(exc))
+        except Exception:
+            return self._reject(502,'Supplementary acquisition failed; previous browser evidence retained')
+        return self._send(json.dumps(out,allow_nan=False),'application/json')
+
     def _subscriptions(self):
         if self.headers.get('Transfer-Encoding'):
             return self._reject(400, 'Chunked bodies are not supported')
@@ -600,6 +625,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return self._configure_fmp()
         if self.path.split('?')[0] == '/data/subscriptions':
             return self._subscriptions()
+        if self.path.split('?')[0] == '/data/vmi_sp500_supplement':
+            return self._vmi_supplement()
         if self.path.startswith('/api/'):
             return self._proxy('POST')
         self._reject(404, 'Unknown endpoint')

@@ -318,21 +318,57 @@ def market_fields(ticker):
     return dict(fields=fields,sources=sources,attempts=attempts,fieldSources=provenance)
 
 
-def company(ticker,mode='moderate',force=False,supplement=False):
+def validate_prior(prior, member):
+    """Validate browser-held inputs; never trust cached decisions or fetch its URLs."""
+    import datetime as dt
+    import math
+    if not isinstance(prior, dict) or prior.get('cacheVersion') != 2: raise ValueError('Unsupported cache payload')
+    identity = prior.get('member', {})
+    if not isinstance(identity,dict) or identity.get('symbol') != member['symbol'] or identity.get('cik') != member['cik']: raise ValueError('Supplementary issuer mismatch')
+    now=time.time()*1000; data=prior.get('evidence')
+    if not isinstance(data,dict) or data.get('symbol') != member['symbol'] or data.get('cik') != member['cik']: raise ValueError('Supplementary evidence identity mismatch')
+    for stamp in (prior.get('collectedAt'),data.get('retrievedAt')):
+        if type(stamp) not in (int,float) or not math.isfinite(stamp) or not 0<=now-stamp<7*86400000: raise ValueError('Expired or future supplementary evidence')
+    for key in ('series','current','market','marketFieldSources'):
+        if not isinstance(data.get(key,{}),dict): raise ValueError('Invalid supplementary '+key)
+    for key in ('sources','attempts','observationAlternatives'):
+        if not isinstance(data.get(key,[]),list): raise ValueError('Invalid supplementary '+key)
+    if any(not isinstance(url,str) for url in data.get('sources',[])): raise ValueError('Invalid source labels')
+    def observation(row):
+        if not isinstance(row,dict) or type(row.get('val')) not in (int,float) or not math.isfinite(row['val']): raise ValueError('Invalid observation')
+        try: end=dt.date.fromisoformat(row['end'])
+        except (KeyError,TypeError,ValueError): raise ValueError('Invalid observation date')
+        if end>dt.date.today(): raise ValueError('Future observation')
+    if len(data.get('series',{}))>150: raise ValueError('Too many series')
+    for rows in data.get('series',{}).values():
+        if not isinstance(rows,list) or len(rows)>120: raise ValueError('Invalid series')
+        for row in rows: observation(row)
+    for row in data.get('current',{}).values(): observation(row)
+    return data
+
+
+def company(ticker,mode='moderate',force=False,supplement=False,prior=None):
     trace.event('worker_wait','Waiting for detailed company slot')
     with _COMPANY_SLOTS, fresh_sources(force):
+        if prior is not None:
+            if force or not supplement: raise ValueError('Prior evidence requires supplementation')
+            return _company(ticker,mode,supplement=True,prior=prior)
         return _company(ticker,mode,supplement=supplement)
 
 
-def _company(ticker,mode='moderate',supplement=False):
-    from vmi_metrics import evidence,evaluate
+def _company(ticker,mode='moderate',supplement=False,prior=None):
+    from vmi_metrics import evidence,evaluate,merge_evidence
     ticker=v.symbol(ticker)
     if mode not in MODES: raise ValueError('Invalid preset')
     member=next((r for r in members()['rows'] if r['symbol']==ticker),None)
     if not member: raise ValueError('Not an S&P 500 constituent')
+    previous=validate_prior(prior,member) if prior is not None else None
     trace.event('statements',ticker+' / financial statements')
-    # Raw evidence is independent of the selected planner and preset.
+    # Browser-held observations are request-local, never put in shared caches.
     data=evidence(member) if supplement else cached(('evidence',ticker),21600,lambda:evidence(member))
+    if previous is not None:
+        data=merge_evidence(previous,data)
+        data['retrievedAt']=min(data['retrievedAt'],prior['collectedAt'])
     import copy
     import market
     from vmi_ib import available,valid_quote
