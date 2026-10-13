@@ -169,6 +169,27 @@ class StatementFlowTests(unittest.TestCase):
         self.assertEqual(result['series']['quarterly_income'],self.quarters)
         self.assertEqual(result['series']['income'],self.annual)
 
+class SupplementMergeTests(unittest.TestCase):
+    def test_partial_failure_preserves_inputs_dates_and_conflicts(self):
+        import copy
+        row=dict(end='2025-12-31',val=100,source='old',unit='USD')
+        old=dict(series={'income':[row]},current={'income':row},market={'EPS next 5Y':'12%'},marketFieldSources={'EPS next 5Y':{'source':'old'}},sources=['old'],attempts=[],retrievedAt=1000)
+        snapshot=copy.deepcopy(old)
+        new=dict(series={'income':[dict(row,val=110,source='new')],'quarterly_income':[dict(end='2026-06-30',val=40)]},current={},market={'EPS next 5Y':'-'},sources=['new'],attempts=[{'error':'partial'}],retrievedAt=2000)
+        result=m.merge_evidence(old,new)
+        self.assertEqual(result['series']['income'][0]['val'],110)
+        self.assertEqual(result['current']['income']['val'],100)
+        self.assertEqual(result['market']['EPS next 5Y'],'12%')
+        self.assertEqual(result['retrievedAt'],1000)
+        self.assertEqual(result['observationAlternatives'][0]['alternative']['val'],100)
+        self.assertEqual(old,snapshot)
+        self.assertEqual(len(result['series']['quarterly_income']),1)
+    def test_complete_debt_never_regresses(self):
+        row=dict(end='2025-12-31',val=100,completeDebt=True)
+        old=dict(series={'debt':[row]},current={'debt':row},retrievedAt=1000)
+        new=dict(series={'debt':[dict(row,val=80,completeDebt=False)]},current={},retrievedAt=2000)
+        self.assertEqual(m.merge_evidence(old,new)['series']['debt'][0],row)
+
 class ConcurrencyTests(unittest.TestCase):
     def setUp(self): api._CACHE.clear()
 

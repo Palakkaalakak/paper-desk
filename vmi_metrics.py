@@ -185,6 +185,48 @@ def reported_rejections(member,series,issuer,mode):
     return failed
 
 
+def merge_evidence(prior, incoming):
+    """Preserve observations on partial failure; re-evaluate combined inputs later."""
+    import copy
+    result = copy.deepcopy(incoming)
+    alternatives = list(prior.get('observationAlternatives', []))
+    def choose(old, new, key):
+        if not old: return new
+        if not new: return old
+        old_rank = (old.get('end',''), old.get('filed',''), old.get('retrievedAt',0))
+        new_rank = (new.get('end',''), new.get('filed',''), new.get('retrievedAt',0))
+        chosen = new if new_rank >= old_rank else old
+        if key == 'debt' and old.get('completeDebt', True) and not new.get('completeDebt', True): chosen = old
+        if old != new:
+            alternatives.append(dict(metric=key, preferred=chosen, alternative=old if chosen is new else new,
+                                     reason='Supplemental acquisition; prior observation retained'))
+        return chosen
+    result['series'] = {}
+    for key in set(prior.get('series', {})) | set(incoming.get('series', {})):
+        rows = list(prior.get('series', {}).get(key, []))
+        for row in incoming.get('series', {}).get(key, []):
+            old = match(rows, row['end'])
+            selected = choose(old, row, key)
+            if old: rows.remove(old)
+            rows.append(selected)
+        result['series'][key] = sorted(rows, key=lambda r:r['end'])
+    result['current'] = {key:choose(prior.get('current', {}).get(key), incoming.get('current', {}).get(key), key)
+                         for key in set(prior.get('current', {})) | set(incoming.get('current', {}))}
+    result['market'] = dict(prior.get('market', {}))
+    result['marketFieldSources'] = dict(prior.get('marketFieldSources', {}))
+    for key,value in incoming.get('market', {}).items():
+        if value is not None and str(value).strip() not in ('','-','—','N/A'):
+            result['market'][key] = value
+            if key in incoming.get('marketFieldSources', {}): result['marketFieldSources'][key] = incoming['marketFieldSources'][key]
+    result['sources'] = list(dict.fromkeys(prior.get('sources', []) + incoming.get('sources', [])))
+    result['attempts'] = prior.get('attempts', []) + incoming.get('attempts', [])
+    result['observationAlternatives'] = alternatives
+    result['retrievedAt'] = min(prior['retrievedAt'], incoming['retrievedAt'])
+    result['supplementedAt'] = incoming['retrievedAt']
+    if not result.get('shareClassCount'): result['shareClassCount'] = prior.get('shareClassCount')
+    return result
+
+
 def evidence(member,mode=None):
     import vmi_sp500 as api
     ticker,cik=member['symbol'],member['cik'];s={};current={};attempts=[];sources=[];issuer={};facts={}
