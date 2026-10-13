@@ -27,6 +27,15 @@ class ScannerTests(unittest.TestCase):
         self.assertEqual(result['selection']['source'],'labelled-source')
         self.assertEqual(result['selection']['symbols'],['NKE'])
 
+    def test_roic_retains_reported_tax_benefit_without_clamping(self):
+        series={k:[dict(end='2025-12-31',val=x,source='filed')] for k,x in dict(income=110,operatingIncome=120,tax=-10,pretax=100,equity=200,debt=50,cash=30).items()}
+        row=m.calculate(series)['roic'][0]
+        self.assertAlmostEqual(row['val'],60)
+        self.assertEqual(row['inputs'][1]['val'],-10)
+        self.assertIn('tax benefits',row['method'])
+        series.pop('tax')
+        self.assertEqual(m.calculate(series).get('roic',[]),[])
+
     def test_membership_retains_share_classes(self):
         rows=[dict(symbol='X'+str(i),name='Issuer',sector='Information Technology',industry='Software',cik=i+1) for i in range(501)]
         rows += [dict(symbol='BRK.B',name='B',sector='Financials',industry='Insurance',cik=900),dict(symbol='BRK.A',name='A',sector='Financials',industry='Insurance',cik=900)]

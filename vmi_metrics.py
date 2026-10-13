@@ -389,8 +389,10 @@ def calculate(series):
         equity=match(s.get('equity',[]),end);debt=match(s.get('debt',[]),end);cash=match(s.get('cash',[]),end)
         if op and tax and pretax and equity and debt and cash and debt.get('completeDebt', True):
             capital=equity['val']+debt['val']-cash['val']
-            if capital>0 and pretax['val']>0 and 0<=tax['val']/pretax['val']<=1:
-                s.setdefault('roic',[]).append(calc(end,op['val']*(1-tax['val']/pretax['val'])/capital*100,'EBIT x (1-effective tax rate) / (equity + debt - cash) x 100',[op,tax,pretax,equity,debt,cash]))
+            if capital>0 and pretax['val']>0:
+                # A filed tax benefit is a real negative effective rate, not
+                # missing acquisition. Retain the unadjusted formula and inputs.
+                s.setdefault('roic',[]).append(calc(end,op['val']*(1-tax['val']/pretax['val'])/capital*100,'EBIT x (1-reported effective tax rate, including tax benefits) / (equity + debt - cash) x 100',[op,tax,pretax,equity,debt,cash]))
         da=match(s.get('da',[]),end)
         if op and da and not match(s.get('ebitda',[]),end): s.setdefault('ebitda',[]).append(calc(end,op['val']+da['val'],'Operating EBIT + depreciation and amortization',[op,da]))
     s['debtEbitda']=ratio(s,'debt','ebitda','Debt / EBITDA',1)
