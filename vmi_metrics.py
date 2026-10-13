@@ -28,6 +28,9 @@ BAL={
  'debtNoncurrent':['LongTermDebtNoncurrent','LongTermDebtAndCapitalLeaseObligations'],
  'debtCurrent':['DebtCurrent'], 'longCurrent':['LongTermDebtCurrent','LongTermDebtAndCapitalLeaseObligationsCurrent'],
  'shortDebt':['ShortTermBorrowings','CommercialPaper'],
+ 'operatingLease':['OperatingLeaseLiability'],
+ 'operatingLeaseCurrent':['OperatingLeaseLiabilityCurrent'],
+ 'operatingLeaseNoncurrent':['OperatingLeaseLiabilityNoncurrent'],
  'deferred':['ContractWithCustomerLiabilityCurrent','DeferredRevenueCurrent'],
  'shares':['CommonStockSharesOutstanding'],
 }
@@ -42,7 +45,7 @@ YAHOO={
 }
 # Change whenever accounting or qualification semantics change. Browser records
 # retain raw observations and original collection dates, not stale verdicts.
-CALCULATION_REVISION = '2026-10-13-accounting-2'
+CALCULATION_REVISION = '2026-10-13-accounting-3'
 
 POLICY={
  'history':'Five consecutive fiscal years; conservative ten for revenue, earnings and CFO. Positive linear trend; latest exceeds first; at most two declining years.',
@@ -196,8 +199,8 @@ def derive_debt(series):
         long=match(series.get('longDebt',[]),end);non=match(series.get('debtNoncurrent',[]),end);cur=match(series.get('debtCurrent',[]),end)
         short=match(series.get('shortDebt',[]),end);longcur=match(series.get('longCurrent',[]),end)
         if non and cur: inputs=[non,cur];method='Noncurrent debt + total current debt'
+        elif non and longcur and short: inputs=[non,longcur,short];method='Noncurrent + current long-term carrying amounts + short-term borrowing'
         elif long and short: inputs=[long,short];method='Long-term debt inclusive of current maturities + short-term borrowing'
-        elif non and longcur and short: inputs=[non,longcur,short];method='Noncurrent + current long-term maturities + short-term borrowing'
         elif long:
             # LongTermDebt is an actual reported figure, not fabricated total debt.
             # Retain its limited basis; evaluator requires total-debt evidence for the debt gate.
@@ -208,6 +211,44 @@ def derive_debt(series):
         if existing: output.remove(existing)
         output.append(row)
     return sorted(output,key=lambda r:r['end'])
+
+
+def reconcile_debt_scope(series):
+    """Require independent dated debt + filed operating leases = provider total.
+
+    No blanket lease subtraction or missing-as-zero. Preserve original totals
+    and all reconciliation inputs. Separate finance-lease mismatches stay open.
+    """
+    result=[]
+    components=derive_debt({k:r for k,r in series.items() if k!='debt'})
+    for existing in series.get('debt',[]):
+        end=existing['end']
+        if existing.get('debtScope')=='reported_debt_excluding_operating_leases':
+            result.append(existing);continue
+        lease=match(series.get('operatingLease',[]),end)
+        lc=match(series.get('operatingLeaseCurrent',[]),end)
+        ln=match(series.get('operatingLeaseNoncurrent',[]),end)
+        if lc and ln and lc['end']==ln['end'] and lc.get('source')==ln.get('source'):
+            total=calc(lc['end'],lc['val']+ln['val'],'Operating lease current + noncurrent liabilities',[lc,ln])
+            total.update(source=lc.get('source'),unit='USD')
+            if lease and abs(lease['val']-total['val'])>1: lease=None
+            elif not lease: lease=total
+        providers=[r for key in ('debt','yahooDebt','scrapedDebt') if (r:=match(series.get(key,[]),end)) and r.get('completeDebt',True)]
+        lower=[r for key in ('longDebt','debtNoncurrent','scrapedDebt','yahooDebt') if (r:=match(series.get(key,[]),end))]
+        component=match(components,end)
+        if component and component.get('completeDebt'): lower.append(component)
+        reconciled=[]
+        if lease and lease['val']>0:
+            for high in providers:
+                for low in lower:
+                    if low['val']<0 or not high.get('source') or not low.get('source') or high['source']==low['source']: continue
+                    if abs(high['val']-low['val']-lease['val'])>max(1,abs(high['val'])*1e-6): continue
+                    row=calc(end,low['val'],'Provider total reconciled to independently reported debt + filed operating lease liabilities; operating leases excluded',[high,low,lease])
+                    row.update(unit='USD',completeDebt=True,debtScope='reported_debt_excluding_operating_leases',
+                               reconciliation=dict(totalIncludingOperatingLeases=high,reportedDebt=low,operatingLeases=lease))
+                    reconciled.append(row)
+        result.append(reconciled[0] if reconciled and len({r['val'] for r in reconciled})==1 else existing)
+    return result
 
 
 def reported_rejections(member,series,issuer,mode):
@@ -267,6 +308,8 @@ def normalize_evidence(member, data):
         series['ar'] = kept
         if 'ar' in current and not valid(current['ar']):
             excluded('ar', current.pop('ar'), 'FIX current trade-receivable scope not established')
+    if series.get('debt'): series['debt'] = reconcile_debt_scope(series)
+    if current.get('debt'): current['debt'] = reconcile_debt_scope({k:[r] for k,r in current.items()})[0]
     result['calculationRevision'] = CALCULATION_REVISION
     return result
 
@@ -311,6 +354,7 @@ def merge_evidence(prior, incoming):
     result['supplementedAt'] = incoming['retrievedAt']
     if not result.get('shareClassCount'): result['shareClassCount'] = prior.get('shareClassCount')
     result['completedSources'] = list(dict.fromkeys(prior.get('completedSources', []) + incoming.get('completedSources', [])))
+    result['completedDebtSources'] = list(dict.fromkeys(prior.get('completedDebtSources', []) + incoming.get('completedDebtSources', [])))
     result['series']['debt'] = derive_debt(result['series'])
     return result
 
@@ -319,6 +363,8 @@ def evidence(member,mode=None,prior=None):
     import vmi_sp500 as api
     ticker,cik=member['symbol'],member['cik'];s={};current={};attempts=[];sources=[];issuer={};facts={}
     completed=[];known=set((prior or {}).get('completedSources',[]))
+    # Supplement newly needed debt inputs once, then reuse successful sources.
+    known.intersection_update((prior or {}).get('completedDebtSources',[]))
     url=f'https://data.sec.gov/api/xbrl/companyfacts/CIK{cik:010d}.json';sub=f'https://data.sec.gov/submissions/CIK{cik:010d}.json'
     try:
         # Do not retain large raw filing blobs for a universe-sized scan.
@@ -357,6 +403,9 @@ def evidence(member,mode=None,prior=None):
         try:
             from vmi_web import statements
             scraped=api.cached(('html-statements',ticker),21600,lambda:statements(ticker,issuer.get('exchanges',[])))
+            s['scrapedDebt']=scraped['series'].get('debt',[])
+            raw_debt=latest(scraped['quarterly'].get('debt',[])+s['scrapedDebt'])
+            if raw_debt: current['scrapedDebt']=raw_debt
             for key,rows in scraped['series'].items():
                 primary=s.get(key,[])
                 if key=='debt': primary=[r for r in primary if r.get('completeDebt',True)]
@@ -377,6 +426,9 @@ def evidence(member,mode=None,prior=None):
     try:
         alt={} if 'yahoo' in known else api.cached(('yahoo',ticker),21600,lambda:yahoo(ticker))
         if alt: completed.append('yahoo')
+        s['yahooDebt']=alt.get('annualTotalDebt',[])
+        raw_debt=latest(alt.get('quarterlyTotalDebt',[])+s['yahooDebt'])
+        if raw_debt: current['yahooDebt']=raw_debt
         for key,name in YAHOO.items():
             rows=alt.get('annual'+name,[])
             s[key]=merged(rows,s.get(key,[])) if key=='debt' else merged(s.get(key,[]),rows)
@@ -444,7 +496,7 @@ def evidence(member,mode=None,prior=None):
         if r: current['debt']=r
     shot=api.market_fields(ticker);sources+=shot['sources'];attempts+=shot['attempts']
     for rows in s.values(): rows.sort(key=lambda r:r['end'])
-    return dict(symbol=ticker,cik=cik,shareClassCount=len(issuer.get('tickers',[])) or None,series=s,current=current,market=shot['fields'],marketFieldSources=shot.get('fieldSources',{}),sources=sources,attempts=attempts,retrievedAt=int(time.time()*1000),policies=POLICY,completedSources=completed)
+    return normalize_evidence(member,dict(symbol=ticker,cik=cik,shareClassCount=len(issuer.get('tickers',[])) or None,series=s,current=current,market=shot['fields'],marketFieldSources=shot.get('fieldSources',{}),sources=sources,attempts=attempts,retrievedAt=int(time.time()*1000),policies=POLICY,completedSources=completed,completedDebtSources=completed))
 
 
 def window(rows,n=5):

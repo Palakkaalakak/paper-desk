@@ -112,6 +112,33 @@ class ScannerTests(unittest.TestCase):
         result=m.calculate(s)
         for key in ('roic','gearing','debtEbitda'): self.assertEqual(len(result[key]),1,key)
 
+    def test_reconciled_debt_requires_independent_complete_dated_inputs(self):
+        def obs(val,source='SEC',end='2025-12-31'):
+            return dict(end=end,val=val,source=source,unit='USD')
+        s=dict(debt=[obs(483358000,'Yahoo')],longDebt=[obs(145226000)],operatingLease=[obs(338132000)])
+        r=m.reconcile_debt_scope(s)[0]
+        self.assertEqual(r['val'],145226000)
+        self.assertEqual(r['reconciliation']['totalIncludingOperatingLeases']['val'],483358000)
+        self.assertEqual(m.reconcile_debt_scope(dict(s,debt=[r])),[r])
+        s=dict(debt=[obs(375194000,'Yahoo')],scrapedDebt=[obs(0,'HTML')],operatingLease=[obs(375194000)])
+        self.assertEqual(m.reconcile_debt_scope(s)[0]['val'],0)
+        self.assertEqual(m.reconcile_debt_scope({k:v for k,v in s.items() if k!='scrapedDebt'})[0]['val'],375194000)
+        for change in (dict(operatingLease=[obs(100)]),dict(scrapedDebt=[obs(0,'Yahoo')]),
+                       dict(operatingLease=[obs(375194000,end='2024-12-31')]),
+                       dict(operatingLeaseCurrent=[obs(5)],operatingLeaseNoncurrent=[obs(10)])):
+            self.assertEqual(m.reconcile_debt_scope(dict(s,**change))[0]['val'],375194000)
+        s.pop('operatingLease');s.update(operatingLeaseCurrent=[obs(83931000)],operatingLeaseNoncurrent=[obs(291263000)])
+        self.assertEqual(m.reconcile_debt_scope(s)[0]['val'],0)
+        del s['operatingLeaseCurrent']
+        self.assertEqual(m.reconcile_debt_scope(s)[0]['val'],375194000)
+
+    def test_debt_prefers_carrying_components_over_rounded_note_amount(self):
+        values=dict(longDebt=82300000000,debtNoncurrent=71340000000,longCurrent=11007000000,shortDebt=1997000000)
+        s={k:[dict(end='2026-06-27',val=v,source='filed')] for k,v in values.items()}
+        r=m.derive_debt(s)[0]
+        self.assertEqual(r['val'],84344000000)
+        self.assertIn('carrying',r['method'])
+
     def test_debt_recovery_upgrades_incomplete_not_reported_totals(self):
         s={'longDebt':[dict(end='2025-12-31',val=40)]}
         s['debt']=m.derive_debt(s);self.assertFalse(s['debt'][0]['completeDebt'])
@@ -310,7 +337,7 @@ class SourceReuseTests(unittest.TestCase):
     def test_completed_independent_sources_not_downloaded_after_restart(self):
         api._CACHE.clear()
         member=dict(symbol='TEST',cik=1,industry='Software',sector='IT')
-        prior=dict(completedSources=['html','yahoo'])
+        prior=dict(completedSources=['html','yahoo'],completedDebtSources=['html','yahoo'])
         with patch.object(m.v,'fetch',side_effect=ValueError('SEC unavailable')),patch('vmi_web.statements') as html,patch.object(m,'yahoo') as yahoo,patch.object(api,'market_fields',return_value=dict(fields={},sources=[],attempts=[])):
             m.evidence(member,prior=prior)
         html.assert_not_called();yahoo.assert_not_called()

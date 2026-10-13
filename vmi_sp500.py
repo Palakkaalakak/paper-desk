@@ -347,8 +347,9 @@ def validate_prior(prior, member):
     for key in ('sources','attempts','observationAlternatives'):
         if not isinstance(data.get(key,[]),list): raise ValueError('Invalid supplementary '+key)
     if any(not isinstance(url,str) for url in data.get('sources',[])): raise ValueError('Invalid source labels')
-    completed=data.get('completedSources',[])
-    if not isinstance(completed,list) or any(x not in ('html','yahoo') for x in completed): raise ValueError('Invalid completed source list')
+    for key in ('completedSources','completedDebtSources'):
+        completed=data.get(key,[])
+        if not isinstance(completed,list) or any(x not in ('html','yahoo') for x in completed): raise ValueError('Invalid completed source list')
     def observation(row):
         if not isinstance(row,dict) or type(row.get('val')) not in (int,float) or not math.isfinite(row['val']): raise ValueError('Invalid observation')
         try: end=dt.date.fromisoformat(row['end'])
