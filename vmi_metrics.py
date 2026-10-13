@@ -6,6 +6,7 @@ import datetime as dt
 import json
 import math
 import re
+from statistics import median
 import time
 import urllib.parse
 import vmi_data as v
@@ -45,11 +46,11 @@ YAHOO={
 }
 # Change whenever accounting or qualification semantics change. Browser records
 # retain raw observations and original collection dates, not stale verdicts.
-CALCULATION_REVISION = '2026-10-13-accounting-4'
+CALCULATION_REVISION = '2026-10-13-accounting-5'
 
 POLICY={
- 'history':'Five consecutive fiscal years; conservative ten for revenue, earnings and CFO. Positive linear trend; latest exceeds first; at most two declining years.',
- 'stability':'Margins: latest at least five-year mean minus 0.5 percentage point; fitted slope >= -0.1 pp/year. Returns: latest >= five-year mean; slope >= 0. These numerical interpretations are app policy, not quoted course thresholds.',
+ 'history':'Five consecutive fiscal years; conservative ten for revenue, earnings and CFO. Generally upward trend using the median of all pairwise annual slopes (Theil-Sen), or a positive fitted slope with at most two declines. A temporary bad year or end-point dip alone is not a veto; required positive flows and complete dated history remain enforced.',
+ 'stability':'Consistent/rising margins and returns use a robust multi-year trend, not an every-year increase or current-versus-average veto. Five-year means are comparison context only. Margin slope tolerance remains -0.1 percentage point/year; returns require nonnegative general trend. Statistical implementation and tolerance are explicit app policies, not verbatim course thresholds.',
  'fcf':'Source allows 1-2 negative FCF years, not persistent deficits. Conservative: zero; moderate: one; optimistic: two, never consecutive and latest positive.',
  'returns':'Annual ROE = NI / year-end equity. Annual ROIC = EBIT x (1-effective tax rate) / (equity + debt - cash). TTM/quarter-end ratios use the same formulas; provider ROIC is not mixed into calculated history averages.',
  'debt':'Course permits 2/3 debt ratios (moderate and optimistic); conservative explicitly adds a 3/3 policy. All three inputs must be acquired; missing never counts as passing.',
@@ -512,11 +513,25 @@ def slope(values):
     return sum((i-x)*(v-y) for i,v in enumerate(values))/sum((i-x)**2 for i in range(n)) if n>1 else 0
 
 
+def trend_summary(values):
+    """Keep every year; median pairwise slope reduces a single year's leverage."""
+    pairs=[(b-a)/(j-i) for i,a in enumerate(values) for j,b in enumerate(values) if j>i]
+    return dict(linear=slope(values),robust=median(pairs) if pairs else 0,
+                declines=sum(b<a for a,b in zip(values,values[1:])))
+
+
+def general_trend(values, floor=0, strict=False):
+    stats=trend_summary(values)
+    meets=lambda value:value>floor if strict else value>=floor
+    # A positive outlier must not rescue a mostly deteriorating business.
+    return meets(stats['robust']) or (stats['declines']<=2 and meets(stats['linear']))
+
+
 def growth_test(rows,n):
     rows=window(rows,n)
     if not rows: return None
     values=[r['val'] for r in rows]
-    return all(v>0 for v in values) and values[-1]>values[0] and slope(values)>0 and sum(b<a for a,b in zip(values,values[1:]))<=2
+    return all(v>0 for v in values) and general_trend(values,strict=True)
 
 
 def ratio(series,a,b,method,scale=100):
@@ -566,7 +581,7 @@ def margin_test(rows):
     rows=window(rows)
     if not rows: return None
     values=[r['val'] for r in rows]
-    return values[-1]>=sum(values)/len(values)-.5 and slope(values)>=-.1
+    return general_trend(values,floor=-.1)
 
 
 def buyback_exception(series,current,years=5):
@@ -599,8 +614,9 @@ def evaluate(member,data,mode='moderate',include_peers=True):
         rows=window(s.get(key,[]),n)
         if not rows: add(key,label,None,f'Need {n} consecutive recent annual observations',s.get(key,[]));return None
         values=[r['val'] for r in rows];mean=sum(values)/n
-        ok=(values[-1]>=mean-.5 and slope(values)>=-.1) if stable else growth_test(rows,n)
-        add(key,label,ok,f'Latest {values[-1]:.3f}; mean {mean:.3f}; slope {slope(values):.3f}',rows)
+        ok=margin_test(rows) if stable else growth_test(rows,n)
+        stats=trend_summary(values)
+        add(key,label,ok,f'Latest {values[-1]:.3f}; mean {mean:.3f} (context, not veto); fitted slope {stats["linear"]:.3f}; robust slope {stats["robust"]:.3f}; declining years {stats["declines"]}',rows)
         return ok
     add('industry','Industry suitability',not flags['excluded'],member['industry'])
     trend('revenue','Consistent revenue growth',years)
@@ -615,11 +631,11 @@ def evaluate(member,data,mode='moderate',include_peers=True):
         ok=vals[-1]>0 and sum(v<=0 for v in vals)<=allow and not any(a<=0 and b<=0 for a,b in zip(vals,vals[1:])) if vals else None
         add('fcf','Positive free cash flow history',ok,f'At most {allow} isolated deficit years; latest positive',rows or s.get('fcf',[]))
     if flags['bank'] or flags['insurance']: add('grossMargin','Gross margin',True,'Not a comparable banking/insurance subtotal',na=True)
-    else: trend('grossMargin','Gross margin stability and average',stable=True)
+    else: trend('grossMargin','Gross margin general trend',stable=True)
     net_ok=margin_test(s.get('netMargin',[]));operating_ok=margin_test(s.get('operatingMargin',[]))
     margin_key='netMargin' if net_ok is True else 'operatingMargin' if operating_ok is True else 'netMargin'
     margin_ok=True if net_ok is True or operating_ok is True else False if net_ok is False and operating_ok is False else None
-    add('profitMargin','Profit margin stability and average',margin_ok,'Operating-margin substitute' if margin_key=='operatingMargin' else 'Net margin with independent operating-margin fallback',s.get(margin_key,[])[-5:])
+    add('profitMargin','Profit margin general trend',margin_ok,'Operating-margin substitute' if margin_key=='operatingMargin' else 'Net margin with independent operating-margin fallback',s.get(margin_key,[])[-5:])
     projected=v.number(data['market'].get('EPS next 5Y',data['market'].get('EPS Next 5Y')))
     add('growth','Positive projected earnings growth',projected>0 if projected is not None else None,'Next five-year analyst estimate: '+str(projected),[dict(source=u) for u in data.get('sources',[]) if 'finviz' in u])
     for key in ('roe','roic'):
@@ -633,9 +649,11 @@ def evaluate(member,data,mode='moderate',include_peers=True):
         rows=window(s.get(key,[]));current=latest(cur.get(key,[]))
         if rows:
             vals=[r['val'] for r in rows];now=current['val'] if current else vals[-1];mean=sum(vals)/5
-            ok=(now>cutoff if key=='roe' and mode=='conservative' else now>=cutoff) and now>=mean and slope(vals)>=0
-            add(key,key.upper()+' threshold, trend and five-year average',ok,f'Latest {now:.2f}%; annual mean {mean:.2f}%; cutoff {cutoff}%; '+('TTM / latest quarter' if current else 'latest annual basis'),rows+([current] if current else []))
-        else: add(key,key.upper()+' threshold, trend and five-year average',None,'Five matched years required; negative equity is not treated as zero',s.get(key,[]))
+            threshold=(now>cutoff if key=='roe' and mode=='conservative' else now>=cutoff)
+            direction=general_trend(vals);stats=trend_summary(vals)
+            ok=threshold and direction
+            add(key,key.upper()+' threshold and general trend',ok,f'Latest {now:.2f}%; annual mean {mean:.2f}% (comparison only, not a qualification cutoff); cutoff {cutoff}%; threshold {"PASS" if threshold else "FAIL"}; general trend {"PASS" if direction else "FAIL"}; fitted slope {stats["linear"]:.3f}; robust slope {stats["robust"]:.3f}; '+('TTM / latest quarter' if current else 'latest annual basis'),rows+([current] if current else []))
+        else: add(key,key.upper()+' threshold and general trend',None,'Five matched years required; negative equity is not treated as zero',s.get(key,[]))
     if flags['bank'] or flags['insurance']: add('receivables','Revenue vs receivables growth',True,'Financial-sector trade receivables not comparable',na=True)
     else:
         revenues=window(s.get('revenue',[]));ars=[match(s.get('ar',[]),r['end']) for r in revenues] if revenues else []

@@ -235,6 +235,27 @@ class ScannerTests(unittest.TestCase):
         self.assertTrue(m.growth_test(rows,5))
         self.assertIsNone(m.growth_test(rows[:-1],5))
         self.assertFalse(m.growth_test([dict(r,val=10-i) for i,r in enumerate(rows)],5))
+    def test_temporary_downturn_is_not_an_endpoint_or_average_veto(self):
+        rows=lambda values:[dict(end=f'{2021+i}-12-31',val=value) for i,value in enumerate(values)]
+        for values in ([100,110,120,130,80],[100,110,70,130,150],[100,110,108,130,125]):
+            self.assertTrue(m.growth_test(rows(values),5),values)
+        for values in ([150,140,130,120,110],[100,90,80,70,200],[100]*5):
+            self.assertFalse(m.growth_test(rows(values),5),values)
+        self.assertIsNone(m.growth_test(rows([100,110,120,130]),5))
+        member=dict(symbol='ANY',cik=1,industry='Software',sector='IT')
+        def roe(values,current=26.07):
+            data=dict(series=dict(income=rows(values),equity=rows([100]*5)),
+                      current=dict(income=dict(end='2026-06-30',val=current),equity=dict(end='2026-06-30',val=100)),market={},sources=[])
+            return next(c for c in m.evaluate(member,data)['checks'] if c['key']=='roe')
+        check=roe([31.5265,18.4547,25.5262,34.1442,27.8297])
+        self.assertEqual(check['status'],'PASS')
+        self.assertIn('comparison only',check['detail'])
+        self.assertEqual(roe([20,22,24,26,14],14)['status'],'PASS')
+        self.assertEqual(roe([20,22,24,26,14],11)['status'],'FAIL')
+        self.assertEqual(roe([35,33,31,29,27])['status'],'FAIL')
+        self.assertTrue(m.margin_test(rows([20,22,24,26,14])))
+        self.assertFalse(m.margin_test(rows([35,33,31,29,27])))
+
     def test_ttm_uses_ytd_difference(self):
         annual=[dict(start='2024-01-01',end='2024-12-31',val=100,source='SEC')]
         facts={'Revenue':{'units':{'USD':[
