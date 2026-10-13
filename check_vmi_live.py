@@ -12,8 +12,12 @@ import vmi_sp500 as api
 import vmi_trace as trace
 
 
+_OUTPUT_LOCK = threading.Lock()
+
+
 def emit(**row):
-    print(json.dumps(dict(at=int(time.time()*1000),**row)),flush=True)
+    with _OUTPUT_LOCK:
+        print(json.dumps(dict(at=int(time.time()*1000),**row)),flush=True)
 
 
 def main():
@@ -51,7 +55,7 @@ def main():
         emit(stage=view+' summary',seconds=round(time.monotonic()-at,3),rejected=len(rejected),recovery=len(recovery-rejected))
     # Missing broad fields go straight to independent dated statements; do not
     # hold all companies behind a separate Yahoo quote-page recovery sweep.
-    outcomes=Counter(REJECTED=len(rejected));pending=Counter();at=time.monotonic()
+    outcomes=Counter(REJECTED=len(rejected));pending=Counter();all_missing=Counter();skipped_peers=0;at=time.monotonic()
     candidates=[r for r in members if r['symbol'] not in rejected]
     with ThreadPoolExecutor(max_workers=4) as pool:
         futures={pool.submit(measured,'detailed '+r['symbol'],lambda r=r:api.company(r['symbol'],args.mode)):r['symbol'] for r in candidates}
@@ -60,10 +64,13 @@ def main():
             try:
                 data=future.result();r=data['result'];outcomes[r['status']]+=1
                 if r['status']=='ACQUIRING': pending.update(r['pending'])
-                emit(stage='deep',symbol=ticker,done=index+1,total=len(candidates),status=r['status'],failures=r['failures'],pending=r['pending'],attempts=data['evidence']['attempts'])
+                all_missing.update(k for k in r['pending'] if k!='peers' or not r['failures'])
+                skipped_peers+=int(bool(r['failures']) and 'peers' in r['pending'])
+                emit(stage='deep',symbol=ticker,done=index+1,total=len(candidates),status=r['status'],failures=r['failures'],pending=r['pending'],attempts=data['evidence']['attempts'],checks=[dict(key=c['key'],status=c['status'],detail=c.get('detail','')) for c in r['checks']],sources=data['evidence']['sources'])
             except Exception as exc: outcomes['ERROR']+=1;emit(stage='deep',symbol=ticker,error=str(exc))
-    complete=not outcomes['ACQUIRING'] and not outcomes['ERROR']
-    emit(stage='summary',seconds=round(time.monotonic()-started,3),deepSeconds=round(time.monotonic()-at,3),universe=len(members),outcomes=dict(outcomes),pending=dict(pending),counts=dict(totals),complete=complete)
+    decisions_resolved=not outcomes['ACQUIRING'] and not outcomes['ERROR']
+    complete=decisions_resolved and not all_missing
+    emit(stage='summary',seconds=round(time.monotonic()-started,3),deepSeconds=round(time.monotonic()-at,3),universe=len(members),outcomes=dict(outcomes),pending=dict(pending),counts=dict(totals),scanFinished=not outcomes['ERROR'],decisionsResolved=decisions_resolved,detailedMissingIncludingRejected=dict(all_missing),intentionallySkippedPeerChecks=skipped_peers,broadOnly=len(rejected),complete=complete)
     return 0 if complete else 2
 
 
