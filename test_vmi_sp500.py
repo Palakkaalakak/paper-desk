@@ -199,6 +199,16 @@ class ConcurrencyTests(unittest.TestCase):
 class RefreshTests(unittest.TestCase):
     def setUp(self): api._CACHE.clear()
 
+    def test_forced_sources_reuse_explicitly_refreshed_universe(self):
+        old={'rows':[],'source':'old'};new={'rows':[],'source':'new'}
+        api.cached(('members',),100,lambda:old)
+        with patch.object(api,'universe',return_value=new) as load:
+            self.assertEqual(api.members(force=True),new)
+            with api.fresh_sources(True):
+                self.assertEqual(api.members(),new)
+                self.assertEqual(api.members(),new)
+            load.assert_called_once()
+
     def test_force_bypasses_cik_and_ticker_keys_without_mutating_other_workers(self):
         keys=[('issuer',123),('filing-evidence',123),('evidence','TEST')]
         for key in keys: api.cached(key,100,lambda:'old')

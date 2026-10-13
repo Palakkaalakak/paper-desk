@@ -125,7 +125,16 @@ def universe():
 
 
 def members(force=False):
-    with fresh_sources(force): return cached(('members',),3600,universe)
+    # Only the explicit universe request refreshes membership. A forced company
+    # must not redownload the entire constituent list for every source/peer call.
+    token=_FRESH.set(None)
+    try:
+        if force:
+            result=universe()
+            with _LOCK: _cache_put(('members',),result)
+            return result
+        return cached(('members',),3600,universe)
+    finally: _FRESH.reset(token)
 
 
 class Screener(v.Tables):
