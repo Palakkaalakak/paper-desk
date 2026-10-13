@@ -56,6 +56,8 @@ def decode(text,ticker,url):
     annual={};quarterly={};alternatives=[];retrieved=int(time.time()*1000)
     for match in re.finditer(r'<table\b[^>]*class="financials-table[^>]*>.*?</table>',text,re.S):
         caption=text[max(0,match.start()-800):match.start()]
+        headings=re.findall(r'(?:Annual|Quarterly) (Income Statements|Cash Flow Statements|Balance Sheets|Metrics And Ratios)',caption)
+        statement=headings[-1] if headings else 'Unspecified'
         units='All values are USD millions unless otherwise specified'
         if units not in caption and not ('calculated financial ratios and metrics' in caption and units in text): continue
         p=StatementTable();p.feed(match.group())
@@ -79,7 +81,7 @@ def decode(text,ticker,url):
                 expected=shown if unit=='shares' else shown*1e6 if shown is not None else None
                 if expected is None or abs(expected-value)>max(abs(value)*.006,1 if unit=='shares' else 500001): continue
                 if key=='capex': value=abs(value)
-                obs=dict(end=end.isoformat(),val=value,unit=unit,source=url,tag=row[0],basis=basis,retrievedAt=retrieved)
+                obs=dict(end=end.isoformat(),val=value,unit=unit,source=url,tag=row[0],basis=basis,statement=statement,retrievedAt=retrieved)
                 if key=='debt': obs['completeDebt']=True
                 prior=next((r for r in target.get(key,[]) if r['end']==obs['end']),None)
                 if prior and prior['val']!=value:
@@ -88,6 +90,13 @@ def decode(text,ticker,url):
                         # Keep both observations; use the explicitly labeled total.
                         preferred=obs if obs['tag']=='Capital Expenditures (CapEx)' else prior
                         alternatives.append(dict(metric=key,preferred=preferred,alternative=prior if preferred is obs else obs,reason='Different capex aggregation; explicit CapEx total preferred'))
+                        if preferred is obs: target[key].remove(prior);target[key].append(obs)
+                        continue
+                    if key=='income' and {prior.get('statement'),statement}=={'Income Statements','Cash Flow Statements'}:
+                        # Reconciliation income can differ in scope/rounding.
+                        # Use the income statement for earnings, not the CFO bridge.
+                        preferred=obs if statement=='Income Statements' else prior
+                        alternatives.append(dict(metric=key,preferred=preferred,alternative=prior if preferred is obs else obs,reason='Income statement earnings preferred over cash-flow reconciliation income'))
                         if preferred is obs: target[key].remove(prior);target[key].append(obs)
                         continue
                     raise ValueError('Conflicting scraped statement observations: '+key+' '+obs['end'])

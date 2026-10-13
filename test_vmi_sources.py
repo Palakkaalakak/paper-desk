@@ -81,6 +81,17 @@ class StatementScraperTests(unittest.TestCase):
         self.assertEqual(data['alternatives'][0]['alternative']['val'],10000000)
         self.assertEqual(data['series']['interest'][0]['val'],2000000)
 
+    def test_income_statement_preferred_over_reconciliation_without_losing_alternative(self):
+        income=self.html([('Consolidated Net Income / (Loss)','1,062',1062000000)]).replace('<p>','<h3>Annual Income Statements</h3><p>')
+        cash=self.html([('Consolidated Net Income / (Loss)','1,062',1062100000)]).replace('<p>','<h3>Annual Cash Flow Statements</h3><p>')
+        for text in (income+cash,cash+income):
+            data=self.decode(text)
+            self.assertEqual(data['series']['income'][0]['val'],1062000000)
+            self.assertEqual(data['series']['income'][0]['statement'],'Income Statements')
+            self.assertEqual(data['alternatives'][0]['alternative']['val'],1062100000)
+        with self.assertRaisesRegex(ValueError,'Conflicting'):
+            self.decode(income+income.replace('1062000000','1062100000'))
+
     def test_venue_recovery_keeps_identity_validation(self):
         from vmi_web import statements
         rows=[('Total Revenue','100',100000000)]
