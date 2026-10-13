@@ -21,9 +21,12 @@ class InlineFacts(HTMLParser):
 
     def handle_starttag(self, tag, attrs):
         a, local = dict(attrs), tag.split(':')[-1]
-        if local == 'context': self.context = dict(id=a.get('id'), dimensions=False)
+        if local == 'context': self.context = dict(id=a.get('id'), dimensions=False, members={}, unsupported=False)
         elif self.context is not None:
             if local in ('explicitmember','typedmember','segment','scenario'): self.context['dimensions'] = True
+            if local in ('typedmember','scenario'): self.context['unsupported']=True
+            if local == 'explicitmember':
+                self.dimension=a.get('dimension','');self.capture=(local,[])
             if local in ('identifier','instant','startdate','enddate'): self.capture = (local, [])
         if local == 'unit': self.unit = dict(id=a.get('id'), measures=[])
         elif self.unit is not None and local == 'measure': self.capture = ('measure', [])
@@ -38,7 +41,11 @@ class InlineFacts(HTMLParser):
         if self.capture is not None and self.capture[0] == local:
             value = ''.join(self.capture[1]).strip()
             if local == 'measure' and self.unit is not None: self.unit['measures'].append(value.split(':')[-1])
-            elif self.context is not None: self.context[local] = value
+            elif self.context is not None:
+                if local=='explicitmember':
+                    if self.dimension in self.context['members']: self.context['unsupported']=True
+                    self.context['members'][self.dimension]=value
+                else: self.context[local] = value
             self.capture = None
         if local == 'context' and self.context is not None:
             self.contexts[self.context['id']] = self.context; self.context = None
@@ -111,6 +118,33 @@ class InlineFacts(HTMLParser):
             # Keep namespaces intact: a custom concept must not impersonate GAAP.
             result.setdefault(tag,{'units':{}})['units'].setdefault(unit,[]).append(row)
         return result
+
+
+def capital_xbrl(parser, cik, report_date, source, filed, form):
+    """Actual parent CET1; admit only explicit standardized/parent dimensions.
+
+    Call after document identity validation. Ordinary financial extraction still
+    rejects all dimensions; this narrow adapter does not relax that rule.
+    """
+    tags={'us-gaap:CommonEquityTierOneCapitalRatio'}
+    if cik==19617: tags.add('jpm:CommonEquityTier1CapitaltoRiskWeightedAssets')
+    allowed={
+        'srt:ConsolidatedEntitiesAxis':{'srt:ParentCompanyMember'},
+        'us-gaap:RiskWeightedAssetsCalculationMethodologyAxis':{'us-gaap:StandardizedApproachMember'},
+    }
+    if cik==19617: allowed['us-gaap:RiskWeightedAssetsCalculationMethodologyAxis'].add('jpm:BaselIIIStandardizedMember')
+    rows=[]
+    for fact in parser.facts:
+        if fact['tag'] not in tags or parser.units.get(fact['unitref'])!=['pure']: continue
+        context=parser.contexts.get(fact['context'],{});identifier=context.get('identifier','');members=context.get('members',{})
+        if not identifier.isdigit() or int(identifier)!=cik or context.get('instant')!=report_date or context.get('unsupported'): continue
+        if context.get('dimensions') and not members: continue
+        if any(axis not in allowed or member not in allowed[axis] for axis,member in members.items()): continue
+        if not 0<=fact['val']<=1: continue
+        rows.append(dict(end=report_date,val=fact['val']*100,unit='percent',source=source,filed=filed,form=form,
+                         tag=fact['tag'],context=fact['context'],dimensions=members,retrievedAt=int(time.time()*1000),
+                         basis='Actual parent common-equity Tier 1 ratio; standardized approach where dimensioned'))
+    return rows[0] if rows and len({r['val'] for r in rows})==1 else None
 
 
 def capital_table(text, issuer_name, report_date, source):
@@ -226,7 +260,8 @@ def recover(member, issuer):
         try:
             text=v.fetch(url); parser=InlineFacts(); parser.feed(text); period=recent['reportDate'][i]
             facts=parser.validated(cik,period,url,recent['filingDate'][i],recent['form'][i])
-            capital=capital_table(text,'Bank of America Corporation',period,url) if cik==70858 else None
+            capital=capital_xbrl(parser,cik,period,url,recent['filingDate'][i],recent['form'][i])
+            if not capital and cik==70858: capital=capital_table(text,'Bank of America Corporation',period,url)
             if not capital:
                 try:
                     pdf = issuer_pdf(member, period, recent['filingDate'][i], recent['form'][i])

@@ -17,6 +17,20 @@ def parse(text):
     return p.validated(70858,'2026-06-30','issuer','2026-08-01','10-Q')
 
 
+class CapitalContextTests(unittest.TestCase):
+    def test_standardized_parent_not_subsidiary_advanced_or_minimum(self):
+        dims='<xbrli:segment><xbrldi:explicitMember dimension="srt:ConsolidatedEntitiesAxis">srt:ParentCompanyMember</xbrldi:explicitMember><xbrldi:explicitMember dimension="us-gaap:RiskWeightedAssetsCalculationMethodologyAxis">us-gaap:StandardizedApproachMember</xbrldi:explicitMember></xbrli:segment>'
+        text=document(value='0.1026',dimension=dims,currency='pure').replace('us-gaap:DebtCurrent','us-gaap:CommonEquityTierOneCapitalRatio').replace('scale="6"','scale="0"')
+        def parse_capital(text):
+            p=f.InlineFacts();p.feed(text);p.validated(70858,'2026-06-30','issuer','2026-07-31','10-Q')
+            return f.capital_xbrl(p,70858,'2026-06-30','issuer','2026-07-31','10-Q')
+        self.assertAlmostEqual(parse_capital(text)['val'],10.26)
+        self.assertIsNone(parse_capital(text.replace('ParentCompanyMember','SubsidiariesMember')))
+        self.assertIsNone(parse_capital(text.replace('StandardizedApproachMember','AdvancedApproachMember')))
+        self.assertIsNone(parse_capital(text.replace('CommonEquityTierOneCapitalRatio','BankingRegulationCommonEquityTierOneRiskBasedCapitalRatioWellCapitalizedMinimum')))
+        self.assertIsNone(parse_capital(text.replace('srt:ConsolidatedEntitiesAxis','dei:LegalEntityAxis')))
+        self.assertEqual(parse(text),{})
+
 class FilingTests(unittest.TestCase):
     def test_scale_identity_date(self):
         row=parse(document())['us-gaap:DebtCurrent']['units']['USD'][0]
