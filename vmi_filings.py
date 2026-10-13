@@ -1,6 +1,7 @@
 """Identity-checked actual issuer-filing recovery, retaining dates, units and contexts."""
 import datetime as dt
 from html.parser import HTMLParser
+import io
 import math
 import re
 import time
@@ -15,7 +16,7 @@ class InlineFacts(HTMLParser):
     def __init__(self):
         super().__init__(convert_charrefs=True)
         self.contexts, self.units, self.identities = {}, {}, {}
-        self.facts, self.stack = [], []
+        self.facts, self.stack, self.identity_facts = [], [], []
         self.context = self.unit = self.capture = None
 
     def handle_starttag(self, tag, attrs):
@@ -54,6 +55,7 @@ class InlineFacts(HTMLParser):
                     try: text = dt.datetime.strptime(text, fmt).date().isoformat(); break
                     except ValueError: pass
             self.identities.setdefault(name.lower(),set()).add(text)
+            self.identity_facts.append(dict(name=name.lower(), text=text, context=a.get('contextref')))
             return
         if a.get('xsi:nil') == 'true' or a.get('continuedat'): return
         fmt = a.get('format','').split(':')[-1]
@@ -70,9 +72,29 @@ class InlineFacts(HTMLParser):
         self.facts.append(dict(tag=name,val=value,context=a.get('contextref'),unitref=a.get('unitref'),decimals=a.get('decimals','0')))
 
     def validated(self, cik, report_date, source, filed, form):
-        ids = self.identities.get('dei:entitycentralindexkey',set())
-        if not ids or any(not x.isdigit() or int(x)!=cik for x in ids): raise ValueError('Filing CIK identity mismatch')
-        if self.identities.get('dei:documentperiodenddate',set()) != {report_date}: raise ValueError('Filing report date mismatch')
+        def scoped(name):
+            rows = [r for r in self.identity_facts if r['name'] == name]
+            contextual = [r for r in rows if r['context']]
+            if contextual:
+                values = set()
+                for row in contextual:
+                    context = self.contexts.get(row['context'], {})
+                    identifier = context.get('identifier', '')
+                    end = context.get('instant', context.get('enddate'))
+                    if identifier.isdigit() and int(identifier) == cik and not context.get('dimensions') and end == report_date:
+                        values.add(row['text'])
+                return values
+            # Legacy single-registrant documents only. Unscoped DEI cannot
+            # establish which entity a combined-registrant document describes.
+            ids = self.identities.get('dei:entitycentralindexkey', set())
+            if not ids or any(not x.isdigit() or int(x) != cik for x in ids):
+                return set()
+            return {r['text'] for r in rows}
+        ids = scoped('dei:entitycentralindexkey')
+        if not ids or any(not x.isdigit() or int(x) != cik for x in ids):
+            raise ValueError('Filing CIK identity mismatch')
+        if scoped('dei:documentperiodenddate') != {report_date}:
+            raise ValueError('Filing report date mismatch')
         grouped, result = {}, {}
         for f in self.facts:
             c = self.contexts.get(f['context'],{}); end = c.get('instant',c.get('enddate')); identifier = c.get('identifier',''); units = self.units.get(f['unitref'],[])
@@ -116,6 +138,77 @@ def capital_table(text, issuer_name, report_date, source):
     return result[0] if len({r['val'] for r in result})==1 else None
 
 
+def jpm_pdf_capital(pages, report_date, source, filed):
+    """Read the parent's filed quarterly highlights, not an earnings estimate.
+
+    Only the observed JPM 10-Q layout is supported. Column labels, cover identity
+    and reporting period are required; numbers are never inferred from prose.
+    """
+    period = dt.date.fromisoformat(report_date)
+    if period.month not in (3, 6, 9) or period > dt.date.today():
+        raise ValueError('Unsupported JPM quarterly report period')
+    normalized = ['\n'.join(' '.join(line.split()) for line in text.splitlines()) for text in pages]
+    cover = normalized[0] if normalized else ''
+    date_label = f'{period:%B} {period.day}, {period.year}'
+    if not re.search(r'FORM\s+10-Q\b', cover) or not re.search(r'JPMorgan Chase & Co\s*\.\s*\n\(Exact name of registrant', cover):
+        raise ValueError('JPM filed report identity mismatch')
+    if not re.search(r'For the quarterly period ended[^\n]*\n' + re.escape(date_label) + r'\b', cover):
+        raise ValueError('JPM filed report date mismatch')
+    if not re.search(r'Common stock\s+JPM\b', cover):
+        raise ValueError('JPM report ticker mismatch')
+    quarter = (period.month + 2) // 3
+    expected = []
+    for back in range(5):
+        n = period.year * 4 + quarter - 1 - back
+        expected.append(f'{n % 4 + 1}Q{n // 4 % 100:02d}')
+    found = []
+    for page_number, text in enumerate(normalized[1:], 2):
+        if not text.startswith('JPMorgan Chase & Co.\nConsolidated financial highlights (unaudited)\n'):
+            continue
+        lines = text.splitlines()
+        header = next((line for line in lines[:8] if re.findall(r'\b[1-4]Q\d{2}\b', line)), '')
+        columns = re.findall(r'\b[1-4]Q\d{2}\b', header)
+        if columns != expected:
+            continue
+        for line in lines:
+            match = re.fullmatch(r'Common equity Tier 1 \([“\"]CET1[”\"]\) capital ratio [–-] Standardized\s*\([a-z]\)\s+(.+)', line)
+            if not match or not re.fullmatch(r'\d+(?:\.\d+)?(?:\s+\d+(?:\.\d+)?){6}', match[1]):
+                continue
+            values = [float(value) for value in match[1].split()]
+            if not all(0 <= value <= 100 for value in values):
+                continue
+            found.append(dict(end=report_date, val=values[0], unit='percent', source=source,
+                filed=filed, form='10-Q', page=page_number, tableRow=line, column=columns[0],
+                columnHeader=header, retrievedAt=int(time.time()*1000),
+                tag='Common equity Tier 1 (CET1) capital ratio - Standardized',
+                basis='Parent issuer filed consolidated financial highlights; actual standardized CET1 ratio'))
+    if not found or len({row['val'] for row in found}) != 1:
+        raise ValueError('No unambiguous dated parent JPM CET1 column')
+    return found[0]
+
+
+def issuer_pdf(member, period, filed, form):
+    """Independent official issuer source, with metadata-driven URL and validation."""
+    if member['cik'] != 19617 or form != '10-Q':
+        return None
+    date = dt.date.fromisoformat(period)
+    quarter = (date.month + 2) // 3
+    ordinal = {1: '1st', 2: '2nd', 3: '3rd'}.get(quarter)
+    if not ordinal:
+        return None
+    url = ('https://www.jpmorganchase.com/content/dam/jpmc/jpmorgan-chase-and-co/'
+           f'investor-relations/documents/quarterly-earnings/{date.year}/{ordinal}-quarter/corp-q{quarter}-{date.year}.pdf')
+    from pypdf import PdfReader
+    body = v.fetch(url, binary=True, timeout=12, retries=0)
+    if not body.startswith(b'%PDF-'):
+        raise ValueError('Issuer response is not a PDF')
+    reader = PdfReader(io.BytesIO(body))
+    # Highlights are at the front; avoid parsing hundreds of irrelevant pages.
+    pages = [page.extract_text(extraction_mode='layout') for page in reader.pages[:5]]
+    capital = jpm_pdf_capital(pages, period, url, filed)
+    return dict(facts={}, cet1=capital, source=url, attempts=[])
+
+
 def recover(member, issuer):
     global _SEC_UNTIL
     recent=issuer.get('filings',{}).get('recent',{}); today=dt.date.today().isoformat()
@@ -134,8 +227,21 @@ def recover(member, issuer):
             text=v.fetch(url); parser=InlineFacts(); parser.feed(text); period=recent['reportDate'][i]
             facts=parser.validated(cik,period,url,recent['filingDate'][i],recent['form'][i])
             capital=capital_table(text,'Bank of America Corporation',period,url) if cik==70858 else None
+            if not capital:
+                try:
+                    pdf = issuer_pdf(member, period, recent['filingDate'][i], recent['form'][i])
+                    if pdf: capital = pdf['cet1']
+                except Exception as exc:
+                    attempts.append(dict(source='Official issuer filed PDF', error=str(exc)))
             return dict(facts=facts,cet1=capital,source=url,attempts=attempts)
         except Exception as exc:
             if sec and isinstance(exc,urllib.error.HTTPError) and exc.code in (403,429): _SEC_UNTIL=time.monotonic()+900
             attempts.append(dict(source=url,error=str(exc)))
+    try:
+        pdf = issuer_pdf(member, recent['reportDate'][i], recent['filingDate'][i], recent['form'][i])
+        if pdf:
+            pdf['attempts'] = attempts + pdf['attempts']
+            return pdf
+    except Exception as exc:
+        attempts.append(dict(source='Official issuer filed PDF', error=str(exc)))
     return dict(facts={},cet1=None,source=None,attempts=attempts)

@@ -3,3 +3,6 @@ ib_async==2.1.0
 
 # Public dated risk-premium workbook for company-specific discount rates.
 xlrd==2.0.2
+
+# Read validated financial tables in official issuer-filed PDF reports.
+pypdf==6.1.1

@@ -1,5 +1,13 @@
 # Paper Desk — IB Gateway paper-trading workstation
 
+## Issuer-filed capital recovery — 2026-10-13
+
+- Install `python -m pip install -r requirements.txt` for the pinned `pypdf==6.1.1` reader, then restart the existing local Python server. No deployment or broker-write change.
+- JPMorgan quarterly capital recovery now downloads the official filed 10-Q PDF using the SEC report period. It validates the cover registrant/ticker/form/date and consolidated highlights' five quarter columns, and retains source URL, PDF page, actual CET1 row, column, filing date and retrieval time. It parses only the first five pages. It never substitutes Tier 1, an estimated earnings-release value, a minimum or subsidiary ratio.
+- Live adapter verification recovered the June 30, 2026 standardized CET1 observation **14.2%**, from page 3; this is an observed result, not a hardcoded input. Other banks and JPM credit-risk coverage still require work.
+- Combined-issuer inline XBRL now scopes DEI identity and period facts to the requested entity's undimensioned reporting context. Numeric observations remain restricted to that entity; conflicting/unscoped combined identities still fail.
+- Eleven filing tests pass, including wrong issuer/date/column, estimated/minimum/subsidiary rejection, conflicting tables and blocked-archive PDF fallback. This is not a completed full-universe coverage claim.
+
 ## Seven-day scanner cache and financial HTML recovery — 2026-10-13
 
 This remains the existing local Python application at `http://localhost:8765`; no Cloudflare deployment or account migration. Restart `serve.py` and reload after pulling `main`.
