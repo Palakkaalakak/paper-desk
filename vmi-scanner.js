@@ -41,7 +41,7 @@ function decodeExport(content){
  return decode(content.root);
 }
 const CACHE_WEEK=7*24*60*60*1000,CACHE_VERSION=3;
-const CALCULATION_REVISION='2026-10-13-accounting-3';
+const CALCULATION_REVISION='2026-10-13-accounting-4';
 const fresh=record=>record?.version===CACHE_VERSION&&Number.isFinite(record.collectedAt)&&record.collectedAt<=Date.now()&&Date.now()-record.collectedAt<CACHE_WEEK;
 // Separate browser database: no paper-account or research-archive writes.
 function evidenceCache(indexedDB=root.indexedDB){

@@ -27,6 +27,26 @@ class ScannerTests(unittest.TestCase):
         self.assertEqual(result['selection']['source'],'labelled-source')
         self.assertEqual(result['selection']['symbols'],['NKE'])
 
+    def test_peer_comparison_propagates_operating_margin_substitution(self):
+        member=dict(symbol='OWN',cik=1,industry='Software',sector='IT')
+        peer=dict(symbol='PEER',cik=2,industry='Software',sector='IT')
+        rows=lambda values:[dict(end=f'{2021+i}-12-31',val=value,source='filed') for i,value in enumerate(values)]
+        data=dict(series=dict(revenue=rows([100]*5),income=rows([30,25,20,15,10]),operatingIncome=rows([30]*5)),
+                  current={},market={'Gross M':'50','Profit M':'1'})
+        other=dict(series=dict(revenue=rows([100]*5),operatingIncome=rows([35]*5)),current={})
+        row=dict(symbol='PEER',fields={'Gross M':'40','Profit M':'0','Market Cap':'50B'},source='snapshot',retrievedAt=1)
+        with patch.object(api,'members',return_value={'rows':[member,peer]}),patch.object(api,'financial_row',return_value=row),patch.object(m,'evidence',return_value=other):
+            result=api.peer_check(member,data)
+        self.assertEqual(result['status'],'FAIL')
+        comp=next(r for r in result['observations'] if r['metric']=='Operating margin')
+        self.assertEqual((comp['company'],comp['value']),(30,35))
+        self.assertEqual(comp['peerObservation']['inputs'][0]['source'],'filed')
+        api._CACHE.clear()
+        with patch.object(api,'members',return_value={'rows':[member,peer]}),patch.object(api,'financial_row',return_value=row),patch.object(m,'evidence',return_value=dict(series={},current={})):
+            result=api.peer_check(member,data)
+        self.assertEqual(result['status'],'ACQUIRE')
+        self.assertIsNone(next(r for r in result['observations'] if r['metric']=='Operating margin')['value'])
+
     def test_roic_retains_reported_tax_benefit_without_clamping(self):
         series={k:[dict(end='2025-12-31',val=x,source='filed')] for k,x in dict(income=110,operatingIncome=120,tax=-10,pretax=100,equity=200,debt=50,cash=30).items()}
         row=m.calculate(series)['roic'][0]

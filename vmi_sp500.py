@@ -430,7 +430,21 @@ def _company(ticker,mode='moderate',supplement=False,prior=None):
 
 
 def peer_check(member,data):
+    from vmi_metrics import calculate,margin_test,latest,evidence
+    import datetime as dt
     peers=[];seen={member['cik']};errors=[]
+    own_series=calculate(data.get('series',{}))
+    operating=(margin_test(own_series.get('netMargin',[])) is not True
+               and margin_test(own_series.get('operatingMargin',[])) is True)
+    def operating_observation(payload, end=None):
+        annual=calculate(payload.get('series',{})).get('operatingMargin',[])
+        current=calculate({k:[r] for k,r in payload.get('current',{}).items()}).get('operatingMargin',[])
+        rows=current+annual
+        rows=[r for r in rows if 0<=(dt.date.today()-dt.date.fromisoformat(r['end'])).days<=550]
+        if end:
+            rows=[r for r in rows if abs((dt.date.fromisoformat(r['end'])-dt.date.fromisoformat(end)).days)<=110]
+        return latest(rows)
+    own_operating=operating_observation(data) if operating else None
     universe=members()['rows']
     candidates=[r for r in universe if r['industry']==member['industry'] and r['cik']!=member['cik']]
     selection=dict(basis='Same GICS sub-industry',source=members().get('source'))
@@ -454,11 +468,24 @@ def peer_check(member,data):
     for key in keys:
         own=v.number(data['market'].get(key,data['market'].get({'Gross M':'Gross Margin','Profit M':'Profit Margin'}[key])))
         for row in selected:
-            value=v.number(row['fields'].get(key))
+            if key=='Profit M' and operating:
+                counterpart=None
+                try:
+                    peer_member=next(r for r in candidates if r['symbol']==row['symbol'])
+                    peer_data=cached(('evidence',row['symbol']),21600,lambda:evidence(peer_member))
+                    if own_operating: counterpart=operating_observation(peer_data,own_operating['end'])
+                except Exception as exc: errors.append(dict(symbol=row['symbol'],source='Peer operating statements',error=str(exc)))
+                own=own_operating['val'] if own_operating else None
+                value=counterpart['val'] if counterpart else None
+                comparisons.append(dict(metric='Operating margin',company=own,peer=row['symbol'],value=value,
+                    source=counterpart.get('source') if counterpart else None,companyObservation=own_operating,
+                    peerObservation=counterpart,basis='Operating income / revenue; annual or verified TTM, ends within 110 days'))
+            else:
+                value=v.number(row['fields'].get(key))
+                comparisons.append(dict(metric=key,company=own,peer=row['symbol'],value=value,source=row['source'],retrievedAt=row['retrievedAt']))
             if own is None or value is None: missing=True
-            comparisons.append(dict(metric=key,company=own,peer=row['symbol'],value=value,source=row['source'],retrievedAt=row['retrievedAt']))
     failed=any(r['company'] is not None and r['value'] is not None and r['company']<r['value'] for r in comparisons)
-    return dict(key='peers',label='Margins vs comparable businesses',status='FAIL' if failed else 'ACQUIRE' if missing else 'PASS',detail='Each of up to three largest distinct S&P 500 comparison issuers. '+selection['basis']+'. Industry-comparable proxy, not an exhaustive direct-competitor map.',selection=selection,observations=comparisons,attempts=errors)
+    return dict(key='peers',label='Margins vs comparable businesses',status='FAIL' if failed else 'ACQUIRE' if missing else 'PASS',detail=('Operating-margin substitution applied to both issuer and peers. ' if operating else '')+'Each of up to three largest distinct S&P 500 comparison issuers. '+selection['basis']+'. Industry-comparable proxy, not an exhaustive direct-competitor map.',selection=selection,observations=comparisons,attempts=errors)
 
 
 def research_payload(member,data,acquire=True):

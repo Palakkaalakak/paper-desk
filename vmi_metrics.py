@@ -45,7 +45,7 @@ YAHOO={
 }
 # Change whenever accounting or qualification semantics change. Browser records
 # retain raw observations and original collection dates, not stale verdicts.
-CALCULATION_REVISION = '2026-10-13-accounting-3'
+CALCULATION_REVISION = '2026-10-13-accounting-4'
 
 POLICY={
  'history':'Five consecutive fiscal years; conservative ten for revenue, earnings and CFO. Positive linear trend; latest exceeds first; at most two declining years.',
