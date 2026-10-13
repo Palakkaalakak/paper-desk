@@ -17,6 +17,28 @@ def parse(text):
     return p.validated(70858,'2026-06-30','issuer','2026-08-01','10-Q')
 
 
+class CitiCapitalTests(unittest.TestCase):
+    def fixture(self):
+        rows=[['June 30, 2026'], ['In millions of dollars, except ratios','Required Ratios','Standardized Approach','Required Ratios','Advanced Approaches'],
+              ['Common Equity Tier 1 Capital','$','157,547','$','157,547'], ['Total Risk-Weighted Assets','1,232,309','1,329,505'],
+              ['CET1 Capital ratio(1)','11.6','%','12.78','%','10.5','%','11.85','%']]
+        return '<p>The following tables present Citigroup’s capital components and ratios as of June 30, 2026 and December 31, 2025:</p><table>'+''.join('<tr>'+''.join('<td>'+c+'</td>' for c in r)+'</tr>' for r in rows)+'</table>'
+
+    def test_actual_parent_column_and_reconciliation(self):
+        row=f.citi_capital_table(self.fixture(),'2026-06-30','filing','2026-08-01','10-Q')
+        self.assertEqual(row['val'],12.78)
+        self.assertEqual(row['column'],'Standardized Approach')
+        self.assertEqual(row['reconciliation']['capitalMillions'],157547)
+
+    def test_reject_subsidiary_date_minimum_wrong_columns_and_conflict(self):
+        text=self.fixture()
+        for old,new in [('Citigroup’s','Citibank’s'),('June 30, 2026','March 31, 2026'),('Standardized Approach','Advanced Approaches'),('CET1 Capital ratio(1)','CET1 Capital ratio requirement'),('12.78','11.6'),('157,547','100,000')]:
+            with self.subTest(old=old):
+                self.assertIsNone(f.citi_capital_table(text.replace(old,new),'2026-06-30','filing','2026-08-01','10-Q'))
+        conflict=text+text.replace('12.78','12.00').replace('157,547','147,877')
+        self.assertIsNone(f.citi_capital_table(conflict,'2026-06-30','filing','2026-08-01','10-Q'))
+
+
 class CapitalContextTests(unittest.TestCase):
     def test_standardized_parent_not_subsidiary_advanced_or_minimum(self):
         dims='<xbrli:segment><xbrldi:explicitMember dimension="srt:ConsolidatedEntitiesAxis">srt:ParentCompanyMember</xbrldi:explicitMember><xbrldi:explicitMember dimension="us-gaap:RiskWeightedAssetsCalculationMethodologyAxis">us-gaap:StandardizedApproachMember</xbrldi:explicitMember></xbrli:segment>'

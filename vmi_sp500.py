@@ -214,7 +214,10 @@ def market_view(view,ticker):
 
 def sector(member):
     industry=member['industry'].lower()
-    return dict(bank=('banks' in industry or industry.endswith('bank')) and 'investment banking' not in industry,insurance='insurance' in industry or 'reinsurance' in industry,
+    # GICS combines asset managers with custody banks. BlackRock, Ares, etc.
+    # are not deposit-taking banks and must not receive bank-only exceptions.
+    custody_bank = industry == 'asset management & custody banks' and member.get('cik') in (1390777, 73124, 93751)
+    return dict(bank=industry in ('diversified banks', 'regional banks', 'banks', 'bank') or custody_bank,insurance='insurance' in industry or 'reinsurance' in industry,
                 reit='reit' in industry,utility=member['sector']=='Utilities',
                 excluded=member['sector']=='Energy' or any(x in industry for x in ('airline','real estate development','mining','steel','aluminum','gold','copper')))
 

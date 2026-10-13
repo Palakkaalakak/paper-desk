@@ -147,6 +147,52 @@ def capital_xbrl(parser, cik, report_date, source, filed, form):
     return rows[0] if rows and len({r['val'] for r in rows})==1 else None
 
 
+def citi_capital_table(text, report_date, source, filed, form):
+    """Citigroup's actual standardized column, not required or Citibank ratios.
+
+    Used only after CIK/DEI validation. Reconcile the displayed ratio to the
+    same dated table's CET1 capital and standardized risk-weighted assets.
+    """
+    from html import unescape
+    def plain(value):
+        return ' '.join(unescape(re.sub(r'<[^>]*>', ' ', value)).split())
+    found = []
+    for table in re.finditer(r'<table\b.*?</table>', text, re.S | re.I):
+        heading = plain(text[max(0, table.start()-2500):table.start()])
+        if not re.search(r'The following tables present Citigroup[’\']s capital components and ratios as of [^.]+:\s*$', heading):
+            continue
+        parser = v.Tables(''); parser.feed(table[0])
+        date = None; columns = None; capital = assets = None
+        for raw in parser.rows:
+            row = [cell.strip() for cell in raw if cell.strip()]
+            if not row: continue
+            dates = re.findall(r'\b[A-Z][a-z]+ \d{1,2}, \d{4}\b', ' '.join(row))
+            if dates:
+                date = dt.datetime.strptime(dates[0], '%B %d, %Y').date().isoformat()
+                columns = None; capital = assets = None
+                continue
+            if row[0] == 'In millions of dollars, except ratios':
+                columns = row[1:]
+                continue
+            if date != report_date or columns != ['Required Ratios', 'Standardized Approach', 'Required Ratios', 'Advanced Approaches']:
+                continue
+            values = [v.number(x) for x in row[1:] if x not in ('$', '%')]
+            if row[0] == 'Common Equity Tier 1 Capital' and len(values) == 2:
+                capital = values[0]
+            elif row[0] == 'Total Risk-Weighted Assets' and len(values) == 2:
+                assets = values[0]
+            elif re.fullmatch(r'CET1 Capital ratio(?:\(\d+\))?', row[0]):
+                if len(values) != 4 or row[2::2] != ['%']*4 or any(x is None or not 0 <= x <= 100 for x in values): continue
+                actual = values[1]
+                if capital is None or assets is None or capital <= 0 or assets <= 0 or abs(capital/assets*100-actual) > .0051: continue
+                found.append(dict(end=date, val=actual, unit='percent', source=source,
+                    filed=filed, form=form, retrievedAt=int(time.time()*1000), tag=row[0],
+                    tableRow=row, column='Standardized Approach', columnHeader=columns,
+                    issuerHeading=heading, reconciliation=dict(capitalMillions=capital, riskWeightedAssetsMillions=assets),
+                    basis='Actual Citigroup parent standardized CET1; capital / risk-weighted assets reconciled'))
+    return found[0] if found and len({r['val'] for r in found}) == 1 else None
+
+
 def capital_table(text, issuer_name, report_date, source):
     """Strict dated parent-company table adapter; rejects subsidiary/minimum ratios."""
     wanted = re.sub(r'\W','',issuer_name).lower(); result=[]; seen=set()
@@ -262,6 +308,7 @@ def recover(member, issuer):
             facts=parser.validated(cik,period,url,recent['filingDate'][i],recent['form'][i])
             capital=capital_xbrl(parser,cik,period,url,recent['filingDate'][i],recent['form'][i])
             if not capital and cik==70858: capital=capital_table(text,'Bank of America Corporation',period,url)
+            if not capital and cik==831001: capital=citi_capital_table(text,period,url,recent['filingDate'][i],recent['form'][i])
             if not capital:
                 try:
                     pdf = issuer_pdf(member, period, recent['filingDate'][i], recent['form'][i])

@@ -21,6 +21,14 @@ class ScannerTests(unittest.TestCase):
         self.assertTrue(api.quick(member,dict(ROE='11%'),'moderate')['rejected'])
         self.assertFalse(api.quick(dict(industry='Diversified Banks',sector='Financials'),dict(ROE='20%',ROIC='1%'),'moderate')['rejected'])
         self.assertFalse(api.quick(member,{},'moderate')['rejected'])
+    def test_asset_managers_are_not_custody_banks(self):
+        member=dict(industry='Asset Management & Custody Banks',sector='Financials',cik=2012383)
+        self.assertFalse(api.sector(member)['bank'])
+        self.assertTrue(api.quick(member,{'ROE':'20%','ROIC':'9%'},'moderate')['rejected'])
+        for cik in (1390777,73124,93751):
+            self.assertTrue(api.sector(dict(member,cik=cik))['bank'])
+        self.assertFalse(api.sector(dict(member,industry='Investment Banking & Brokerage'))['bank'])
+
     def test_missing_bulk_row_retrieves_individual(self):
         members=[dict(symbol='A',industry='Software',sector='IT'),dict(symbol='B',industry='Software',sector='IT')]
         with patch.object(api,'members',return_value={'rows':members}),patch.object(api,'bulk',return_value={'A':dict(symbol='A',fields={},source='bulk')}),patch.object(api,'snapshot',return_value=dict(symbol='B',fields={},source='individual')) as snap:
