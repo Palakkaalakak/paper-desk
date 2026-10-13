@@ -5,6 +5,7 @@ import re
 import time
 import urllib.parse
 from playwright.sync_api import sync_playwright
+from vmi_metrics import CALCULATION_REVISION
 
 ROOT = pathlib.Path(__file__).resolve().parent
 
@@ -40,7 +41,7 @@ def main():
             if '/data/vmi_sp500_company' in url:
                 q=urllib.parse.parse_qs(urllib.parse.urlsplit(url).query)
                 evaluations={m:dict(preset=m,status='QUALIFIED',checks=[],failures=[],pending=[]) for m in ('conservative','moderate','optimistic')}
-                return r.fulfill(json=dict(member={'symbol':'META','cik':900},evidence={},result=evaluations[q['mode'][0]],evaluations=evaluations,cacheVersion=2,collectedAt=now,acquiredModes=[q['mode'][0]],research=dict(symbol='META',name='Meta',currency='USD',cik=900,metrics={'roe':25},sources=[],retrievedAt=now)))
+                return r.fulfill(json=dict(member={'symbol':'META','cik':900},evidence=dict(series={},current={}),result=evaluations[q['mode'][0]],evaluations=evaluations,cacheVersion=2,calculationRevision=CALCULATION_REVISION,collectedAt=now,acquiredModes=[q['mode'][0]],research=dict(symbol='META',name='Meta',currency='USD',cik=900,metrics={'roe':25},sources=[],retrievedAt=now)))
             if '/data/vmi_fundamentals' in url: return r.fulfill(json={'symbol':'META','name':'<img src=x onerror=alert(1)>','currency':'USD','cik':123,'metrics':{'roe':25},'sources':[],'retrievedAt':now})
             if '/data/vmi_stock' in url: return r.fulfill(json={'symbol':'META','conid':123,'secType':'STK','currency':'USD','mult':1,'exch':'SMART','served_by':'tws'})
             option = dict(conid=456,symbol='META  990116C00100000',secType='OPT',right='C',root='META',underConid=123,currency='USD',mult=100,strike=100,expiry='20990116',exch='SMART',tradingClass='META',deliverableStatus='IB_STANDARD_CLASS_NOT_OCC_VERIFIED')

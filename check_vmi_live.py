@@ -24,6 +24,7 @@ def main():
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument('--live',action='store_true',required=True)
     p.add_argument('--mode',choices=api.MODES,default='moderate')
+    p.add_argument('--full-evidence',action='store_true',help='Include full evidence for offline replay')
     args=p.parse_args();started=time.monotonic();totals=Counter();lock=threading.Lock();sequence=0
     def measured(label,fn):
         nonlocal sequence
@@ -37,7 +38,7 @@ def main():
             with lock: totals.update(record['counts'])
             emit(stage='request',label=label,seconds=round(time.monotonic()-at,3),counts=record['counts'])
     u=measured('universe',api.members);members=u['rows'];rejected={r['symbol'] for r in members if api.sector(r)['excluded']};recovery=set()
-    emit(stage='universe',count=len(members),source=u['source'],industryExcluded=len(rejected),ib='Optional; offline Gateway is not a user entitlement test')
+    emit(stage='universe',count=len(members),source=u['source'],industryExcluded=len(rejected),ib='Optional; offline Gateway is not a user entitlement test',**({'payload':u} if args.full_evidence else {}))
     for view in ('financial','growth'):
         candidates=[r for r in members if r['symbol'] not in rejected];at=time.monotonic();done=0
         groups=[candidates[i:i+20] for i in range(0,len(candidates),20)]
@@ -49,7 +50,7 @@ def main():
                     data=future.result();recovery.update(data['missing'])
                     for row in data['rows']:
                         if row['screen']['rejected']: rejected.add(row['symbol'])
-                    emit(stage=view,done=done,total=len(candidates),rejected=len(rejected),missing=data['missing'])
+                    emit(stage=view,done=done,total=len(candidates),rejected=len(rejected),missing=data['missing'],**({'payload':data} if args.full_evidence else {}))
                 except Exception as exc:
                     recovery.update(r['symbol'] for r in group);emit(stage=view,error=str(exc))
         emit(stage=view+' summary',seconds=round(time.monotonic()-at,3),rejected=len(rejected),recovery=len(recovery-rejected))
@@ -66,7 +67,7 @@ def main():
                 if r['status']=='ACQUIRING': pending.update(r['pending'])
                 all_missing.update(k for k in r['pending'] if k!='peers' or not r['failures'])
                 skipped_peers+=int(bool(r['failures']) and 'peers' in r['pending'])
-                emit(stage='deep',symbol=ticker,done=index+1,total=len(candidates),status=r['status'],failures=r['failures'],pending=r['pending'],attempts=data['evidence']['attempts'],checks=[dict(key=c['key'],status=c['status'],detail=c.get('detail','')) for c in r['checks']],sources=data['evidence']['sources'])
+                emit(stage='deep',symbol=ticker,done=index+1,total=len(candidates),status=r['status'],failures=r['failures'],pending=r['pending'],attempts=data['evidence']['attempts'],checks=[dict(key=c['key'],status=c['status'],detail=c.get('detail','')) for c in r['checks']],sources=data['evidence']['sources'],**({'payload':data} if args.full_evidence else {}))
             except Exception as exc: outcomes['ERROR']+=1;emit(stage='deep',symbol=ticker,error=str(exc))
     decisions_resolved=not outcomes['ACQUIRING'] and not outcomes['ERROR']
     complete=decisions_resolved and not all_missing
