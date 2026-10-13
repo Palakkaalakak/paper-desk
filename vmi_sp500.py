@@ -437,8 +437,8 @@ def peer_check(member,data):
         # Comparison fallback only; never changes the constituent scan universe.
         try:
             shot=cached(('peer-snapshot',member['symbol']),MARKET_TTL,lambda:snapshot(member['symbol']))
-            candidates=[r for r in universe if r['symbol'] in shot.get('peers',[]) and r['sector']==member['sector'] and r['cik']!=member['cik']]
-            selection=dict(basis='Finviz labelled peers restricted to existing S&P constituents in the same sector; singleton GICS fallback',source=shot['source'],retrievedAt=shot['retrievedAt'],symbols=[r['symbol'] for r in candidates])
+            candidates=[r for r in universe if r['symbol'] in shot.get('peers',[]) and r['cik']!=member['cik']]
+            selection=dict(basis='Finviz labelled comparison peers restricted to existing S&P constituents; singleton GICS fallback (may cross GICS sectors)',source=shot['source'],retrievedAt=shot['retrievedAt'],symbols=[r['symbol'] for r in candidates])
         except Exception as exc: errors.append(dict(source='Singleton-group peer recovery',error=str(exc)))
     for r in candidates:
         if r['cik'] not in seen:

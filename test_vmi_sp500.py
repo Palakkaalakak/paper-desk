@@ -16,9 +16,9 @@ class ScannerTests(unittest.TestCase):
         with patch.object(api,'finviz_fetch',return_value=text.replace('t=DECK,NKE','t=OTHER,NKE')):
             self.assertEqual(api.snapshot('DECK')['peers'],[])
         member=dict(symbol='DECK',cik=1,industry='Footwear',sector='Consumer')
-        nike=dict(symbol='NKE',cik=2,industry='Apparel',sector='Consumer')
+        nike=dict(symbol='NKE',cik=2,industry='Apparel',sector='Different source sector')
         wrong=dict(symbol='BANK',cik=3,industry='Bank',sector='Financials')
-        shot=dict(peers=['NKE','ONON','BANK'],source='labelled-source',retrievedAt=1)
+        shot=dict(peers=['NKE','ONON'],source='labelled-source',retrievedAt=1)
         row=dict(symbol='NKE',fields={'Gross M':'40%','Profit M':'10%','Market Cap':'50B'},source='financial',retrievedAt=1)
         with patch.object(api,'members',return_value={'rows':[member,nike,wrong]}),patch.object(api,'snapshot',return_value=shot),patch.object(api,'financial_row',return_value=row) as acquire:
             result=api.peer_check(member,dict(market={'Gross M':'50%','Profit M':'20%'}))
