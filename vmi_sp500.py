@@ -162,7 +162,17 @@ def snapshot(ticker):
     p=v.Tables('snapshot-table2');p.feed(text);fields={}
     for r in p.rows: fields.update(zip(r[::2],r[1::2]))
     if not fields: raise ValueError('Snapshot table absent')
-    return dict(symbol=ticker,fields=fields,source=url,retrievedAt=int(time.time()*1000))
+    peers=[]
+    link=re.search(r'<a\b[^>]*href="([^"]+)"[^>]*>\s*Peers\s*</a>',text)
+    if link:
+        from html import unescape
+        target=urllib.parse.urlsplit(unescape(link[1]))
+        if target.netloc in ('','finviz.com','www.finviz.com') and target.path in ('screener','/screener','screener.ashx','/screener.ashx'):
+            raw=urllib.parse.parse_qs(target.query).get('t',[''])[0].split(',')
+            if raw and raw[0].replace('-','.')==ticker and len(raw)<=30:
+                try: peers=list(dict.fromkeys(v.symbol(x.replace('-','.')) for x in raw[1:]))
+                except ValueError: peers=[]
+    return dict(symbol=ticker,fields=fields,peers=peers,source=url,retrievedAt=int(time.time()*1000))
 
 
 def bulk(view,tickers, *, fast=False):
@@ -420,8 +430,18 @@ def _company(ticker,mode='moderate',supplement=False,prior=None):
 
 def peer_check(member,data):
     peers=[];seen={member['cik']};errors=[]
-    for r in members()['rows']:
-        if r['industry']==member['industry'] and r['cik'] not in seen:
+    universe=members()['rows']
+    candidates=[r for r in universe if r['industry']==member['industry'] and r['cik']!=member['cik']]
+    selection=dict(basis='Same GICS sub-industry',source=members().get('source'))
+    if not candidates:
+        # Comparison fallback only; never changes the constituent scan universe.
+        try:
+            shot=cached(('peer-snapshot',member['symbol']),MARKET_TTL,lambda:snapshot(member['symbol']))
+            candidates=[r for r in universe if r['symbol'] in shot.get('peers',[]) and r['sector']==member['sector'] and r['cik']!=member['cik']]
+            selection=dict(basis='Finviz labelled peers restricted to existing S&P constituents in the same sector; singleton GICS fallback',source=shot['source'],retrievedAt=shot['retrievedAt'],symbols=[r['symbol'] for r in candidates])
+        except Exception as exc: errors.append(dict(source='Singleton-group peer recovery',error=str(exc)))
+    for r in candidates:
+        if r['cik'] not in seen:
             seen.add(r['cik'])
             try:
                 row=financial_row(r['symbol'])
@@ -437,7 +457,7 @@ def peer_check(member,data):
             if own is None or value is None: missing=True
             comparisons.append(dict(metric=key,company=own,peer=row['symbol'],value=value,source=row['source'],retrievedAt=row['retrievedAt']))
     failed=any(r['company'] is not None and r['value'] is not None and r['company']<r['value'] for r in comparisons)
-    return dict(key='peers',label='Margins vs comparable businesses',status='FAIL' if failed else 'ACQUIRE' if missing else 'PASS',detail='Each of up to three largest distinct S&P 500 issuers in the same GICS sub-industry. Industry-comparable proxy, not an exhaustive direct-competitor map.',observations=comparisons,attempts=errors)
+    return dict(key='peers',label='Margins vs comparable businesses',status='FAIL' if failed else 'ACQUIRE' if missing else 'PASS',detail='Each of up to three largest distinct S&P 500 comparison issuers. '+selection['basis']+'. Industry-comparable proxy, not an exhaustive direct-competitor map.',selection=selection,observations=comparisons,attempts=errors)
 
 
 def research_payload(member,data,acquire=True):

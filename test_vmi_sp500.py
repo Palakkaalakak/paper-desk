@@ -9,6 +9,24 @@ class ScannerTests(unittest.TestCase):
     def test_link_identity_not_duplicate_text(self):
         p=api.Screener();p.feed('<table class="screener_table"><tr><th>No.</th><th>Ticker</th><th>ROE</th><tr><td>1</td><td><a href="stock?t=AAPL&ty=c">AAAPL</a></td><td>20%</td><tr><td>2</td><td><a href="stock?t=A&ty=c">AA</a></td><td>15%</td></table>')
         self.assertEqual([r[1] for r in p.rows[1:]],['AAPL','A'])
+    def test_labelled_peer_links_are_not_scan_universe(self):
+        text='<a href="quote.ashx?t=DECK">DECK</a><table class="snapshot-table2"><tr><td>ROE</td><td>25%</td></tr></table><a href="screener?t=DECK,NKE,ONON">Peers</a>'
+        with patch.object(api,'finviz_fetch',return_value=text):
+            self.assertEqual(api.snapshot('DECK')['peers'],['NKE','ONON'])
+        with patch.object(api,'finviz_fetch',return_value=text.replace('t=DECK,NKE','t=OTHER,NKE')):
+            self.assertEqual(api.snapshot('DECK')['peers'],[])
+        member=dict(symbol='DECK',cik=1,industry='Footwear',sector='Consumer')
+        nike=dict(symbol='NKE',cik=2,industry='Apparel',sector='Consumer')
+        wrong=dict(symbol='BANK',cik=3,industry='Bank',sector='Financials')
+        shot=dict(peers=['NKE','ONON','BANK'],source='labelled-source',retrievedAt=1)
+        row=dict(symbol='NKE',fields={'Gross M':'40%','Profit M':'10%','Market Cap':'50B'},source='financial',retrievedAt=1)
+        with patch.object(api,'members',return_value={'rows':[member,nike,wrong]}),patch.object(api,'snapshot',return_value=shot),patch.object(api,'financial_row',return_value=row) as acquire:
+            result=api.peer_check(member,dict(market={'Gross M':'50%','Profit M':'20%'}))
+        acquire.assert_called_once_with('NKE')
+        self.assertEqual(result['status'],'PASS')
+        self.assertEqual(result['selection']['source'],'labelled-source')
+        self.assertEqual(result['selection']['symbols'],['NKE'])
+
     def test_membership_retains_share_classes(self):
         rows=[dict(symbol='X'+str(i),name='Issuer',sector='Information Technology',industry='Software',cik=i+1) for i in range(501)]
         rows += [dict(symbol='BRK.B',name='B',sector='Financials',industry='Insurance',cik=900),dict(symbol='BRK.A',name='A',sector='Financials',industry='Insurance',cik=900)]
