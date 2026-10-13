@@ -75,6 +75,19 @@ class StatementScraperTests(unittest.TestCase):
         self.assertEqual(len(self.decode(a+a)['series']['revenue']),1)
         with self.assertRaisesRegex(ValueError,'Conflicting'): self.decode(a+self.html([('Total Revenue','101',101000000)]))
 
+    def test_conflict_quarantines_only_affected_metric_and_period(self):
+        label='Earnings before Interest, Taxes, Depreciation and Amortization (EBITDA)'
+        text=self.html([('Total Revenue','100',100000000),(label,'10',10000000)])
+        text+=self.html([(label,'11',11000000)])+self.html([(label,'10',10000000)])
+        data=self.decode(text)
+        self.assertEqual(data['series']['revenue'][0]['val'],100000000)
+        self.assertEqual(data['series']['ebitda'],[])
+        self.assertEqual(len(data['attempts'][0]['observations']),3)
+        self.assertIn('excluded',data['attempts'][0]['error'])
+        with patch('vmi_web.v.fetch',return_value=text):
+            from vmi_web import statements
+            self.assertEqual(len(statements('TEST')['attempts']),1)
+
     def test_capex_total_preferred_with_alternative_retained(self):
         data=self.decode(self.html([('Purchase of Property, Plant & Equipment','-10',-10000000),('Capital Expenditures (CapEx)','12',12000000),('Total Interest Expense','2',2000000)]))
         self.assertEqual(data['series']['capex'][0]['val'],12000000)

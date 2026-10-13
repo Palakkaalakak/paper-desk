@@ -53,7 +53,7 @@ def decode(text,ticker,url):
                 if isinstance(item,dict) and item.get('tickerSymbol'): identities.append(item['tickerSymbol'])
         except ValueError: continue
     if not identities or any(str(x).upper().replace('.','-')!=alias for x in identities): raise ValueError('MarketBeat issuer identity mismatch')
-    annual={};quarterly={};alternatives=[];retrieved=int(time.time()*1000)
+    annual={};quarterly={};alternatives=[];conflicts={};retrieved=int(time.time()*1000)
     for match in re.finditer(r'<table\b[^>]*class="financials-table[^>]*>.*?</table>',text,re.S):
         caption=text[max(0,match.start()-800):match.start()]
         headings=re.findall(r'(?:Annual|Quarterly) (Income Statements|Cash Flow Statements|Balance Sheets|Metrics And Ratios)',caption)
@@ -83,6 +83,10 @@ def decode(text,ticker,url):
                 if key=='capex': value=abs(value)
                 obs=dict(end=end.isoformat(),val=value,unit=unit,source=url,tag=row[0],basis=basis,statement=statement,retrievedAt=retrieved)
                 if key=='debt': obs['completeDebt']=True
+                conflict_key=(basis,key,obs['end'])
+                if conflict_key in conflicts:
+                    conflicts[conflict_key]['observations'].append(obs)
+                    continue
                 prior=next((r for r in target.get(key,[]) if r['end']==obs['end']),None)
                 if prior and prior['val']!=value:
                     if key=='capex' and prior['tag']!=obs['tag']:
@@ -99,12 +103,18 @@ def decode(text,ticker,url):
                         alternatives.append(dict(metric=key,preferred=preferred,alternative=prior if preferred is obs else obs,reason='Income statement earnings preferred over cash-flow reconciliation income'))
                         if preferred is obs: target[key].remove(prior);target[key].append(obs)
                         continue
-                    raise ValueError('Conflicting scraped statement observations: '+key+' '+obs['end'])
+                    # Exclude both conflicting values, retaining all unrelated
+                    # validated observations and the disagreement in the audit.
+                    target[key].remove(prior)
+                    conflicts[conflict_key]=dict(source=url,metric=key,end=obs['end'],
+                        error='Conflicting scraped statement observations; value excluded',observations=[prior,obs])
+                    continue
                 if not prior: target.setdefault(key,[]).append(obs)
-    if not annual: raise ValueError('MarketBeat dated USD financial table not established')
+    if not any(annual.values()):
+        raise ValueError('Conflicting scraped statement observations' if conflicts else 'MarketBeat dated USD financial table not established')
     for series in (annual,quarterly):
         for rows in series.values(): rows.sort(key=lambda r:r['end'])
-    return dict(symbol=ticker,series=annual,quarterly=quarterly,source=url,retrievedAt=retrieved,alternatives=alternatives)
+    return dict(symbol=ticker,series=annual,quarterly=quarterly,source=url,retrievedAt=retrieved,alternatives=alternatives,attempts=list(conflicts.values()))
 
 
 def statements(ticker,exchanges=()):
@@ -116,7 +126,7 @@ def statements(ticker,exchanges=()):
         try:
             trace.event('scrape',ticker+' / dated HTML statements',provider='www.marketbeat.com')
             row=decode(v.fetch(url,timeout=12,retries=0,retry_429=False),ticker,url)
-            return dict(row,attempts=attempts)
+            return dict(row,attempts=attempts+row.get('attempts',[]))
         except Exception as exc:
             attempts.append(dict(source=url,error=str(exc)))
             if isinstance(exc,urllib.error.HTTPError) and exc.code in (403,429): break
