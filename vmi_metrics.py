@@ -73,6 +73,47 @@ def calc(end,val,method,inputs):
 def latest(rows): return max(rows,key=lambda r:r['end']) if rows else None
 
 
+def annual_balances(facts, tags, fiscal_ends, unit='USD'):
+    """Filter fiscal-year instants before the bounded observation selection."""
+    annual = {tag: {'units': {unit: [
+        r for r in facts.get(tag, {}).get('units', {}).get(unit, [])
+        if r.get('form') in ('10-K', '10-K/A', '20-F', '20-F/A')
+        and r.get('end') in fiscal_ends
+    ]}} for tag in tags}
+    return v.observations(annual, tags, unit=unit)
+
+
+def issuer_trade_receivables(member, facts, fiscal_ends, source):
+    """FIX's filed net billed + unbilled balances, not a provider subtotal.
+
+    Allowances are already deducted; retainage is already in billed balances.
+    Nontrade receivables and contract assets remain separate. This verified
+    interpretation is issuer-specific, not a generic net/gross assumption.
+    """
+    if member['cik'] != 1035983:
+        return None
+    tags = ('BilledContractReceivables', 'UnbilledContractsReceivable')
+
+    def combine(parts):
+        rows = []
+        for billed in parts[0]:
+            unbilled = next((r for r in parts[1] if r['end'] == billed['end']), None)
+            if unbilled is None or billed['val'] < 0 or unbilled['val'] < 0:
+                continue
+            inputs = [dict(r, source=source) for r in (billed, unbilled)]
+            row = calc(billed['end'], sum(r['val'] for r in inputs),
+                       'Reported billed + unbilled trade receivables; both net of their separately disclosed allowances', inputs)
+            row.update(unit='USD', source=source, filed=max(r['filed'] for r in inputs),
+                       scope='billed_and_unbilled_trade_receivables',
+                       tag='BilledContractReceivables + UnbilledContractsReceivable')
+            rows.append(row)
+        return rows
+
+    annual = combine([annual_balances(facts, [tag], fiscal_ends) for tag in tags])
+    current = latest(combine([v.observations(facts, [tag]) for tag in tags]))
+    return dict(annual=annual, current=current)
+
+
 def ttm(facts,tags,annual):
     """Annual + current fiscal YTD - comparable prior YTD, never sum overlapping quarters."""
     if not annual: return None
@@ -246,10 +287,10 @@ def evidence(member,mode=None,prior=None):
             for r in s[key]: r['source']=url
             obs=ttm(facts,tags,s[key])
             if obs: current[key]=obs
+        fiscal_ends={r['end'] for key in flows for r in s.get(key,[])}
         for key,tags in BAL.items():
             unit='shares' if key=='shares' else 'USD'
-            annual={tag:{'units':{unit:[r for r in facts.get(tag,{}).get('units',{}).get(unit,[]) if r.get('form') in ('10-K','10-K/A','20-F','20-F/A')]}} for tag in tags}
-            s[key]=v.observations(annual,tags,unit=unit)
+            s[key]=annual_balances(facts,tags,fiscal_ends,unit=unit)
             obs=latest(v.observations(facts,tags,unit=unit))
             if obs: current[key]=dict(obs,source=url)
             for r in s[key]: r['source']=url
@@ -336,6 +377,18 @@ def evidence(member,mode=None,prior=None):
     if cik==70858:
         row=latest(v.observations(facts,['FinancingReceivableExcludingAccruedInterestNonaccrualPercentPastDue'],unit='pure'))
         if row: current['npl']=dict(row,val=row['val']*100,unit='percent',source=url,basis='BAC issuer-reported nonperforming loan ratio')
+    scoped=issuer_trade_receivables(member,facts,{r['end'] for r in s.get('revenue',[])},url)
+    if scoped is not None:
+        for old in s.get('ar',[]):
+            preferred=match(scoped['annual'],old['end'])
+            if preferred is None or old['val']!=preferred['val']:
+                attempts.append(dict(source=old.get('source'),observationAlternative=dict(
+                    metric='ar',preferred=preferred,alternative=old,
+                    reason='Issuer-filed full trade-receivable scope required; provider subtotal excluded')))
+        # Never fill an incomplete full-scope history with the known ambiguous subtotal.
+        s['ar']=scoped['annual']
+        current.pop('ar',None)
+        if scoped['current']: current['ar']=scoped['current']
     for revenue in s.get('revenue',[]):
         end=revenue['end'];gross=match(s.get('gross',[]),end);cost=match(s.get('cost',[]),end)
         if cost and not gross: s.setdefault('gross',[]).append(calc(end,revenue['val']-cost['val'],'Revenue - cost of goods/services',[revenue,cost]))

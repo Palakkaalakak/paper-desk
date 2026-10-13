@@ -170,8 +170,39 @@ class ScannerTests(unittest.TestCase):
             dict(start='2025-04-01',end='2025-06-30',filed='2025-07-20',val=35,form='10-Q')]}}}
         self.assertEqual(m.ttm(facts,['Revenue'],annual)['val'],115)
     def test_annual_balance_filter_preserves_long_history(self):
-        # A quarterly-heavy sequence must not truncate the annual history to three years.
-        self.assertIn("if r.get('form') in ('10-K','10-K/A','20-F','20-F/A')",__import__('inspect').getsource(m.evidence))
+        # Quarter instants inside a 10-K must not consume the twelve-row limit.
+        rows=[]; ends=set()
+        for year in range(2014,2026):
+            ends.add(f'{year}-12-31')
+            for suffix in ('03-31','06-30','09-30','12-31'):
+                rows.append(dict(end=f'{year}-{suffix}',filed=f'{year+1}-02-01',form='10-K',val=year))
+        rows.append(dict(end='2026-03-31',filed='2026-05-01',form='10-Q',val=2026))
+        facts={'StockholdersEquity':{'units':{'USD':rows}}}
+        result=m.annual_balances(facts,['StockholdersEquity'],ends)
+        self.assertEqual([r['end'] for r in result],sorted(ends))
+        self.assertEqual(m.annual_balances(facts,['StockholdersEquity'],set()),[])
+
+    def test_fix_unbilled_subtotal_cannot_impersonate_trade_receivables(self):
+        ends=[f'{y}-12-31' for y in range(2021,2026)]
+        vals={'BilledContractReceivables':[773716000,1000000000,1300000000,1800000000,2577858000],
+              'UnbilledContractsReceivable':[61881000,80000000,90000000,95786000,123197000]}
+        facts={tag:{'units':{'USD':[dict(end=end,filed=f'{int(end[:4])+1}-02-20',form='10-K',val=val)
+               for end,val in zip(ends,values)]}} for tag,values in vals.items()}
+        member=dict(symbol='FIX',cik=1035983,industry='Building Products',sector='Industrials')
+        scoped=m.issuer_trade_receivables(member,facts,set(ends),'SEC')
+        self.assertEqual([scoped['annual'][i]['val'] for i in (0,4)],[835597000,2701055000])
+        self.assertEqual(scoped['current']['val'],2701055000)
+        self.assertEqual(scoped['annual'][0]['inputs'][0]['source'],'SEC')
+        revenue=[dict(end=end,val=val) for end,val in zip(ends,[3073636000,4000000000,5000000000,7000000000,9101641000])]
+        data=dict(series=dict(revenue=revenue,ar=scoped['annual']),current={},market={},sources=[])
+        check=next(c for c in m.evaluate(member,data)['checks'] if c['key']=='receivables')
+        self.assertEqual(check['status'],'FAIL')
+        self.assertIn('receivables 223.25%',check['detail'])
+        self.assertIn('revenue 196.12%',check['detail'])
+        # Other issuers' net/gross definitions are not inferred from FIX.
+        self.assertIsNone(m.issuer_trade_receivables(dict(member,cik=1),facts,set(ends),'SEC'))
+        del facts['UnbilledContractsReceivable']
+        self.assertEqual(m.issuer_trade_receivables(member,facts,set(ends),'SEC')['annual'],[])
 
 class StatementFlowTests(unittest.TestCase):
     def setUp(self):
