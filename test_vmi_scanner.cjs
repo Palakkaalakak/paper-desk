@@ -111,13 +111,18 @@ function fixtureData(symbol,mode,status='QUALIFIED'){
  return {cacheVersion:2,member:{symbol,cik:1},result:evaluations[mode],evaluations,evidence:{series:{revenue:[{end:'2025-12-31',val:100,source:'fixture'}]}},research:null,collectedAt:Date.now(),acquiredModes:[mode]};
 }
 function cacheFixtureFetch(calls,{excludeConservative=false,unresolved=false}={}){
- return async path=>{
+ return async (path,options)=>{
   const u=new URL(path,'http://localhost');calls.push(u);
   if(u.pathname.endsWith('members'))return response({rows:universe.map((r,i)=>({...r,cik:1,industryExcluded:i>1})),retrievedAt:Date.now()});
   if(u.pathname.endsWith('batch'))return response({rows:u.searchParams.get('symbols').split(',').map(symbol=>{
    const screens=Object.fromEntries(presets.map(p=>[p,{rejected:excludeConservative&&symbol==='X0'&&p==='conservative',reasons:['ROE fixture']}])) ;
    return {symbol,fields:{ROE:'13'},source:'fixture',retrievedAt:Date.now(),screens,screen:screens[u.searchParams.get('mode')]};
   }),missing:[]});
+  if(u.pathname==='/data/vmi_sp500_supplement'){
+   assert.equal(options.method,'POST');assert.equal(options.headers['X-Paper-Desk-Research'],'1');
+   const body=JSON.parse(options.body);assert.ok(body.prior.evidence.series.revenue.length);
+   return response({...fixtureData(body.symbol,body.mode,unresolved?'ACQUIRING':'QUALIFIED'),collectedAt:body.prior.collectedAt,evidence:body.prior.evidence});
+  }
   assert.equal(u.pathname,'/data/vmi_sp500_company');return response(fixtureData(u.searchParams.get('symbol'),u.searchParams.get('mode'),unresolved?'ACQUIRING':'QUALIFIED'));
  };
 }
@@ -146,8 +151,18 @@ test('newly required unresolved inputs request supplementation once per preset',
  const original=global.fetch,calls=[],cache=memoryCache();let mode='moderate';global.fetch=cacheFixtureFetch(calls,{unresolved:true});
  try{
   const s=create({mode:()=>mode,cache});await s.start();const before=calls.length;mode='conservative';await s.reapply();
-  const more=calls.slice(before);assert.equal(more.length,2);assert.ok(more.every(u=>u.searchParams.get('supplement')==='1'&&!u.searchParams.has('force')));
+  const more=calls.slice(before);assert.equal(more.length,2);assert.ok(more.every(u=>u.pathname==='/data/vmi_sp500_supplement'&&!u.searchParams.has('force')));
   const after=calls.length;await s.reapply();assert.equal(calls.length,after);assert.equal(s.state().stats.acquiring,2);
+ }finally{global.fetch=original;}
+});
+test('failed or expiry-extending supplementation leaves saved evidence intact',async()=>{
+ const original=global.fetch,calls=[],cache=memoryCache();let mode='moderate';const load=cacheFixtureFetch(calls,{unresolved:true});global.fetch=load;
+ try{
+  const s=create({mode:()=>mode,cache});await s.start();const before=structuredClone([...cache.records]);
+  global.fetch=async(path,options)=>path.startsWith('/data/vmi_sp500_supplement')?{ok:false,status:502}:load(path,options);
+  mode='conservative';await s.reapply();assert.deepEqual([...cache.records],before);
+  global.fetch=async(path,options)=>{const r=await load(path,options);if(path.startsWith('/data/vmi_sp500_supplement')){const d=await r.json();d.collectedAt+=1000;return response(d);}return r;};
+  await s.reapply();assert.deepEqual([...cache.records],before);
  }finally{global.fetch=original;}
 });
 test('rescan bypasses every browser stage and deletion leaves no reusable evidence',async()=>{

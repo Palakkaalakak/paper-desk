@@ -630,13 +630,13 @@ function create(adapter){
  function consumeDiagnostics(d){for(const row of d?.requests||[]){const previous=counts.get(row.id)||{};for(const [k,v] of Object.entries(row.counts||{}))totals[k]=(totals[k]||0)+Math.max(0,v-(previous[k]||0));counts.set(row.id,row.counts||{});traces.set(row.id,row);if(traces.size>40)traces.delete(traces.keys().next().value);}if(d?.cooldowns)cooldowns=d.cooldowns;}
  const stats=()=>{const values=[...rows.values()];return {total:values.length,assessed:values.filter(done).length,qualified:values.filter(r=>r.status==='QUALIFIED').length,opportunities:values.filter(r=>r.status==='QUALIFIED'&&r.undervalued).length,rejected:values.filter(r=>r.status==='REJECTED').length,acquiring:values.filter(r=>!done(r)).length};};
  function stale(id){return id!==run||controller?.signal.aborted;}
- async function request(path,id,label='Scanner request'){
+ async function request(path,id,label='Scanner request',payload=null){
   if(stale(id))throw new DOMException('Cancelled','AbortError');
   const work=runToken+'-'+(++sequence),job={id:work,label,started:Date.now()};active.set(work,job);note('Started '+label);updateDebug();
   const timeout=new AbortController(),duration=path.includes('_batch?')?30000:150000,timer=setTimeout(()=>timeout.abort(),duration);
   const owner=controller,abort=()=>timeout.abort();owner.signal.addEventListener('abort',abort,{once:true});
   try{
-   const response=await fetch(path+(path.includes('?')?'&':'?')+'work='+encodeURIComponent(work),{signal:timeout.signal});
+   const response=await fetch(path+(path.includes('?')?'&':'?')+'work='+encodeURIComponent(work),{signal:timeout.signal,...(payload?{method:'POST',headers:{'Content-Type':'application/json','X-Paper-Desk-Research':'1'},body:JSON.stringify(payload)}:{})});
    if(!response.ok)throw Error('Data HTTP '+response.status);const data=await response.json();if(data.error)throw Error(data.error);
    if(stale(id))throw new DOMException('Cancelled','AbortError');consumeDiagnostics(data.diagnostics);
    note('Finished '+label+' in '+seconds(Date.now()-job.started));lastDone=Date.now();return data;
@@ -726,10 +726,14 @@ function create(adapter){
     // evidence assembly, retaining successful source acquisitions server-side.
     const additional=data&&data.result.status==='ACQUIRING'&&!(data.acquiredModes||[record.data.result.preset]).includes(preset);
     if(!data||additional){
-     data=await request('/data/vmi_sp500_company?symbol='+encodeURIComponent(r.symbol)+'&mode='+preset+(forceRun?'&force=1':additional?'&supplement=1':''),id,'Detailed '+r.symbol);
+     if(additional){
+      const prior={cacheVersion:record.data.cacheVersion,member:record.data.member,evidence:record.data.evidence,collectedAt:record.collectedAt};
+      data=await request('/data/vmi_sp500_supplement',id,'Supplement '+r.symbol,{symbol:r.symbol,mode:preset,prior});
+      if(data.collectedAt!==record.collectedAt)throw Error('Supplementation must preserve original cache expiry');
+     }else data=await request('/data/vmi_sp500_company?symbol='+encodeURIComponent(r.symbol)+'&mode='+preset+(forceRun?'&force=1':''),id,'Detailed '+r.symbol);
      if(stale(id))return;
      applyDetail(r,data);
-     if(data.cacheVersion===2){data.acquiredModes=[...new Set([...(record?.data?.acquiredModes||[]),preset])];await saveCache(r.symbol,data,data.collectedAt,id);}
+     if(data.cacheVersion===2){data.acquiredModes=[...new Set([...(additional?record?.data?.acquiredModes||[]:[]),preset])];await saveCache(r.symbol,data,data.collectedAt,id);}
     }else{applyDetail(r,data);totals.evidence_reuse=(totals.evidence_reuse||0)+1;lastDone=Date.now();}
     if(stale(id))return;
    }catch(e){if(stale(id))return;r.status='ACQUIRING';r.reason='Acquisition did not finish: '+e.message;r.stage='Retrieval repair required';}
