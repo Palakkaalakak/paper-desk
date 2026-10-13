@@ -93,6 +93,35 @@ def ttm(facts,tags,annual):
     return calc(now['end'],base['val']+now['val']-old['val'],'TTM = latest annual + current YTD - prior comparable YTD',[base,now,old])
 
 
+def statement_ttm(annual, quarterly):
+    """Four standalone quarters, verified against a same-source annual total.
+
+    Cumulative YTD, incomplete quarters and mixed sources cannot be summed.
+    """
+    annual = sorted(annual, key=lambda r: r['end'])
+    quarterly = sorted(quarterly, key=lambda r: r['end'])
+    if not annual: return None
+    base = annual[-1]
+    if not quarterly or quarterly[-1]['end'] <= base['end']:
+        return dict(base, basis='Latest fiscal year (latest available trailing year)')
+    def four(rows):
+        rows = rows[-4:]
+        if len(rows) != 4 or any(r.get('basis') != 'Quarterly statement, not TTM or YTD' or
+                r.get('unit') != 'USD' or r.get('source') != base.get('source') or
+                type(r.get('val')) not in (int, float) or not math.isfinite(r['val']) for r in rows): return None
+        if any(not 70 <= (dt.date.fromisoformat(b['end'])-dt.date.fromisoformat(a['end'])).days <= 110
+               for a,b in zip(rows, rows[1:])): return None
+        return rows
+    reconciliation = four([r for r in quarterly if r['end'] <= base['end']])
+    trailing = four(quarterly)
+    if not reconciliation or not trailing or reconciliation[-1]['end'] != base['end']: return None
+    if abs(sum(r['val'] for r in reconciliation)-base['val']) > max(1, abs(base['val'])*.000001): return None
+    result = calc(trailing[-1]['end'], sum(r['val'] for r in trailing),
+                  'TTM = four consecutive standalone fiscal quarters; same-source annual reconciliation verified', trailing)
+    result.update(unit='USD', periodType='TTM', annualReconciliation=dict(annual=base, quarters=reconciliation))
+    return result
+
+
 def yahoo(ticker):
     keys=['annual'+n for n in YAHOO.values()]+['quarterly'+YAHOO[k] for k in ('income','ocf','revenue','debt','cash','cashInvestments','investments','shares','dilutedShares','ca','cl','assets','equity','deferred')]
     url='https://query1.finance.yahoo.com/ws/fundamentals-timeseries/v1/finance/timeseries/'+ticker.replace('.','-')+'?'+urllib.parse.urlencode(dict(type=','.join(keys),period1=1262304000,period2=int(time.time())))
@@ -204,7 +233,11 @@ def evidence(member,mode=None):
                 if key in BAL or key=='debt':
                     obs=latest(scraped['quarterly'].get(key,[])+rows)
                     if obs and (key not in current or obs['end']>current[key]['end']): current[key]=obs
-            for key in ('income','ocf','revenue'): s['quarterly_'+key]=scraped['quarterly'].get(key,[])
+            for key in FLOW:
+                quarters = scraped['quarterly'].get(key, [])
+                s['quarterly_'+key] = quarters
+                obs = statement_ttm(scraped['series'].get(key, []), quarters)
+                if obs and (key not in current or obs['end'] > current[key]['end']): current[key] = obs
             sources.append(scraped['source']);attempts+=scraped.get('attempts',[])
             for alternative in scraped.get('alternatives',[]):
                 attempts.append(dict(source=scraped['source'],observationAlternative=alternative))
@@ -244,7 +277,9 @@ def evidence(member,mode=None):
                         s[key]=merged(s.get(key,[]),[r for r in recovered if r['end'] in annual_dates])
                         obs=latest(recovered)
                     if obs and (key not in current or obs['end']>=current[key]['end']): current[key]=obs
-                if filing.get('cet1'): current['cet1']=filing['cet1']
+                if filing.get('cet1'):
+                    current['cet1']=filing['cet1']
+                    if filing['cet1']['source'] not in sources: sources.append(filing['cet1']['source'])
         except Exception as exc: attempts.append(dict(source='Issuer filing recovery',error=str(exc)))
     # BAC's actual report labels this GAAP ratio nonperforming loans / total loans.
     # Nonaccrual is not generalized to NPL for other banks with different definitions.

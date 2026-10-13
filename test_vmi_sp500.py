@@ -138,6 +138,37 @@ class ScannerTests(unittest.TestCase):
         # A quarterly-heavy sequence must not truncate the annual history to three years.
         self.assertIn("if r.get('form') in ('10-K','10-K/A','20-F','20-F/A')",__import__('inspect').getsource(m.evidence))
 
+class StatementFlowTests(unittest.TestCase):
+    def setUp(self):
+        self.annual = [dict(end='2025-12-31', val=100, source='html', unit='USD')]
+        self.quarters = [dict(end=end, val=value, source='html', unit='USD', basis='Quarterly statement, not TTM or YTD') for end,value in
+            [('2025-03-31',20),('2025-06-30',25),('2025-09-30',25),('2025-12-31',30),('2026-03-31',35),('2026-06-30',40)]]
+
+    def test_reconciled_quarters_and_annual_fallback(self):
+        result = m.statement_ttm(self.annual, self.quarters)
+        self.assertEqual(result['val'], 130)
+        self.assertEqual(result['end'], '2026-06-30')
+        self.assertEqual(len(result['inputs']), 4)
+        self.assertEqual(result['annualReconciliation']['annual'], self.annual[0])
+        self.assertEqual(m.statement_ttm(self.annual, [])['val'], 100)
+
+    def test_no_ytd_missing_or_mixed_source_sum(self):
+        variants = [self.quarters[1:], self.quarters[:2]+self.quarters[3:],
+                    [dict(r,basis='YTD') for r in self.quarters],
+                    [dict(r,source='other') for r in self.quarters],
+                    [dict(r,val=r['val']*2) for r in self.quarters]]
+        for rows in variants:
+            with self.subTest(rows=rows): self.assertIsNone(m.statement_ttm(self.annual, rows))
+
+    def test_scraped_flows_feed_current_when_sec_unavailable(self):
+        api._CACHE.clear()
+        scraped=dict(series={'income':self.annual}, quarterly={'income':self.quarters}, source='html')
+        with patch.object(m.v,'fetch',side_effect=ValueError('SEC unavailable')), patch('vmi_web.statements',return_value=scraped), patch.object(m,'yahoo',return_value={}), patch.object(api,'market_fields',return_value=dict(fields={},sources=[],attempts=[])):
+            result=m.evidence(dict(symbol='TEST',cik=1,industry='Software',sector='IT'))
+        self.assertEqual(result['current']['income']['val'],130)
+        self.assertEqual(result['series']['quarterly_income'],self.quarters)
+        self.assertEqual(result['series']['income'],self.annual)
+
 class ConcurrencyTests(unittest.TestCase):
     def setUp(self): api._CACHE.clear()
 
