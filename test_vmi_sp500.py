@@ -146,6 +146,32 @@ class ScannerTests(unittest.TestCase):
         current['treasury']['val']=150;s['fcf'][-1]['val']=-1;self.assertFalse(m.buyback_exception(s,current)[0])
         self.assertFalse(api.quick(dict(industry='Restaurants',sector='Consumer Discretionary'),{'ROE':'-50','ROIC':'20'},'moderate')['rejected'])
 
+    def test_footwear_requires_ccc_instead_of_an_industry_exemption(self):
+        member=dict(symbol='TEST',industry='Footwear',sector='Consumer Discretionary')
+        data=dict(series={},current={},market={},sources=[])
+        check=next(c for c in m.evaluate(member,data)['checks'] if c['key']=='ccc')
+        self.assertEqual(check['status'],'ACQUIRE')
+        year=dt.date.today().year-1
+        for i in range(6):
+            for key,val in dict(revenue=100,cost=50,inventory=5,ar=3,ap=4).items():
+                data['series'].setdefault(key,[]).append(dict(end=f'{year-5+i}-12-31',val=val))
+        check=next(c for c in m.evaluate(member,data)['checks'] if c['key']=='ccc')
+        self.assertEqual(check['status'],'PASS')
+        self.assertEqual(len(check['observations']),5)
+
+    def test_course_two_of_three_debt_ratios_still_requires_all_inputs(self):
+        member=dict(symbol='TEST',industry='Software',sector='IT')
+        current={k:dict(end='2025-12-31',val=v) for k,v in dict(ca=90,cl=100,debt=20,ebitda=20,interest=2,ocf=20).items()}
+        def check(mode):
+            return next(c for c in m.evaluate(member,dict(series={},current=current,market={},sources=[]),mode)['checks'] if c['key']=='debt')
+        self.assertEqual(check('moderate')['status'],'PASS')
+        self.assertIn('course allowance',check('moderate')['detail'])
+        self.assertEqual(check('conservative')['status'],'FAIL')
+        del current['interest']
+        self.assertEqual(check('moderate')['status'],'ACQUIRE')
+        current['ca']['val']=110
+        self.assertEqual(check('moderate')['status'],'ACQUIRE')
+
     def test_margin_fallback_independent_of_earnings(self):
         year=dt.date.today().year-1;s={}
         for i in range(5):

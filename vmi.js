@@ -3,7 +3,7 @@
 const VERSION='vmi-1';
 const rules={
  conservative:{roe:15,strictRoe:true,roic:15,years:10,strictCurrent:true,strictDebt:true,debtPasses:3,gear:40,strictGear:true,ocf:1.2,riskySize:1/3,niYears:1,niQuarters:0,cfoQuarters:2,late:2},
- moderate:{roe:12,strictRoe:false,roic:12,years:5,strictCurrent:true,strictDebt:false,debtPasses:3,gear:45,strictGear:true,ocf:1.2,riskySize:.5,niYears:0,niQuarters:2,cfoQuarters:2,late:4},
+ moderate:{roe:12,strictRoe:false,roic:12,years:5,strictCurrent:true,strictDebt:false,debtPasses:2,gear:45,strictGear:true,ocf:1.2,riskySize:.5,niYears:0,niQuarters:2,cfoQuarters:2,late:4},
  optimistic:{roe:12,strictRoe:false,roic:12,years:5,strictCurrent:false,strictDebt:false,debtPasses:2,gear:45,strictGear:false,ocf:1.5,riskySize:.5,niYears:0,niQuarters:0,cfoQuarters:1,late:4}
 };
 const profiles=['defensive','balanced','growth'],categories=['defensive','growth','speculative','turnaround','cyclical'],sectors=['ordinary','bank','insurance','utility','reit','property','commodity'];

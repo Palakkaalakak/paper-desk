@@ -255,7 +255,7 @@ h1{font-size:20px;letter-spacing:-.5px} h2{letter-spacing:.09em;font-size:11px}
 const VERSION='vmi-1';
 const rules={
  conservative:{roe:15,strictRoe:true,roic:15,years:10,strictCurrent:true,strictDebt:true,debtPasses:3,gear:40,strictGear:true,ocf:1.2,riskySize:1/3,niYears:1,niQuarters:0,cfoQuarters:2,late:2},
- moderate:{roe:12,strictRoe:false,roic:12,years:5,strictCurrent:true,strictDebt:false,debtPasses:3,gear:45,strictGear:true,ocf:1.2,riskySize:.5,niYears:0,niQuarters:2,cfoQuarters:2,late:4},
+ moderate:{roe:12,strictRoe:false,roic:12,years:5,strictCurrent:true,strictDebt:false,debtPasses:2,gear:45,strictGear:true,ocf:1.2,riskySize:.5,niYears:0,niQuarters:2,cfoQuarters:2,late:4},
  optimistic:{roe:12,strictRoe:false,roic:12,years:5,strictCurrent:false,strictDebt:false,debtPasses:2,gear:45,strictGear:false,ocf:1.5,riskySize:.5,niYears:0,niQuarters:0,cfoQuarters:1,late:4}
 };
 const profiles=['defensive','balanced','growth'],categories=['defensive','growth','speculative','turnaround','cyclical'],sectors=['ordinary','bank','insurance','utility','reit','property','commodity'];
@@ -563,7 +563,7 @@ function decodeExport(content){
  return decode(content.root);
 }
 const CACHE_WEEK=7*24*60*60*1000,CACHE_VERSION=3;
-const CALCULATION_REVISION='2026-10-13-accounting-1';
+const CALCULATION_REVISION='2026-10-13-accounting-2';
 const fresh=record=>record?.version===CACHE_VERSION&&Number.isFinite(record.collectedAt)&&record.collectedAt<=Date.now()&&Date.now()-record.collectedAt<CACHE_WEEK;
 // Separate browser database: no paper-account or research-archive writes.
 function evidenceCache(indexedDB=root.indexedDB){

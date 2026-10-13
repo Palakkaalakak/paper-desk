@@ -42,14 +42,15 @@ YAHOO={
 }
 # Change whenever accounting or qualification semantics change. Browser records
 # retain raw observations and original collection dates, not stale verdicts.
-CALCULATION_REVISION = '2026-10-13-accounting-1'
+CALCULATION_REVISION = '2026-10-13-accounting-2'
 
 POLICY={
  'history':'Five consecutive fiscal years; conservative ten for revenue, earnings and CFO. Positive linear trend; latest exceeds first; at most two declining years.',
  'stability':'Margins: latest at least five-year mean minus 0.5 percentage point; fitted slope >= -0.1 pp/year. Returns: latest >= five-year mean; slope >= 0. These numerical interpretations are app policy, not quoted course thresholds.',
  'fcf':'Source allows 1-2 negative FCF years, not persistent deficits. Conservative: zero; moderate: one; optimistic: two, never consecutive and latest positive.',
  'returns':'Annual ROE = NI / year-end equity. Annual ROIC = EBIT x (1-effective tax rate) / (equity + debt - cash). TTM/quarter-end ratios use the same formulas; provider ROIC is not mixed into calculated history averages.',
- 'ccc':'Physical-goods industries only. Latest <= five-year mean +10 days and trend <=2 days/year (explicit app tolerances). No absent balance is assumed zero.',
+ 'debt':'Course permits 2/3 debt ratios (moderate and optimistic); conservative explicitly adds a 3/3 policy. All three inputs must be acquired; missing never counts as passing.',
+ 'ccc':'Physical-goods industries, including footwear, only. Latest <= five-year mean +10 days and trend <=2 days/year (explicit app tolerances). No absent balance is assumed zero.',
  'peers':'Three largest distinct S&P 500 issuers in the same GICS sub-industry. A transparent industry proxy, not a claim of identical business mix or a full direct-competitor map.',
  'dates':'USD; annual windows and latest quarter/TTM retained separately. SEC fiscal periods are preferred; Yahoo dates matched within seven days.',
  'moat':'Excluded from scanner qualification; remains available in the separate manual company review.',
@@ -590,7 +591,7 @@ def evaluate(member,data,mode='moderate',include_peers=True):
             rg=revenues[-1]['val']/revenues[0]['val']-1;ag=ars[-1]['val']/ars[0]['val']-1
             add('receivables','Revenue grows faster than receivables',rg>ag,f'{revenues[0]["end"]} to {revenues[-1]["end"]}: revenue {rg*100:.2f}%, receivables {ag*100:.2f}%',revenues+ars)
         else: add('receivables','Revenue grows faster than receivables',None,'Aligned positive opening receivable balance required',s.get('ar',[]))
-    physical=any(x in member['industry'].lower() for x in ('retail','food','beverage','apparel','household','hardware','semiconductor','automobile','manufactur','equipment','pharmaceutical','tobacco','distributor','product','machinery','chemical'))
+    physical=any(x in member['industry'].lower() for x in ('retail','food','beverage','apparel','footwear','household','hardware','semiconductor','automobile','manufactur','equipment','pharmaceutical','tobacco','distributor','product','machinery','chemical'))
     if not physical: add('ccc','Cash conversion cycle',True,'Industry is not classified as a physical-goods business (explicit policy)',na=True)
     else:
         rows=window(s.get('ccc',[]));vals=[r['val'] for r in rows] if rows else []
@@ -610,11 +611,11 @@ def evaluate(member,data,mode='moderate',include_peers=True):
         ca=data.get('current',{}).get('ca');cl=data.get('current',{}).get('cl');deferred=data.get('current',{}).get('deferred')
         upfront=bool(ca and cl and deferred and ca['end']==cl['end']==deferred['end'] and deferred['val']>0 and cl['val']>deferred['val'] and ca['val']/(cl['val']-deferred['val'])>1)
         outcomes=[True if upfront else (cr['val']>=1 if mode=='optimistic' else cr['val']>1) if cr else None,(debt['val']<3 if mode=='conservative' else debt['val']<=3) if debt else None,(0<=service['val']<30) if service else None]
-        required=2 if mode=='optimistic' else 3
+        required=3 if mode=='conservative' else 2
         ok=None if None in outcomes else sum(outcomes)>=required
         # A failed known ratio can reject a 3/3 policy without fetching an irrelevant missing ratio.
         if sum(x is False for x in outcomes)>3-required: ok=False
-        add('debt','Conservative debt structure',ok,f'{required}/3 required: current {cr["val"] if cr else None}; debt/EBITDA {debt["val"] if debt else None}; interest/CFO % {service["val"] if service else None}'+('; documented deferred-revenue adjusted liquidity exception' if upfront else ''),[r for r in (cr,debt,service) if r])
+        add('debt','Conservative debt structure',ok,f'{required}/3 required ({"stricter app preset" if mode=="conservative" else "course allowance"}; all inputs required): current {cr["val"] if cr else None}; debt/EBITDA {debt["val"] if debt else None}; interest/CFO % {service["val"] if service else None}'+('; documented deferred-revenue adjusted liquidity exception' if upfront else ''),[r for r in (cr,debt,service) if r])
     if include_peers: add('peers','Margins vs comparable businesses',None,'Last-stage closest-industry peer comparison')
     failures=[c['label'] for c in checks if c['status']=='FAIL'];pending=[c['key'] for c in checks if c['status']=='ACQUIRE']
     return dict(symbol=member['symbol'],preset=mode,status='REJECTED' if failures else 'ACQUIRING' if pending else 'QUALIFIED',checks=checks,failures=failures,pending=pending,moatGate=False,valuationGate=False,policies=POLICY)

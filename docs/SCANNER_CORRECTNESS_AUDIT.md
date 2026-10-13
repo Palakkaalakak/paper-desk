@@ -89,6 +89,12 @@ After `8670ef6`, fresh full-pipeline acquisitions for FIX, DECK, META and AAPL w
 
 A separate calculation revision now invalidates legacy cached **verdicts**, not the browser evidence store. Legacy rows are withheld on restore, then POSTed for supplementation and full preset recalculation on Scan; original collection dates are enforced. Old FIX subtotals and non-fiscal-year balance instants are quarantined before merge, so a failed source retry cannot resurrect them. Successful HTML/Yahoo acquisition markers survive. Node tests cover successful migration, failed migration and expiry protection; Python tests cover invalid-observation quarantine and immutability. Focused checks: 45 Python tests and 17 scanner JavaScript tests pass; embedded frontend rebuilt.
 
+## Footwear and debt-rule correction
+
+The industry matcher now includes Footwear: DECK's CCC is assessed, not N/A. Replaying the saved full financial evidence gives CCC PASS with 56.756, 75.627, 60.287, 38.083, 35.913 days. This specific correction does not by itself reject DECK.
+
+The moderate preset now follows the explicitly permitted **2/3** debt ratios (master document §10, lines 2454/2495); conservative retains a disclosed stricter 3/3 app policy. All three inputs are still required: an absent interest amount cannot count as zero or a passing gate. Manual research uses the same preset debt count. Cache calculation revision advanced so old decisions will be recalculated. Checks: 47 focused Python and 31 VMI/scanner JS tests passed; embedded assets rebuilt.
+
 ## Reset recovery and completion discipline
 
 Every new interrupted turn has restored the sandbox to the latest pushed commit; local dependencies, uncommitted edits and logs were repeatedly lost. **Commit/push tested small changes immediately.** Read current git status and implementation before restoring anything.
