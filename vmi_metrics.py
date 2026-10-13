@@ -327,6 +327,9 @@ def evidence(member,mode=None,prior=None):
                 if filing.get('cet1'):
                     current['cet1']=filing['cet1']
                     if filing['cet1']['source'] not in sources: sources.append(filing['cet1']['source'])
+                if filing.get('npl'):
+                    current['npl']=filing['npl']
+                    if filing['npl']['source'] not in sources: sources.append(filing['npl']['source'])
         except Exception as exc: attempts.append(dict(source='Issuer filing recovery',error=str(exc)))
     # BAC's actual report labels this GAAP ratio nonperforming loans / total loans.
     # Nonaccrual is not generalized to NPL for other banks with different definitions.

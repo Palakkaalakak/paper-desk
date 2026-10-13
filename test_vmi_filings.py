@@ -17,6 +17,33 @@ def parse(text):
     return p.validated(70858,'2026-06-30','issuer','2026-08-01','10-Q')
 
 
+class JPMCreditTests(unittest.TestCase):
+    def fixture(self):
+        def table(name,heading,rows):
+            rows=[[name],['(in millions)',heading],['Jun 30,2026','Dec 31,2025','Jun 30,2026','Dec 31,2025']]+rows
+            return '<table>'+''.join('<tr>'+''.join('<td>'+c+'</td>' for c in row)+'</tr>' for row in rows)+'</table>'
+        return ('Nonperforming assets include nonaccrual loans, nonperforming derivatives and certain assets acquired in loan satisfactions'+
+            table('Consumer credit portfolio','Credit exposure Nonaccrual loans(i)',[
+                ['Total consumer, excluding credit card loans','391743','402258','4448','4673'],
+                ['Total credit card loans','249876','247797','NA','NA'],
+                ['Total consumer credit portfolio','1915166','1871408','4448','4673']])+
+            table('Wholesale credit portfolio','Credit exposure Nonperforming',[
+                ['Loans','900843','843374','4916','5184'],
+                ['Total wholesale credit portfolio','1673579','1544441','6079','6477']]))
+
+    def test_loan_only_totals_and_no_zero_substitution(self):
+        row=f.jpm_credit_ratio(self.fixture(),'2026-06-30','filing','2026-08-06','10-Q')
+        self.assertAlmostEqual(row['val'],9364/1542462*100)
+        self.assertEqual(row['portfolios']['Consumer credit portfolio']['loansMillions'],641619)
+        self.assertIn('definition',row)
+
+    def test_definition_dates_units_partial_and_conflicting_totals_rejected(self):
+        for old,new in [('Nonperforming assets include','Unverified definition'),('Jun 30,2026','Mar 31,2026'),('(in millions)','(in thousands)'),('249876','NA'),('Wholesale credit portfolio','Subsidiary credit portfolio'),('4916','9999999')]:
+            with self.subTest(old=old):
+                self.assertIsNone(f.jpm_credit_ratio(self.fixture().replace(old,new),'2026-06-30','filing','2026-08-06','10-Q'))
+        self.assertIsNone(f.jpm_credit_ratio(self.fixture()+self.fixture().replace('4916','4917'),'2026-06-30','filing','2026-08-06','10-Q'))
+
+
 class CitiCapitalTests(unittest.TestCase):
     def fixture(self):
         rows=[['June 30, 2026'], ['In millions of dollars, except ratios','Required Ratios','Standardized Approach','Required Ratios','Advanced Approaches'],

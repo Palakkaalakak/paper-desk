@@ -289,6 +289,62 @@ def issuer_pdf(member, period, filed, form):
     return dict(facts={}, cet1=capital, source=url, attempts=[])
 
 
+def jpm_credit_ratio(text, report_date, source, filed, form):
+    """Issuer-defined loan-only NPA components, after JPM CIK/DEI validation.
+
+    Excludes derivatives, foreclosed assets and commitments. Credit cards stay
+    in total loans; use reported aggregate nonaccrual totals, not missing=zero.
+    """
+    from html import unescape
+    plain=' '.join(unescape(re.sub(r'<[^>]*>', ' ', text)).split())
+    definition='Nonperforming assets include nonaccrual loans, nonperforming derivatives and certain assets acquired in loan satisfactions'
+    if definition not in plain: return None
+    portfolios={}
+    for match in re.finditer(r'<table\b.*?</table>',text,re.S | re.I):
+        if 'credit portfolio' not in match[0]: continue
+        table=v.Tables('');table.feed(match[0])
+        rows=[[c.strip() for c in row if c.strip()] for row in table.rows]
+        rows=[r for r in rows if r]
+        if not rows or rows[0] not in (['Consumer credit portfolio'],['Wholesale credit portfolio']): continue
+        kind=rows[0][0];heading=' '.join(' '.join(r) for r in rows[:4])
+        parsed=[]
+        for value in re.findall(r'\b([A-Z][a-z]+ \d{1,2},\s*\d{4})\b',heading):
+            value=re.sub(r',\s*',', ',value)
+            for fmt in ('%B %d, %Y','%b %d, %Y'):
+                try: parsed.append(dt.datetime.strptime(value,fmt).date().isoformat());break
+                except ValueError: pass
+        if '(in millions)' not in heading or len(parsed)!=4 or parsed[0]!=report_date or parsed[2]!=report_date or parsed[1]!=parsed[3] or parsed[1]>=report_date: continue
+        def values(label):
+            selected=[r for r in rows if r[0]==label]
+            if len(selected)!=1: return None
+            raw=[x for x in selected[0][1:] if x!='$']
+            return [v.number(x) for x in raw] if len(raw)==4 else None
+        if kind=='Consumer credit portfolio':
+            if 'Credit exposure Nonaccrual loans' not in heading: continue
+            consumer=values('Total consumer, excluding credit card loans')
+            card=values('Total credit card loans');total=values('Total consumer credit portfolio')
+            if not consumer or not card or not total or any(x is None for x in (consumer[0],card[0],total[2],consumer[2])): continue
+            if total[2]!=consumer[2] or consumer[0]<0 or card[0]<0: continue
+            loans=consumer[0]+card[0];nonperforming=total[2]
+        else:
+            if 'Credit exposure Nonperforming' not in heading: continue
+            loan=values('Loans')
+            if not loan or loan[0] is None or loan[2] is None: continue
+            loans,nonperforming=loan[0],loan[2]
+        if not 0<=nonperforming<=loans or loans<=0: continue
+        observation=dict(loansMillions=loans,nonperformingLoansMillions=nonperforming,table=rows)
+        if kind in portfolios and portfolios[kind]!=observation: return None
+        portfolios[kind]=observation
+    if len(portfolios)!=2: return None
+    loans=sum(x['loansMillions'] for x in portfolios.values())
+    npl=sum(x['nonperformingLoansMillions'] for x in portfolios.values())
+    return dict(end=report_date,val=npl/loans*100,unit='percent',source=source,filed=filed,form=form,
+        retrievedAt=int(time.time()*1000),tag='JPM filed consumer and wholesale loan-only credit-risk totals',
+        method='100 x (consumer nonaccrual loans + wholesale nonperforming loans) / (consumer loans including credit cards + wholesale loans)',
+        basis='Issuer-defined loan component of nonperforming assets; excludes derivatives, foreclosed assets and commitments',
+        definition=definition,portfolios=portfolios)
+
+
 def recover(member, issuer):
     global _SEC_UNTIL
     recent=issuer.get('filings',{}).get('recent',{}); today=dt.date.today().isoformat()
@@ -315,7 +371,8 @@ def recover(member, issuer):
                     if pdf: capital = pdf['cet1']
                 except Exception as exc:
                     attempts.append(dict(source='Official issuer filed PDF', error=str(exc)))
-            return dict(facts=facts,cet1=capital,source=url,attempts=attempts)
+            npl=jpm_credit_ratio(text,period,url,recent['filingDate'][i],recent['form'][i]) if cik==19617 else None
+            return dict(facts=facts,cet1=capital,npl=npl,source=url,attempts=attempts)
         except Exception as exc:
             if sec and isinstance(exc,urllib.error.HTTPError) and exc.code in (403,429): _SEC_UNTIL=time.monotonic()+900
             attempts.append(dict(source=url,error=str(exc)))
