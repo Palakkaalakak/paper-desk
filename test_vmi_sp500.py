@@ -256,6 +256,30 @@ class SupplementMergeTests(unittest.TestCase):
         new=dict(series={'debt':[dict(row,val=80,completeDebt=False)]},current={},retrievedAt=2000)
         self.assertEqual(m.merge_evidence(old,new)['series']['debt'][0],row)
 
+class AccountingMigrationTests(unittest.TestCase):
+    def test_legacy_fix_subtotal_and_quarter_instants_stay_quarantined(self):
+        import copy
+        member=dict(symbol='FIX',cik=1035983)
+        annual=dict(end='2025-12-31',val=100,source='filed')
+        subtotal=dict(annual,val=123197000,filed='2026-03-01')
+        quarter=dict(end='2025-09-30',val=90,source='filed')
+        prior=dict(series=dict(revenue=[annual],equity=[annual,quarter],ar=[subtotal]),
+                   current=dict(ar=subtotal),completedSources=['html','yahoo'],retrievedAt=1000)
+        snapshot=copy.deepcopy(prior)
+        clean=m.normalize_evidence(member,prior)
+        self.assertEqual(clean['series']['equity'],[annual])
+        self.assertEqual(clean['series']['ar'],[])
+        self.assertNotIn('ar',clean['current'])
+        self.assertEqual(len(clean['observationAlternatives']),3)
+        self.assertEqual(clean['completedSources'],['html','yahoo'])
+        self.assertEqual(clean['retrievedAt'],1000)
+        self.assertEqual(prior,snapshot)
+        # A failed retry cannot resurrect the invalid prior subtotal.
+        result=m.merge_evidence(clean,dict(series={},current={},retrievedAt=2000))
+        self.assertEqual(result['series']['ar'],[])
+        self.assertEqual(result['retrievedAt'],1000)
+        self.assertEqual(m.normalize_evidence(member,clean),clean)
+
 class SourceReuseTests(unittest.TestCase):
     def test_completed_independent_sources_not_downloaded_after_restart(self):
         api._CACHE.clear()

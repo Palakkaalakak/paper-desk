@@ -1,7 +1,7 @@
 'use strict';
 const test=require('node:test');
 const assert=require('node:assert/strict');
-const {create,encodeExport,decodeExport,cachedDecision,CACHE_VERSION,CACHE_WEEK}=require('./vmi-scanner.js');
+const {create,encodeExport,decodeExport,cachedDecision,CACHE_VERSION,CACHE_WEEK,CALCULATION_REVISION}=require('./vmi-scanner.js');
 
 test('audit export deduplicates without dropping any evidence or proposal',()=>{
  const observation={end:'2025-12-31',val:123,tag:'Revenue',source:'https://issuer.example/'+ 'source-path/'.repeat(100),filed:'2026-02-01',unit:'USD'};
@@ -108,7 +108,7 @@ function memoryCache(){
 const presets=['conservative','moderate','optimistic'];
 function fixtureData(symbol,mode,status='QUALIFIED'){
  const evaluations=Object.fromEntries(presets.map(p=>[p,{preset:p,status,failures:status==='REJECTED'?['Fixture criterion']:[],pending:status==='ACQUIRING'?['history']:[]}]));
- return {cacheVersion:2,member:{symbol,cik:1},result:evaluations[mode],evaluations,evidence:{series:{revenue:[{end:'2025-12-31',val:100,source:'fixture'}]}},research:null,collectedAt:Date.now(),acquiredModes:[mode]};
+ return {cacheVersion:2,calculationRevision:CALCULATION_REVISION,member:{symbol,cik:1},result:evaluations[mode],evaluations,evidence:{series:{revenue:[{end:'2025-12-31',val:100,source:'fixture'}]}},research:null,collectedAt:Date.now(),acquiredModes:[mode]};
 }
 function cacheFixtureFetch(calls,{excludeConservative=false,unresolved=false}={}){
  return async (path,options)=>{
@@ -183,6 +183,34 @@ test('collection expiry, future dates, schema and issuer mismatch cannot reuse e
  assert.equal(cachedDecision(record,'moderate',{...member,cik:2}),null);
  data.evaluations.moderate.pending=['missing'];assert.equal(cachedDecision(record,'moderate',member),null);
 });
+test('old accounting verdicts migrate evidence without renewing expiry or reusing stale passes',async()=>{
+ const original=global.fetch,calls=[],cache=memoryCache();global.fetch=cacheFixtureFetch(calls);
+ try{
+  const s=create({mode:()=> 'moderate',cache});await s.start();
+  const stamp=Date.now()-60000;
+  for(const key of ['X0','X1']){const r=cache.records.get(key);delete r.data.calculationRevision;r.collectedAt=stamp;}
+  const before=calls.length,reloaded=create({mode:()=> 'moderate',cache});await reloaded.restore();
+  assert.equal(reloaded.state().stats.qualified,0);assert.equal(calls.length,before);
+  assert.equal(reloaded.state().stats.acquiring,2);
+  await reloaded.start();
+  assert.equal(calls.length,before+2);assert.ok(calls.slice(before).every(u=>u.pathname==='/data/vmi_sp500_supplement'));
+  assert.equal(cache.records.get('X0').collectedAt,stamp);
+  assert.equal(cache.records.get('X0').data.calculationRevision,CALCULATION_REVISION);
+  assert.equal(reloaded.state().stats.qualified,2);
+ }finally{global.fetch=original;}
+});
+
+test('legacy verdict migration failure preserves evidence but never displays old qualification',async()=>{
+ const original=global.fetch,calls=[],cache=memoryCache();global.fetch=cacheFixtureFetch(calls);
+ try{
+  const s=create({mode:()=> 'moderate',cache});await s.start();
+  for(const key of ['X0','X1'])delete cache.records.get(key).data.calculationRevision;
+  const before=structuredClone([...cache.records]);
+  global.fetch=async()=>({ok:false,status:502});
+  await s.start();assert.equal(s.state().stats.qualified,0);assert.deepEqual([...cache.records],before);
+ }finally{global.fetch=original;}
+});
+
 test('storage failure remains visible and never claims persistence',async()=>{
  const original=global.fetch;global.fetch=cacheFixtureFetch([]);
  const cache={load:async()=>new Map(),put:async()=>{throw Error('Quota exceeded');},clear:async()=>{throw Error('Denied');}};

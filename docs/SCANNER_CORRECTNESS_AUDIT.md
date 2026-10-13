@@ -77,6 +77,18 @@ From the prior saved moderate scan, not the user’s optimistic FIX export:
 7. Provider-selected largest GICS peers are not necessarily “closest competitors.” Retain explicit selection provenance and audit the competition rule.
 8. Trace all-company acquisition gaps, including issuer filings/registration historical carve-outs, without assuming a parent's unrelated consolidated history belongs to a new spin-off.
 
+## Fresh follow-up acquisition and cache migration
+
+After `8670ef6`, fresh full-pipeline acquisitions for FIX, DECK, META and AAPL were saved losslessly (including calculation inputs, source alternatives and all preset evaluations): https://www.genspark.ai/api/files/s/IrfBOMwI . This is an audit dataset, not approval of all verdicts.
+
+- FIX now correctly FAILS AR: 223.25% versus 196.12% sales growth, with all five annual balances recovered from billed + unbilled SEC facts.
+- DECK still appeared QUALIFIED, but its CCC was incorrectly N/A because the physical-goods industry matcher omitted `Footwear`. Actual acquired annual CCC days: 56.7559, 75.6268, 60.2866, 38.0825, 35.9128 (FY2022–FY2026). It must be assessed, not exempted.
+- DECK mixes MarketBeat debt of zero with Yahoo annual debt of 246.488m, 266.879m, 276.975m and 375.194m. Reconcile leases before treating the ROIC mean/current comparison as consistent. Current ROIC 138.59% is not independently verified by this acquisition.
+- FIX likewise mixes Yahoo 2025 debt 483.358m with current MarketBeat debt 54.064m. Debt/EBITDA and ROIC require scope normalization.
+- META and AAPL fresh rejection categories reproduce the earlier audit; neither is whitelisted.
+
+A separate calculation revision now invalidates legacy cached **verdicts**, not the browser evidence store. Legacy rows are withheld on restore, then POSTed for supplementation and full preset recalculation on Scan; original collection dates are enforced. Old FIX subtotals and non-fiscal-year balance instants are quarantined before merge, so a failed source retry cannot resurrect them. Successful HTML/Yahoo acquisition markers survive. Node tests cover successful migration, failed migration and expiry protection; Python tests cover invalid-observation quarantine and immutability. Focused checks: 45 Python tests and 17 scanner JavaScript tests pass; embedded frontend rebuilt.
+
 ## Reset recovery and completion discipline
 
 Every new interrupted turn has restored the sandbox to the latest pushed commit; local dependencies, uncommitted edits and logs were repeatedly lost. **Commit/push tested small changes immediately.** Read current git status and implementation before restoring anything.

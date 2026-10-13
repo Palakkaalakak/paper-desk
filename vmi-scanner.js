@@ -41,6 +41,7 @@ function decodeExport(content){
  return decode(content.root);
 }
 const CACHE_WEEK=7*24*60*60*1000,CACHE_VERSION=3;
+const CALCULATION_REVISION='2026-10-13-accounting-1';
 const fresh=record=>record?.version===CACHE_VERSION&&Number.isFinite(record.collectedAt)&&record.collectedAt<=Date.now()&&Date.now()-record.collectedAt<CACHE_WEEK;
 // Separate browser database: no paper-account or research-archive writes.
 function evidenceCache(indexedDB=root.indexedDB){
@@ -76,9 +77,13 @@ function evidenceCache(indexedDB=root.indexedDB){
 function validResult(result,mode){
  return result?.preset===mode&&Array.isArray(result.failures)&&Array.isArray(result.pending)&&['QUALIFIED','REJECTED','ACQUIRING'].includes(result.status)&&result.status===(result.failures.length?'REJECTED':result.pending.length?'ACQUIRING':'QUALIFIED');
 }
+function reusableEvidence(record,member){
+ const data=record?.data;
+ return fresh(record)&&data?.cacheVersion===2&&data.member?.symbol===member.symbol&&data.member?.cik===member.cik&&data.evidence?.series?data:null;
+}
 function cachedDecision(record,mode,member){
- const data=record?.data,result=data?.evaluations?.[mode];
- return fresh(record)&&data?.cacheVersion===2&&data.member?.symbol===member.symbol&&data.member?.cik===member.cik&&validResult(result,mode)?{...data,result}:null;
+ const data=reusableEvidence(record,member),result=data?.evaluations?.[mode];
+ return data?.calculationRevision===CALCULATION_REVISION&&validResult(result,mode)?{...data,result}:null;
 }
 function create(adapter){
  const storage=adapter.cache||(root.indexedDB?evidenceCache():null);
@@ -202,12 +207,14 @@ function create(adapter){
     const record=!forceRun?saved.get(r.symbol):null;let data=cachedDecision(record,preset,r);
     // A newly selected preset may need previously deferred inputs. Retry the
     // evidence assembly, retaining successful source acquisitions server-side.
-    const additional=data&&data.result.status==='ACQUIRING'&&!(data.acquiredModes||[record.data.result.preset]).includes(preset);
+    const legacy=reusableEvidence(record,r)&&record.data.calculationRevision!==CALCULATION_REVISION;
+    const additional=legacy||(data&&data.result.status==='ACQUIRING'&&!(data.acquiredModes||[record.data.result.preset]).includes(preset));
     if(!data||additional){
      if(additional){
       const prior={cacheVersion:record.data.cacheVersion,member:record.data.member,evidence:record.data.evidence,collectedAt:record.collectedAt};
       data=await request('/data/vmi_sp500_supplement',id,'Supplement '+r.symbol,{symbol:r.symbol,mode:preset,prior});
       if(data.collectedAt!==record.collectedAt)throw Error('Supplementation must preserve original cache expiry');
+      if(data.calculationRevision!==CALCULATION_REVISION)throw Error('Restart the updated backend before recalculating cached evidence');
      }else data=await request('/data/vmi_sp500_company?symbol='+encodeURIComponent(r.symbol)+'&mode='+preset+(forceRun?'&force=1':''),id,'Detailed '+r.symbol);
      if(stale(id))return;
      applyDetail(r,data);
@@ -233,7 +240,9 @@ function create(adapter){
    endStage();
    const survivors=()=>[...rows.values()].filter(r=>r.status!=='REJECTED');
    if(!forceRun)for(const r of survivors()){const d=cachedDecision(saved.get(r.symbol),preset,r);if(d)applyDetail(r,d);}render();
-   const needsBroad=()=>survivors().filter(r=>forceRun||!cachedDecision(saved.get(r.symbol),preset,r));
+   // Existing detailed inputs go directly to recalculation/supplementation;
+   // old broad decisions must not hide a corrected detailed verdict.
+   const needsBroad=()=>survivors().filter(r=>forceRun||!reusableEvidence(saved.get(r.symbol),r));
    let candidates=needsBroad();beginStage('Stage 1 / fast bulk profitability',candidates.length);await batches('financial',candidates,id);if(stale(id))return;endStage();
    candidates=needsBroad();beginStage('Stage 2 / fast bulk growth',candidates.length);await batches('growth',candidates,id);if(stale(id))return;endStage();
    candidates=survivors();beginStage('Stage 3 / financial statements, recovery and business gates',candidates.length);await deep(candidates,id);if(stale(id))return;endStage();
@@ -252,6 +261,7 @@ function create(adapter){
     if(r.status==='REJECTED')continue;
     const data=cachedDecision(saved.get(r.symbol),preset,r);
     if(data)applyDetail(r,data);
+    else if(reusableEvidence(saved.get(r.symbol),r)){r.status='ACQUIRING';r.stage='Recalculation required';r.reason='Accounting rules updated; Scan to recheck saved evidence. Original collection expiry is retained.';}
     else for(const view of ['financial','growth']){const item=storedBroad(r,view);if(item)applyBroad(r,item,view);if(r.status==='REJECTED')break;}
    }
    phase='Cached evidence restored — current rules applied';progress='Scan to acquire any missing evidence; no automatic downloads on page load';
@@ -273,5 +283,5 @@ function create(adapter){
  function mount(){const next=document.getElementById('vmi-scanner');if(!next||next===node)return;node=next;node.addEventListener('toggle',e=>{const d=e.target;if(d.open&&d.dataset.evidence){const r=rows.get(d.dataset.evidence),pre=d.querySelector('pre');if(r&&pre&&!pre.textContent)pre.textContent=JSON.stringify({result:r.result,evidence:r.evidence},null,2);}},true);node.addEventListener('click',e=>{const b=e.target.closest('button');if(!b)return;if(b.dataset.scan){e.stopPropagation();if(b.dataset.scan==='start')start();if(b.dataset.scan==='rescan')start(true);if(b.dataset.scan==='clear'&&confirm('Delete scanner evidence only? Paper accounts and research archives are not changed.'))clearCache();if(b.dataset.scan==='cancel')cancel();if(b.dataset.scan==='export')exportScan();}if(['qualified','opportunities'].includes(b.dataset.scanFilter)){e.stopPropagation();filter=b.dataset.scanFilter;render();}if(b.dataset.scanOpen){e.stopPropagation();const r=rows.get(b.dataset.scanOpen);if(r?.status==='QUALIFIED')adapter.open(r);}});render();if(!hydrated)restore();}
  return {view:()=>'<section id="vmi-scanner" aria-label="S&P 500 business scanner"></section>',mount,start,cancel,reapply,restore,clearCache,state:()=>({busy,preset,phase,cacheStatus:cacheStatus(),rows:[...rows.values()],stats:stats(),diagnostics:{stages,log,totals,active:[...active.values()]}})};
 }
-root.VMIScanner={create,encodeExport,decodeExport,evidenceCache,cachedDecision,CACHE_WEEK,CACHE_VERSION};if(typeof module!=='undefined')module.exports=root.VMIScanner;
+root.VMIScanner={create,encodeExport,decodeExport,evidenceCache,cachedDecision,CACHE_WEEK,CACHE_VERSION,CALCULATION_REVISION};if(typeof module!=='undefined')module.exports=root.VMIScanner;
 })(globalThis);

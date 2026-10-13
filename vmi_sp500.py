@@ -372,12 +372,12 @@ def company(ticker,mode='moderate',force=False,supplement=False,prior=None):
 
 
 def _company(ticker,mode='moderate',supplement=False,prior=None):
-    from vmi_metrics import evidence,evaluate,merge_evidence
+    from vmi_metrics import evidence,evaluate,merge_evidence,normalize_evidence,CALCULATION_REVISION
     ticker=v.symbol(ticker)
     if mode not in MODES: raise ValueError('Invalid preset')
     member=next((r for r in members()['rows'] if r['symbol']==ticker),None)
     if not member: raise ValueError('Not an S&P 500 constituent')
-    previous=validate_prior(prior,member) if prior is not None else None
+    previous=normalize_evidence(member,validate_prior(prior,member)) if prior is not None else None
     trace.event('statements',ticker+' / financial statements')
     # Browser-held observations are request-local, never put in shared caches.
     data=evidence(member,prior=previous) if previous is not None else evidence(member) if supplement else cached(('evidence',ticker),21600,lambda:evidence(member))
@@ -387,7 +387,7 @@ def _company(ticker,mode='moderate',supplement=False,prior=None):
     import copy
     import market
     from vmi_ib import available,valid_quote
-    data=copy.deepcopy(data)
+    data=normalize_evidence(member,data)
     trace.event('evaluate',ticker+' / public business gates before optional IB')
     result=evaluate(member,data,mode)
     if not result['failures']:
@@ -425,7 +425,7 @@ def _company(ticker,mode='moderate',supplement=False,prior=None):
         evaluations[preset]=other
     trace.event('valuation',ticker+' / '+result['status'])
     research=research_payload(member,data) if any(r['status']=='QUALIFIED' for r in evaluations.values()) else None
-    return dict(member=member,evidence=data,result=result,evaluations=evaluations,research=research,cacheVersion=2,acquiredModes=[mode],collectedAt=data.get('retrievedAt',int(time.time()*1000)))
+    return dict(member=member,evidence=data,result=result,evaluations=evaluations,research=research,cacheVersion=2,calculationRevision=CALCULATION_REVISION,acquiredModes=[mode],collectedAt=data.get('retrievedAt',int(time.time()*1000)))
 
 
 def peer_check(member,data):

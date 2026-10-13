@@ -40,6 +40,10 @@ YAHOO={
  'ebitda':'EBITDA','deferred':'CurrentDeferredRevenue','shares':'OrdinarySharesNumber',
  'dilutedShares':'DilutedAverageShares','cashInvestments':'CashCashEquivalentsAndShortTermInvestments',
 }
+# Change whenever accounting or qualification semantics change. Browser records
+# retain raw observations and original collection dates, not stale verdicts.
+CALCULATION_REVISION = '2026-10-13-accounting-1'
+
 POLICY={
  'history':'Five consecutive fiscal years; conservative ten for revenue, earnings and CFO. Positive linear trend; latest exceeds first; at most two declining years.',
  'stability':'Margins: latest at least five-year mean minus 0.5 percentage point; fitted slope >= -0.1 pp/year. Returns: latest >= five-year mean; slope >= 0. These numerical interpretations are app policy, not quoted course thresholds.',
@@ -224,6 +228,46 @@ def reported_rejections(member,series,issuer,mode):
         if rows and rows[-1]['end']==newest and growth_test(rows,years) is False:
             failed.append(key)
     return failed
+
+
+def normalize_evidence(member, data):
+    """Quarantine known invalid legacy observations without losing the audit.
+
+    Runs before supplemental acquisition/merge so an old date/filing rank cannot
+    resurrect a provider subtotal or quarterly instant as an annual balance.
+    """
+    import copy
+    result = copy.deepcopy(data)
+    series = result.setdefault('series', {})
+    current = result.setdefault('current', {})
+    alternatives = result.setdefault('observationAlternatives', [])
+    fiscal_rows = [r for key in FLOW for r in series.get(key, [])]
+    def excluded(key, row, reason):
+        alternatives.append(dict(metric=key, preferred=None, alternative=row, reason=reason))
+    for key in BAL:
+        kept = []
+        for row in series.get(key, []):
+            if match(fiscal_rows, row['end']): kept.append(row)
+            else: excluded(key, row, 'Not a verified fiscal-year-end balance; excluded from annual history')
+        if key in series: series[key] = kept
+    if member['cik'] == 1035983:
+        scope = 'billed_and_unbilled_trade_receivables'
+        def valid(row):
+            inputs = row.get('inputs', [])
+            return (row.get('scope') == scope and len(inputs) == 2
+                    and {r.get('tag') for r in inputs} == {'BilledContractReceivables', 'UnbilledContractsReceivable'}
+                    and all(r.get('end') == row['end'] and type(r.get('val')) in (int,float)
+                            and math.isfinite(r['val']) and r['val'] >= 0 for r in inputs)
+                    and abs(sum(r['val'] for r in inputs)-row['val']) <= 1)
+        kept = []
+        for row in series.get('ar', []):
+            if valid(row): kept.append(row)
+            else: excluded('ar', row, 'FIX full billed + unbilled trade-receivable scope not established')
+        series['ar'] = kept
+        if 'ar' in current and not valid(current['ar']):
+            excluded('ar', current.pop('ar'), 'FIX current trade-receivable scope not established')
+    result['calculationRevision'] = CALCULATION_REVISION
+    return result
 
 
 def merge_evidence(prior, incoming):
