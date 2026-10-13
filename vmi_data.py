@@ -40,8 +40,28 @@ def fetch(url, *, binary=False, retry_429=True, timeout=20, retries=2):
         time.sleep(wait)
         try:
             trace.event("download","Waiting for HTTP response",provider=host,attempt=attempt+1)
-            with urllib.request.urlopen(urllib.request.Request(url, headers=headers), timeout=timeout) as response:
-                body = response.read(25_000_001)
+            if host == 'finviz.com' or (host == 'www.sec.gov' and urllib.parse.urlsplit(url).path.startswith('/Archives/')):
+                # Public pages reject urllib's TLS fingerprint but accept browser
+                # HTTP. Pacing, response bounds and source validation still apply.
+                from curl_cffi import requests as browser_requests
+                browser_headers = {'Accept':'application/json,text/html'}
+                if sec and os.environ.get('PAPER_SEC_USER_AGENT'): browser_headers['User-Agent']=os.environ['PAPER_SEC_USER_AGENT']
+                try:
+                    response=browser_requests.get(url,impersonate='chrome',headers=browser_headers,timeout=timeout,stream=True)
+                    try:
+                        if response.status_code>=400: raise urllib.error.HTTPError(url,response.status_code,'Public source HTTP error',dict(response.headers),None)
+                        chunks=[];size=0
+                        for chunk in response.iter_content(chunk_size=65536):
+                            size+=len(chunk)
+                            if size>25_000_000: raise ValueError('Source response exceeds 25 MB limit')
+                            chunks.append(chunk)
+                        body=b''.join(chunks)
+                    finally: response.close()
+                except browser_requests.exceptions.RequestException as exc:
+                    raise urllib.error.URLError('Browser-compatible source request failed: '+str(exc)) from exc
+            else:
+                with urllib.request.urlopen(urllib.request.Request(url, headers=headers), timeout=timeout) as response:
+                    body = response.read(25_000_001)
             if len(body) > 25_000_000:
                 raise ValueError('Source response exceeds 25 MB limit')
             trace.event('received','Response received',provider=host,bytes=len(body))

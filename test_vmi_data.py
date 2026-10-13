@@ -45,6 +45,27 @@ class VMIDataTests(unittest.TestCase):
             self.assertEqual([x['val'] for x in result['annualTotalDebt']],[3])
             with self.assertRaises(ValueError): v.secondary('MSFT')
 
+class BrowserTransportTests(unittest.TestCase):
+    def test_public_browser_transport_is_bounded_and_closes_response(self):
+        from unittest.mock import Mock
+        from curl_cffi import requests
+        response=Mock(status_code=200,headers={});response.iter_content.return_value=iter([b'financial ',b'evidence'])
+        with patch.object(requests,'get',return_value=response) as get,patch.object(v.time,'sleep'),patch.object(v.urllib.request,'urlopen') as old:
+            self.assertEqual(v.fetch('https://finviz.com/quote.ashx?t=TEST',retries=0),'financial evidence')
+            old.assert_not_called();self.assertEqual(get.call_args.kwargs['impersonate'],'chrome');response.close.assert_called_once()
+        response.reset_mock();response.iter_content.return_value=iter([b'x'*25_000_001])
+        with patch.object(requests,'get',return_value=response),patch.object(v.time,'sleep'):
+            with self.assertRaises(ValueError):v.fetch('https://www.sec.gov/Archives/filing.htm',retries=0)
+        response.close.assert_called_once()
+    def test_http_failure_is_not_empty_success(self):
+        from unittest.mock import Mock
+        from curl_cffi import requests
+        import urllib.error
+        response=Mock(status_code=429,headers={})
+        with patch.object(requests,'get',return_value=response),patch.object(v.time,'sleep'):
+            with self.assertRaises(urllib.error.HTTPError):v.fetch('https://finviz.com/quote.ashx?t=TEST',retry_429=False)
+        response.close.assert_called_once()
+
 class VMIStockTests(unittest.IsolatedAsyncioTestCase):
     async def test_stock_identity_comes_from_owner_loop_qualification(self):
         from market import MarketEngine

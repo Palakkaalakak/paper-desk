@@ -6,3 +6,6 @@ xlrd==2.0.2
 
 # Read validated financial tables in official issuer-filed PDF reports.
 pypdf==6.1.1
+
+# Browser-compatible HTTP for public Finviz pages and SEC archives.
+curl_cffi==0.13.0
