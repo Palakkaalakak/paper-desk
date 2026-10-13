@@ -345,6 +345,45 @@ def jpm_credit_ratio(text, report_date, source, filed, form):
         definition=definition,portfolios=portfolios)
 
 
+def bank_loan_ratio(parser, text, cik, report_date, source, filed, form):
+    """Explicit parent NPL facts, plus WFC's validated loan-only NPA definition."""
+    rows=[]
+    for fact in parser.facts:
+        if fact['tag']!='us-gaap:LoansAndLeasesReceivableRatioOfNonperformingLoansToAllLoans' or parser.units.get(fact['unitref'])!=['pure']: continue
+        context=parser.contexts.get(fact['context'],{});identifier=context.get('identifier','')
+        allowed={'us-gaap:FinancialInstrumentPerformanceStatusAxis':'us-gaap:NonperformingFinancingReceivableMember','srt:ConsolidatedEntitiesAxis':'srt:ParentCompanyMember'}
+        if not identifier.isdigit() or int(identifier)!=cik or context.get('instant')!=report_date or context.get('unsupported'): continue
+        members=context.get('members',{})
+        if context.get('dimensions') and not members: continue
+        if any(allowed.get(axis)!=member for axis,member in members.items()) or not 0<=fact['val']<=1: continue
+        rows.append(dict(end=report_date,val=fact['val']*100,unit='percent',source=source,filed=filed,form=form,tag=fact['tag'],context=fact['context'],dimensions=members,basis='Filed explicit nonperforming loans / all loans',retrievedAt=int(time.time()*1000)))
+    if rows: return rows[0] if len({r['val'] for r in rows})==1 else None
+    if cik!=72971: return None
+    from html import unescape
+    def plain(value): return ' '.join(unescape(re.sub(r'<[^>]*>', ' ', value)).split())
+    definition='NONPERFORMING ASSETS (NONACCRUAL LOANS AND FORECLOSED ASSETS)'
+    if definition not in plain(text).upper(): return None
+    found=[]
+    for match in re.finditer(r'<table\b.*?</table>',text,re.S | re.I):
+        if not re.search(r'Table \d+: Credit Quality Overview\s*$',plain(text[max(0,match.start()-1500):match.start()])): continue
+        table=v.Tables('');table.feed(match[0]);table_rows=[[c.strip() for c in row if c.strip()] for row in table.rows];table_rows=[r for r in table_rows if r]
+        heading=' '.join(' '.join(r) for r in table_rows[:2]);dates=re.findall(r'\b[A-Z][a-z]+ \d{1,2},\s*\d{4}',heading)
+        if not dates or '($ in millions)' not in heading: continue
+        try: date=dt.datetime.strptime(re.sub(r',\s*',', ',dates[0]),'%b %d, %Y').date().isoformat()
+        except ValueError: continue
+        if date!=report_date: continue
+        def value(label):
+            r=[r for r in table_rows if r[0]==label]
+            cells=[c for c in r[0][1:] if c!='$'] if len(r)==1 else []
+            return v.number(cells[0]) if cells else None
+        commercial=value('Commercial loans');consumer=value('Consumer loans');total=value('Total nonaccrual loans');ratio=value('Nonaccrual loans as a % of total loans')
+        if None in (commercial,consumer,total,ratio) or min(commercial,consumer,total,ratio)<0 or ratio>100 or commercial+consumer!=total: continue
+        found.append(dict(end=date,val=ratio,unit='percent',source=source,filed=filed,form=form,retrievedAt=int(time.time()*1000),
+            tag='Nonaccrual loans as a % of total loans',definition=definition,table=table_rows,
+            basis='WFC explicitly defines NPA as nonaccrual loans plus foreclosed assets; use its loan-only reported ratio'))
+    return found[0] if found and len({r['val'] for r in found})==1 else None
+
+
 def recover(member, issuer):
     global _SEC_UNTIL
     recent=issuer.get('filings',{}).get('recent',{}); today=dt.date.today().isoformat()
@@ -371,7 +410,7 @@ def recover(member, issuer):
                     if pdf: capital = pdf['cet1']
                 except Exception as exc:
                     attempts.append(dict(source='Official issuer filed PDF', error=str(exc)))
-            npl=jpm_credit_ratio(text,period,url,recent['filingDate'][i],recent['form'][i]) if cik==19617 else None
+            npl=jpm_credit_ratio(text,period,url,recent['filingDate'][i],recent['form'][i]) if cik==19617 else bank_loan_ratio(parser,text,cik,period,url,recent['filingDate'][i],recent['form'][i])
             return dict(facts=facts,cet1=capital,npl=npl,source=url,attempts=attempts)
         except Exception as exc:
             if sec and isinstance(exc,urllib.error.HTTPError) and exc.code in (403,429): _SEC_UNTIL=time.monotonic()+900

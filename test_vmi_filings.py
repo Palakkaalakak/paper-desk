@@ -44,6 +44,28 @@ class JPMCreditTests(unittest.TestCase):
         self.assertIsNone(f.jpm_credit_ratio(self.fixture()+self.fixture().replace('4916','4917'),'2026-06-30','filing','2026-08-06','10-Q'))
 
 
+class ReportedLoanRatioTests(unittest.TestCase):
+    def test_explicit_npl_fact_rejects_subsidiary_and_nonaccrual_substitution(self):
+        dims='<xbrli:segment><xbrldi:explicitMember dimension="us-gaap:FinancialInstrumentPerformanceStatusAxis">us-gaap:NonperformingFinancingReceivableMember</xbrldi:explicitMember></xbrli:segment>'
+        tag='us-gaap:LoansAndLeasesReceivableRatioOfNonperformingLoansToAllLoans'
+        text=document(value='0.0055',dimension=dims,currency='pure').replace('us-gaap:DebtCurrent',tag).replace('scale="6"','scale="0"')
+        def run(text):
+            p=f.InlineFacts();p.feed(text);p.validated(70858,'2026-06-30','issuer','2026-08-01','10-Q')
+            return f.bank_loan_ratio(p,text,70858,'2026-06-30','issuer','2026-08-01','10-Q')
+        self.assertAlmostEqual(run(text)['val'],.55)
+        self.assertIsNone(run(text.replace('NonperformingFinancingReceivableMember','CommercialPortfolioSegmentMember')))
+        self.assertIsNone(run(text.replace(tag,'custom:NonaccrualRatio')))
+
+    def test_wfc_definition_totals_date_and_loan_only_ratio(self):
+        rows=[['($ in millions)','Jun 30, 2026','Dec 31, 2025'],['Commercial loans','4735','5266'],['Consumer loans','2908','2935'],['Total nonaccrual loans','7643','8201'],['Nonaccrual loans as a % of total loans','0.74','%','0.83']]
+        text='NONPERFORMING ASSETS (NONACCRUAL LOANS AND FORECLOSED ASSETS)<p>Table 11: Credit Quality Overview</p><table>'+''.join('<tr>'+''.join('<td>'+c+'</td>' for c in r)+'</tr>' for r in rows)+'</table>'
+        def run(text,cik=72971):return f.bank_loan_ratio(f.InlineFacts(),text,cik,'2026-06-30','issuer','2026-07-28','10-Q')
+        self.assertAlmostEqual(run(text)['val'],.74)
+        for old,new in [('Jun 30, 2026','Mar 31, 2026'),('7643','8000'),('NONACCRUAL LOANS AND FORECLOSED ASSETS','unverified definition'),('Credit Quality Overview','Subsidiary summary')]:
+            with self.subTest(old=old):self.assertIsNone(run(text.replace(old,new)))
+        self.assertIsNone(run(text,19617))
+
+
 class CitiCapitalTests(unittest.TestCase):
     def fixture(self):
         rows=[['June 30, 2026'], ['In millions of dollars, except ratios','Required Ratios','Standardized Approach','Required Ratios','Advanced Approaches'],
