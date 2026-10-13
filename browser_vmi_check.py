@@ -36,10 +36,11 @@ def main():
                 return r.fulfill(json=dict(rows=[dict(symbol='T'+str(i),name='Fixture',industry='Software',sector='IT',cik=i+1) for i in range(502)]+[dict(symbol='META',name='Meta',industry='Software',sector='IT',cik=900)],source='fixture',retrievedAt=now))
             if '/data/vmi_sp500_batch' in url:
                 q=urllib.parse.parse_qs(urllib.parse.urlsplit(url).query)
-                return r.fulfill(json=dict(rows=[dict(symbol=x,fields={'ROE':'25%'},source='fixture',retrievedAt=now,screen=dict(rejected=x!='META',reasons=['Fixture threshold'])) for x in q['symbols'][0].split(',')],missing=[]))
+                return r.fulfill(json=dict(rows=[dict(symbol=x,fields={'ROE':'25%'},source='fixture',retrievedAt=now,screen=dict(rejected=x!='META',reasons=['Fixture threshold']),screens={m:dict(rejected=x!='META',reasons=['Fixture threshold']) for m in ('conservative','moderate','optimistic')}) for x in q['symbols'][0].split(',')],missing=[]))
             if '/data/vmi_sp500_company' in url:
                 q=urllib.parse.parse_qs(urllib.parse.urlsplit(url).query)
-                return r.fulfill(json=dict(member={'symbol':'META'},evidence={},result=dict(preset=q['mode'][0],status='QUALIFIED',checks=[],failures=[],pending=[]),research=dict(symbol='META',name='Meta',currency='USD',cik=900,metrics={'roe':25},sources=[],retrievedAt=now)))
+                evaluations={m:dict(preset=m,status='QUALIFIED',checks=[],failures=[],pending=[]) for m in ('conservative','moderate','optimistic')}
+                return r.fulfill(json=dict(member={'symbol':'META','cik':900},evidence={},result=evaluations[q['mode'][0]],evaluations=evaluations,cacheVersion=2,collectedAt=now,acquiredModes=[q['mode'][0]],research=dict(symbol='META',name='Meta',currency='USD',cik=900,metrics={'roe':25},sources=[],retrievedAt=now)))
             if '/data/vmi_fundamentals' in url: return r.fulfill(json={'symbol':'META','name':'<img src=x onerror=alert(1)>','currency':'USD','cik':123,'metrics':{'roe':25},'sources':[],'retrievedAt':now})
             if '/data/vmi_stock' in url: return r.fulfill(json={'symbol':'META','conid':123,'secType':'STK','currency':'USD','mult':1,'exch':'SMART','served_by':'tws'})
             option = dict(conid=456,symbol='META  990116C00100000',secType='OPT',right='C',root='META',underConid=123,currency='USD',mult=100,strike=100,expiry='20990116',exch='SMART',tradingClass='META',deliverableStatus='IB_STANDARD_CLASS_NOT_OCC_VERIFIED')
@@ -82,6 +83,26 @@ def main():
         assert page.locator('[data-scan-open="T0"]').count() == 0
         assert page.locator('[data-scan-filter="qualified"] strong').inner_text() == '1'
         assert page.locator('#vmi-auto-settings').count() == 0
+        scan_requests=lambda:sum('/data/vmi_sp500_' in u for u in requests)
+        initial_requests=scan_requests()
+        record=page.evaluate("async()=> (await VMIScanner.evidenceCache().load()).get('META')")
+        assert record['data']['cacheVersion']==2
+        page.reload(wait_until='domcontentloaded')
+        page.wait_for_function('window.__paper')
+        page.locator('[data-tab="vmi"]').click()
+        page.wait_for_function("document.querySelector('#vmi-scan-progress')?.textContent.includes('Cached evidence restored')")
+        assert scan_requests()==initial_requests
+        assert page.locator('[data-scan-open="META"]').count()==1
+        page.locator('#vmi-mode').select_option('optimistic')
+        page.wait_for_function("document.querySelector('#vmi-scan-progress')?.textContent.includes('Scan complete')")
+        page.locator('#vmi-profile').select_option('growth')
+        page.wait_for_function("document.querySelector('#vmi-scan-progress')?.textContent.includes('Scan complete')")
+        assert scan_requests()==initial_requests
+        assert page.evaluate("async()=> (await VMIScanner.evidenceCache().load()).get('META').collectedAt")==record['collectedAt']
+        assert 'collected' in page.locator('#vmi-cache-status').inner_text()
+        page.locator('[data-scan="rescan"]').click()
+        page.wait_for_function("document.querySelector('#vmi-scan-progress')?.textContent.includes('Scan complete')")
+        assert scan_requests()>initial_requests
         page.locator('[data-scan-filter="qualified"]').click()
         page.locator('[data-scan-open="META"]').click()
         page.locator('#vmi-stock-ticket [name="qty"]').fill('3')
@@ -132,6 +153,13 @@ def main():
         page.reload(wait_until='domcontentloaded')
         page.wait_for_function('window.__paper && __paper.S.trades.length===1')
         assert page.evaluate('__paper.S.paperCorrections.length') == 1
+        page.locator('[data-tab="vmi"]').click()
+        page.wait_for_function("document.querySelector('#vmi-scan-progress')?.textContent.includes('Cached evidence restored')")
+        account_before_delete=page.evaluate('localStorage.paperAccount')
+        page.locator('[data-scan="clear"]').click()
+        page.wait_for_function("document.querySelector('#vmi-scan-progress')?.textContent.includes('Scan cache deleted')")
+        assert page.evaluate("async()=> (await VMIScanner.evidenceCache().load()).size")==0
+        assert page.evaluate('localStorage.paperAccount')==account_before_delete
         assert not any('/data/guns_bars' in u or '/data/vmi_scan?' in u for u in requests)
         assert not errors, errors
         print('VMI browser: stock/call handoffs without submission, chain routing, historical preview/recording, backup, persistence and mobile passed')

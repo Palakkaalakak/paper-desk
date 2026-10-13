@@ -1,5 +1,21 @@
 # Paper Desk — IB Gateway paper-trading workstation
 
+## Seven-day scanner cache and financial HTML recovery — 2026-10-13
+
+This remains the existing local Python application at `http://localhost:8765`; no Cloudflare deployment or account migration. Restart `serve.py` and reload after pulling `main`.
+
+- Scanner evidence persists in the browser's separate IndexedDB database `paper-desk-vmi-scan-evidence`, not `localStorage.paperAccount`. Schema-versioned records expire seven days after collection; reads and preset changes do not extend their dates. Use the same browser profile and origin to reuse them. Browser storage errors are visible, not reported as successful persistence.
+- Initial acquisition still requires **Scan S&P 500**. Reload restores cached results without downloads. Research portfolio/preset changes reuse all-preset business evaluations and cached broad observations; newly eligible companies acquire missing history and add it to the cache. Supplementation retries evidence assembly while retaining successful server-side source caches. These transient source caches do not survive a server restart; additional missing-data acquisition after restart can therefore revisit sources.
+- **Rescan anyway** bypasses browser and server source caches (including CIK-keyed filings and old in-flight work). **Delete scan cache** clears this browser's scanner records, not account data or research archives. Original collection dates and cached-price status remain visible. Existing quote refresh and no-submit ticket handoffs are unchanged.
+- The separate mandatory Yahoo quote-page recovery sweep is removed. After broad screening, unresolved companies go directly to dated financial statements and integrated recovery, with four detailed workers. Missing data never passes and there is no overall ten-minute cutoff.
+- MarketBeat HTML statement recovery validates ticker identity, USD units, raw/display scale agreement, fiscal dates, and annual/quarterly separation. Extra financial-sector interest, capex and debt-component labels are now acquired. Explicit CapEx totals take precedence over differently aggregated purchase lines; both observations remain in the evidence audit. Conflicting observations for the same label/date still fail validation.
+- Live scraper verification for **AON, ACN and CTAS** acquired **11 annual revenue, CFO, capex, interest and debt-component observations each**. This is measured source coverage, not proof that all VMI gates qualify or that every constituent has complete data.
+- Regression checkpoint: **159 Python tests, 149 JavaScript tests**, and the full Chromium workflow passed. The browser check covers real IndexedDB reload/preset/planner reuse, forced refresh, cache deletion without account changes, stock/call handoffs, historical trade preview/recording, backup, persistence and mobile layout.
+
+Read-only entry points remain `/data/vmi_sp500_members`, `/data/vmi_sp500_batch?view=financial|growth&symbols=...&mode=...&recovery=deferred`, `/data/vmi_sp500_company?symbol=...&mode=...`, and diagnostics/export. `force=1` requests fresh acquisition; company `supplement=1` reassembles evidence for additional constraints. Cache deletion is local to the browser; no broker-write route was added.
+
+**Still unverified/incomplete:** a completed post-fix real full-universe run and its elapsed time; reliable independent long-term earnings forecasts; comprehensive bank capital/credit-risk and issuer-filing recovery coverage. Previous interrupted full-run attempts are not successful ten-minute scans. Next work is measured source-coverage repair, not criterion relaxation. Earlier checkpoint descriptions below are historical; the scanner now collects mode-independent financial evidence rather than using the preset-specific annual early-stop shortcut.
+
 ## Actual-run repair checkpoint — 2026-10-12
 
 **Local Python application only; not a Cloudflare migration.** Pull `main`, stop and restart your existing `serve.py` process, and reload `http://localhost:8765`. Export any in-progress research first. Paper-account storage, automatic IB quote streams, GUNS, Trading, stock/call ticket handoffs without submission, and historical paper-trade safeguards remain unchanged.
