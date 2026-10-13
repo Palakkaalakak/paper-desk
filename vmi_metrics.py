@@ -206,6 +206,8 @@ def evidence(member,mode=None):
                     if obs and (key not in current or obs['end']>current[key]['end']): current[key]=obs
             for key in ('income','ocf','revenue'): s['quarterly_'+key]=scraped['quarterly'].get(key,[])
             sources.append(scraped['source']);attempts+=scraped.get('attempts',[])
+            for alternative in scraped.get('alternatives',[]):
+                attempts.append(dict(source=scraped['source'],observationAlternative=alternative))
         except Exception as exc: attempts.append(dict(source='MarketBeat HTML statements',error=str(exc)))
     try:
         alt=api.cached(('yahoo',ticker),21600,lambda:yahoo(ticker))

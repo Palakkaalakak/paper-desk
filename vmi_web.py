@@ -20,7 +20,10 @@ LABELS={
  'Total Current Liabilities':'cl','Accounts Receivable':'ar','Inventories, net':'inventory',
  'Accounts Payable':'ap','Total Debt':'debt','Retained Earnings':'retained',
  'Current Deferred Revenue':'deferred','Weighted Average Diluted Shares Outstanding':'dilutedShares',
- 'Interest Expense':'interest',
+ 'Interest Expense':'interest','Total Interest Expense':'interest',
+ 'Purchase of Property, Leasehold Improvements and Equipment':'capex',
+ 'Purchase of Property, Plant & Equipment':'capex','Treasury Stock':'treasury',
+ 'Long-Term Debt':'debtNoncurrent','Short-Term Debt':'debtCurrent',
 }
 
 
@@ -50,7 +53,7 @@ def decode(text,ticker,url):
                 if isinstance(item,dict) and item.get('tickerSymbol'): identities.append(item['tickerSymbol'])
         except ValueError: continue
     if not identities or any(str(x).upper().replace('.','-')!=alias for x in identities): raise ValueError('MarketBeat issuer identity mismatch')
-    annual={};quarterly={};retrieved=int(time.time()*1000)
+    annual={};quarterly={};alternatives=[];retrieved=int(time.time()*1000)
     for match in re.finditer(r'<table\b[^>]*class="financials-table[^>]*>.*?</table>',text,re.S):
         caption=text[max(0,match.start()-800):match.start()]
         units='All values are USD millions unless otherwise specified'
@@ -79,12 +82,20 @@ def decode(text,ticker,url):
                 obs=dict(end=end.isoformat(),val=value,unit=unit,source=url,tag=row[0],basis=basis,retrievedAt=retrieved)
                 if key=='debt': obs['completeDebt']=True
                 prior=next((r for r in target.get(key,[]) if r['end']==obs['end']),None)
-                if prior and prior['val']!=value: raise ValueError('Conflicting scraped statement observations')
+                if prior and prior['val']!=value:
+                    if key=='capex' and prior['tag']!=obs['tag']:
+                        # The purchase line can omit other capital expenditures.
+                        # Keep both observations; use the explicitly labeled total.
+                        preferred=obs if obs['tag']=='Capital Expenditures (CapEx)' else prior
+                        alternatives.append(dict(metric=key,preferred=preferred,alternative=prior if preferred is obs else obs,reason='Different capex aggregation; explicit CapEx total preferred'))
+                        if preferred is obs: target[key].remove(prior);target[key].append(obs)
+                        continue
+                    raise ValueError('Conflicting scraped statement observations: '+key+' '+obs['end'])
                 if not prior: target.setdefault(key,[]).append(obs)
     if not annual: raise ValueError('MarketBeat dated USD financial table not established')
     for series in (annual,quarterly):
         for rows in series.values(): rows.sort(key=lambda r:r['end'])
-    return dict(symbol=ticker,series=annual,quarterly=quarterly,source=url,retrievedAt=retrieved)
+    return dict(symbol=ticker,series=annual,quarterly=quarterly,source=url,retrievedAt=retrieved,alternatives=alternatives)
 
 
 def statements(ticker,exchanges=()):
