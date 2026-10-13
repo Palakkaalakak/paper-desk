@@ -334,6 +334,8 @@ def validate_prior(prior, member):
     for key in ('sources','attempts','observationAlternatives'):
         if not isinstance(data.get(key,[]),list): raise ValueError('Invalid supplementary '+key)
     if any(not isinstance(url,str) for url in data.get('sources',[])): raise ValueError('Invalid source labels')
+    completed=data.get('completedSources',[])
+    if not isinstance(completed,list) or any(x not in ('html','yahoo') for x in completed): raise ValueError('Invalid completed source list')
     def observation(row):
         if not isinstance(row,dict) or type(row.get('val')) not in (int,float) or not math.isfinite(row['val']): raise ValueError('Invalid observation')
         try: end=dt.date.fromisoformat(row['end'])
@@ -365,7 +367,7 @@ def _company(ticker,mode='moderate',supplement=False,prior=None):
     previous=validate_prior(prior,member) if prior is not None else None
     trace.event('statements',ticker+' / financial statements')
     # Browser-held observations are request-local, never put in shared caches.
-    data=evidence(member) if supplement else cached(('evidence',ticker),21600,lambda:evidence(member))
+    data=evidence(member,prior=previous) if previous is not None else evidence(member) if supplement else cached(('evidence',ticker),21600,lambda:evidence(member))
     if previous is not None:
         data=merge_evidence(previous,data)
         data['retrievedAt']=min(data['retrievedAt'],prior['collectedAt'])

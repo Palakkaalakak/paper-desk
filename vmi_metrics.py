@@ -224,12 +224,15 @@ def merge_evidence(prior, incoming):
     result['retrievedAt'] = min(prior['retrievedAt'], incoming['retrievedAt'])
     result['supplementedAt'] = incoming['retrievedAt']
     if not result.get('shareClassCount'): result['shareClassCount'] = prior.get('shareClassCount')
+    result['completedSources'] = list(dict.fromkeys(prior.get('completedSources', []) + incoming.get('completedSources', [])))
+    result['series']['debt'] = derive_debt(result['series'])
     return result
 
 
-def evidence(member,mode=None):
+def evidence(member,mode=None,prior=None):
     import vmi_sp500 as api
     ticker,cik=member['symbol'],member['cik'];s={};current={};attempts=[];sources=[];issuer={};facts={}
+    completed=[];known=set((prior or {}).get('completedSources',[]))
     url=f'https://data.sec.gov/api/xbrl/companyfacts/CIK{cik:010d}.json';sub=f'https://data.sec.gov/submissions/CIK{cik:010d}.json'
     try:
         # Do not retain large raw filing blobs for a universe-sized scan.
@@ -264,7 +267,7 @@ def evidence(member,mode=None):
     # Independent HTML tables supply annual history when API coverage is short.
     s['debt']=derive_debt(s)
     required=('revenue','income','ocf','capex','equity','debt','cash','operatingIncome','tax','pretax','ar')
-    if any(window([r for r in s.get(k,[]) if k!='debt' or r.get('completeDebt',True)],10) is None for k in required):
+    if 'html' not in known and any(window([r for r in s.get(k,[]) if k!='debt' or r.get('completeDebt',True)],10) is None for k in required):
         try:
             from vmi_web import statements
             scraped=api.cached(('html-statements',ticker),21600,lambda:statements(ticker,issuer.get('exchanges',[])))
@@ -281,11 +284,13 @@ def evidence(member,mode=None):
                 obs = statement_ttm(scraped['series'].get(key, []), quarters)
                 if obs and (key not in current or obs['end'] > current[key]['end']): current[key] = obs
             sources.append(scraped['source']);attempts+=scraped.get('attempts',[])
+            completed.append('html')
             for alternative in scraped.get('alternatives',[]):
                 attempts.append(dict(source=scraped['source'],observationAlternative=alternative))
         except Exception as exc: attempts.append(dict(source='MarketBeat HTML statements',error=str(exc)))
     try:
-        alt=api.cached(('yahoo',ticker),21600,lambda:yahoo(ticker))
+        alt={} if 'yahoo' in known else api.cached(('yahoo',ticker),21600,lambda:yahoo(ticker))
+        if alt: completed.append('yahoo')
         for key,name in YAHOO.items():
             rows=alt.get('annual'+name,[])
             s[key]=merged(rows,s.get(key,[])) if key=='debt' else merged(s.get(key,[]),rows)
@@ -338,7 +343,7 @@ def evidence(member,mode=None):
         if r: current['debt']=r
     shot=api.market_fields(ticker);sources+=shot['sources'];attempts+=shot['attempts']
     for rows in s.values(): rows.sort(key=lambda r:r['end'])
-    return dict(symbol=ticker,cik=cik,shareClassCount=len(issuer.get('tickers',[])) or None,series=s,current=current,market=shot['fields'],marketFieldSources=shot.get('fieldSources',{}),sources=sources,attempts=attempts,retrievedAt=int(time.time()*1000),policies=POLICY)
+    return dict(symbol=ticker,cik=cik,shareClassCount=len(issuer.get('tickers',[])) or None,series=s,current=current,market=shot['fields'],marketFieldSources=shot.get('fieldSources',{}),sources=sources,attempts=attempts,retrievedAt=int(time.time()*1000),policies=POLICY,completedSources=completed)
 
 
 def window(rows,n=5):

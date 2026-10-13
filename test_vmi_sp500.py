@@ -190,6 +190,18 @@ class SupplementMergeTests(unittest.TestCase):
         new=dict(series={'debt':[dict(row,val=80,completeDebt=False)]},current={},retrievedAt=2000)
         self.assertEqual(m.merge_evidence(old,new)['series']['debt'][0],row)
 
+class SourceReuseTests(unittest.TestCase):
+    def test_completed_independent_sources_not_downloaded_after_restart(self):
+        api._CACHE.clear()
+        member=dict(symbol='TEST',cik=1,industry='Software',sector='IT')
+        prior=dict(completedSources=['html','yahoo'])
+        with patch.object(m.v,'fetch',side_effect=ValueError('SEC unavailable')),patch('vmi_web.statements') as html,patch.object(m,'yahoo') as yahoo,patch.object(api,'market_fields',return_value=dict(fields={},sources=[],attempts=[])):
+            m.evidence(member,prior=prior)
+        html.assert_not_called();yahoo.assert_not_called()
+        with patch.object(m.v,'fetch',side_effect=ValueError('SEC unavailable')),patch('vmi_web.statements',side_effect=ValueError('retry')) as html,patch.object(m,'yahoo',return_value={}) as yahoo,patch.object(api,'market_fields',return_value=dict(fields={},sources=[],attempts=[])):
+            m.evidence(member,prior={})
+        html.assert_called_once();yahoo.assert_called_once()
+
 class SupplementValidationTests(unittest.TestCase):
     def test_validated_merge_recomputes_presets_and_does_not_seed_shared_cache(self):
         import time,copy
