@@ -46,7 +46,7 @@ YAHOO={
 }
 # Change whenever accounting or qualification semantics change. Browser records
 # retain raw observations and original collection dates, not stale verdicts.
-CALCULATION_REVISION = '2026-10-13-accounting-6'
+CALCULATION_REVISION = '2026-10-13-accounting-8'
 
 POLICY={
  'history':'Five consecutive fiscal years; conservative ten for revenue, earnings and CFO. Generally upward trend using the median of all pairwise annual slopes (Theil-Sen), or a positive fitted slope with at most two declines. A temporary bad year or end-point dip alone is not a veto; required positive flows and complete dated history remain enforced.',
@@ -56,6 +56,7 @@ POLICY={
  'debt':'Course permits 2/3 debt ratios (moderate and optimistic); conservative explicitly adds a 3/3 policy. All three inputs must be acquired; missing never counts as passing.',
  'ccc':'Physical-goods industries, including footwear, only. Latest <= five-year mean +10 days and trend <=2 days/year (explicit app tolerances). No absent balance is assumed zero.',
  'peers':'Three largest distinct S&P 500 issuers in the same GICS sub-industry. A transparent industry proxy, not a claim of identical business mix or a full direct-competitor map.',
+ 'receivables':'PP method: annual revenue and receivables on one shared dollar scale over five fiscal observations. Compare absolute changes; display percentage changes separately, never use relative percentage growth as a substitute veto. Source: course Microsoft/Amazon chart instructions and user-supplied PP screenshot.',
  'dates':'USD; annual windows and latest quarter/TTM retained separately. SEC fiscal periods are preferred; Yahoo dates matched within seven days.',
  'moat':'Excluded from scanner qualification; remains available in the separate manual company review.',
  'buybacks':'Negative equity is not rejected on provider ROE alone. The source exception requires matched positive retained earnings and treasury stock sufficient to explain negative equity, plus increasing earnings and FCF. No numeric infinity is stored; ROIC and debt remain independent.',
@@ -679,10 +680,19 @@ def evaluate(member,data,mode='moderate',include_peers=True):
     if flags['bank'] or flags['insurance']: add('receivables','Revenue vs receivables growth',True,'Financial-sector trade receivables not comparable',na=True)
     else:
         revenues=window(s.get('revenue',[]));ars=[match(s.get('ar',[]),r['end']) for r in revenues] if revenues else []
-        if revenues and len(ars)==5 and all(ars) and revenues[0]['val']>0 and ars[0]['val']>0:
-            rg=revenues[-1]['val']/revenues[0]['val']-1;ag=ars[-1]['val']/ars[0]['val']-1
-            add('receivables','Revenue grows faster than receivables',rg>ag,f'{revenues[0]["end"]} to {revenues[-1]["end"]}: revenue {rg*100:.2f}%, receivables {ag*100:.2f}%',revenues+ars)
-        else: add('receivables','Revenue grows faster than receivables',None,'Aligned positive opening receivable balance required',s.get('ar',[]))
+        if revenues and len(ars)==5 and all(ars) and all(r['val']>=0 for r in revenues+ars):
+            revenue_change=revenues[-1]['val']-revenues[0]['val']
+            ar_change=ars[-1]['val']-ars[0]['val']
+            rg=(revenues[-1]['val']/revenues[0]['val']-1)*100 if revenues[0]['val']>0 else None
+            ag=(ars[-1]['val']/ars[0]['val']-1)*100 if ars[0]['val']>0 else None
+            add('receivables','Revenue vs receivables on shared dollar scale',revenue_change>ar_change,
+                f'{revenues[0]["end"]} to {revenues[-1]["end"]}: revenue change USD {revenue_change:,.0f}; receivables change USD {ar_change:,.0f}. '
+                'PP shared-scale comparison, not relative percentage growth. Source: VMI_MASTER_DOCUMENT.md 2181, 5228-5234, 5486.',revenues+ars)
+            checks[-1]['comparison']=dict(basis='Shared USD scale',revenueChange=revenue_change,receivablesChange=ar_change,
+                revenuePercentChange=rg,receivablesPercentChange=ag,percentagesAreDiagnosticOnly=True,
+                source='VMI_MASTER_DOCUMENT.md: Microsoft and Amazon shared-scale chart instructions',
+                referenceImage='https://www.genspark.ai/api/files/s/QBxRrn0D')
+        else: add('receivables','Revenue vs receivables on shared dollar scale',None,'Five aligned nonnegative annual revenue and receivable balances required; missing is not zero',s.get('ar',[]))
     physical=any(x in member['industry'].lower() for x in ('retail','food','beverage','apparel','footwear','household','hardware','semiconductor','automobile','manufactur','equipment','pharmaceutical','tobacco','distributor','product','machinery','chemical'))
     if not physical: add('ccc','Cash conversion cycle',True,'Industry is not classified as a physical-goods business (explicit policy)',na=True)
     else:

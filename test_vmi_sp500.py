@@ -289,6 +289,22 @@ class ScannerTests(unittest.TestCase):
         self.assertEqual([r['end'] for r in result],sorted(ends))
         self.assertEqual(m.annual_balances(facts,['StockholdersEquity'],set()),[])
 
+    def test_pp_shared_scale_matches_user_apple_screenshot(self):
+        dates=['2021-09-25','2022-09-24','2023-09-30','2024-09-28','2025-09-27']
+        def observations(values):
+            return [dict(end=end,val=value*1000000,source='PP screenshot matched to filed annual facts',unit='USD') for end,value in zip(dates,values)]
+        series=dict(revenue=observations([365817,394328,383285,391035,416161]),ar=observations([26278,28184,29508,33410,39777]))
+        member=dict(symbol='ANY',cik=1,industry='Technology Hardware',sector='IT')
+        def check():return next(c for c in m.evaluate(member,dict(series=series,current={},market={},sources=[]))['checks'] if c['key']=='receivables')
+        row=check();self.assertEqual(row['status'],'PASS')
+        self.assertEqual(row['comparison']['revenueChange'],50344000000)
+        self.assertEqual(row['comparison']['receivablesChange'],13499000000)
+        self.assertGreater(row['comparison']['receivablesPercentChange'],row['comparison']['revenuePercentChange'])
+        series['ar']=observations([0,0,0,0,0])
+        self.assertEqual(check()['status'],'PASS')
+        series['ar'].pop()
+        self.assertEqual(check()['status'],'ACQUIRE')
+
     def test_fix_unbilled_subtotal_cannot_impersonate_trade_receivables(self):
         ends=[f'{y}-12-31' for y in range(2021,2026)]
         vals={'BilledContractReceivables':[773716000,1000000000,1300000000,1800000000,2577858000],
@@ -303,9 +319,14 @@ class ScannerTests(unittest.TestCase):
         revenue=[dict(end=end,val=val) for end,val in zip(ends,[3073636000,4000000000,5000000000,7000000000,9101641000])]
         data=dict(series=dict(revenue=revenue,ar=scoped['annual']),current={},market={},sources=[])
         check=next(c for c in m.evaluate(member,data)['checks'] if c['key']=='receivables')
+        self.assertEqual(check['status'],'PASS')
+        self.assertAlmostEqual(check['comparison']['receivablesPercentChange'],223.2485276994)
+        self.assertAlmostEqual(check['comparison']['revenuePercentChange'],196.1196771511)
+        self.assertEqual(check['comparison']['receivablesChange'],1865458000)
+        # The full AR scope still matters: do not replace it with the unbilled subtotal.
+        revenue[-1]['val']=4100000000
+        check=next(c for c in m.evaluate(member,data)['checks'] if c['key']=='receivables')
         self.assertEqual(check['status'],'FAIL')
-        self.assertIn('receivables 223.25%',check['detail'])
-        self.assertIn('revenue 196.12%',check['detail'])
         # Other issuers' net/gross definitions are not inferred from FIX.
         self.assertIsNone(m.issuer_trade_receivables(dict(member,cik=1),facts,set(ends),'SEC'))
         del facts['UnbilledContractsReceivable']
