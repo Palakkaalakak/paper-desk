@@ -1,5 +1,15 @@
 # Scanner correctness investigation — 2026-10-13
 
+## Superseding correction — PP comparison and source-only instruction (2026-10-14)
+
+The conclusions below that AAPL fails receivables and that correcting FIX necessarily reverses its PASS are withdrawn. They used the wrong percentage-growth gate. Commit `949d311` follows the user-supplied PP chart and the shared-scale instructions in the Microsoft and Amazon worked examples (master document 2181, 5228–5234, 5486). The five-year window was supported; substituting percentage growth was not. No hidden Pine-script algorithm was retrieved.
+
+AAPL's FY2021–FY2025 revenue increased by $50.344 billion and receivables by $13.499 billion: this criterion passes. FIX's full billed-plus-unbilled receivables still replace the incorrect provider subtotals. Its revenue increased by $6.028005 billion versus $1.865458 billion of receivables, so this criterion also passes. The data-scope repair remains necessary; the earlier FAIL conclusion does not. Notes below retain historical investigation provenance, not current verdicts.
+
+The user's priority companies are **META, AAPL, TMO, WM, PANW, AMZN and MSFT**. ADBE was an assistant-selected example, not a requested priority. The instruction is: **“If adam didnt say it, then it isnt right. (unless i override).”** Calling an unsupported rule an app policy does not authorise it. Added statistical trend gates, CCC tolerances and stricter business presets require removal, not relabelling. Uncertain qualitative judgments cannot silently become PASS either.
+
+Recovery confirmed `main` at `949d311`, calculation revision `2026-10-13-accounting-8`. The preceding interrupted turn lost all unpushed edits and downloads again. Full source archive: https://www.genspark.ai/api/files/s/1YpXyJCw . Old verdicts are superseded; dated observations remain auditable. The overall task is not complete.
+
 ## Scope and durable baseline
 
 User rejects the apparent three-company result as implausible and requests a source/rule audit, not arbitrary loosening to obtain 50–60 names. Audit both false passes and false rejections. Preserve local Python, accounts, read-only broker protections, quotes, historical recording and seven-day evidence cache. Do not claim completion based only on passing unit tests or finishing requests.
