@@ -95,6 +95,21 @@ The industry matcher now includes Footwear: DECK's CCC is assessed, not N/A. Rep
 
 The moderate preset now follows the explicitly permitted **2/3** debt ratios (master document §10, lines 2454/2495); conservative retains a disclosed stricter 3/3 app policy. All three inputs are still required: an absent interest amount cannot count as zero or a passing gate. Manual research uses the same preset debt count. Cache calculation revision advanced so old decisions will be recalculated. Checks: 47 focused Python and 31 VMI/scanner JS tests passed; embedded assets rebuilt.
 
+## Later durable corrections and measured full evidence
+
+- `8946e61`: debt/operating-lease reconciliation requires an independent dated equality, retains original provider totals and all inputs, and never assumes missing lease components are zero. FIX 2025 debt reconciles from 483.358m to 145.226m; DECK FY2023–FY2026 reconciles to independently reported zero borrowings. META current debt becomes 83.664bn rather than 112.318bn. AAPL 2022 still has a separately identifiable finance-lease difference; it is not silently explained as operating leases.
+- `c9e2baf`: when operating margin substitutes for net margin, peer comparisons now use operating income/revenue on both sides, retain calculation inputs and require comparable annual/verified TTM end dates. No operating-versus-net comparison.
+- `e73b072`: current ROE/ROIC below the five-year average is **not** a veto. Means remain explanatory context. Revenue/earnings/CFO use general multi-year direction, not an uninterrupted rise or endpoint-only test. Current profitability thresholds and complete dated history still apply.
+- `2cf4e5c`: ratio/margin trend checks distinguish a persistently declining series from a fit sensitive to one unusual year. Full-window observations/statistics remain unchanged; sensitivity tests preserve original elapsed-year spacing and produce review warnings rather than hiding a year. These statistical choices are app implementation policy, not verbatim Adam thresholds. This implements the user's explicit clarification; no ticker exemption or target qualifier count is used.
+
+The **completed live run at `e17bf9d`**, before the final sensitivity correction, visited all **503** listings in **302.129 seconds**: 282 cheap-stage exclusions, 221 detailed acquisitions, 968/968 received HTTP downloads, no request errors. It reported 493 rejected, 3 qualified (ACGL, APH, DECK), 7 acquiring. It remains an unapproved diagnostic result, not completion. Crucially, this run preserves **full financial evidence**, not only status summaries, for every detailed name and all broad responses:
+
+https://www.genspark.ai/api/files/s/Ngvzc9yY (gzip JSONL, 6.91 MB).
+
+Offline reevaluation of those collected inputs after `2cf4e5c` found 50 names without a non-peer failure, including names still missing evidence. **This is not a claim of 50 qualified businesses.** META and ADBE no longer have non-peer failures; their peer decisions must be recomputed. AAPL no longer fails ROE, but still fails the sourced AR comparison (51.37% AR vs 13.76% revenue growth), and recent interest expense remains unresolved. MSFT still has persistent return-trend and AR flags. FIX still correctly fails AR. The subsequent peer replay was interrupted before a durable completed result.
+
+Full offline regression at `2cf4e5c`: 196 Python and 152 JavaScript tests passed. Latest Chromium verification was interrupted during dependency restoration; do not call it passed at this checkpoint.
+
 ## Reset recovery and completion discipline
 
 Every new interrupted turn has restored the sandbox to the latest pushed commit; local dependencies, uncommitted edits and logs were repeatedly lost. **Commit/push tested small changes immediately.** Read current git status and implementation before restoring anything.
