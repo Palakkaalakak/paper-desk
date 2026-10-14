@@ -146,3 +146,8 @@ Under the still-partly-incorrect evaluator at `8e9f3f1`: TMO current calculated 
 Revision `2026-10-14-course-10` removes fitted/robust slope gates, the margin tolerance, leave-one-year-out acceptance, and CCC mean+10/slope<=2 thresholds. Mixed charts are explicitly REVIEW, not a fabricated pass/fail or missing acquisition. Unambiguous stable/rising and falling observations remain assessable. Return deterioration above 12% requires review (4496); moderately increasing CCC can be acceptable (4514). No complete qualitative judgment workflow is claimed. FCF counts actual negative years and removes the added latest-year veto; zero is review. Review prevents qualification through all-preset peer replacement, browser cache and live-audit completion. Original evidence expiry remains unchanged. The seven-company accounting audit and dated/closest-peer repair are still open.
 
 Full regression after restoring these changes: 198 Python and 154 JavaScript tests passed. This is software verification, not approval of financial correctness. Chromium verification is still pending.
+
+
+## Completed Chromium verification at `0423944`
+
+`python browser_vmi_check.py` completed successfully after installing Chromium. The isolated full-app browser workflow verified explicit scan/cache/profile reuse, stock and actual-contract call ticket handoffs without submission, historical preview/recording, backup, persistence and mobile layout. Market/IB data were mocked; no user account or broker order was used. This verifies application wiring, not live financial correctness.
