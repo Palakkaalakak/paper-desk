@@ -234,12 +234,12 @@ def sector(member):
 
 def quick(member,fields,mode):
     if mode not in MODES: raise ValueError('Invalid preset')
-    flags=sector(member);threshold=15 if mode=='conservative' else 12;reasons=[]
+    flags=sector(member);threshold=12;reasons=[]
     roe=v.number(fields.get('ROE'));roic=v.number(fields.get('ROIC'));growth=v.number(fields.get('EPS Next 5Y',fields.get('EPS next 5Y')))
     if flags['excluded']: reasons.append('Course industry exclusion: commodity/property developer/airline')
     # Negative ROE may be the source's profitable treasury-stock exception.
     # Require the actual balance sheet before deciding; never invent infinite ROE.
-    if roe is not None and roe>=0 and (roe<=threshold if mode=='conservative' else roe<threshold): reasons.append(f'Current ROE {roe:g}% below preset threshold')
+    if roe is not None and roe>=0 and roe<threshold: reasons.append(f'Current ROE {roe:g}% below course 12% threshold')
     if not any(flags[k] for k in ('bank','insurance','utility')) and roic is not None and roic<threshold: reasons.append(f'Current ROIC {roic:g}% < {threshold}%')
     if growth is not None and growth<=0: reasons.append(f'Projected earnings growth {growth:g}% is not positive')
     return dict(rejected=bool(reasons),reasons=reasons)

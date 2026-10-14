@@ -46,14 +46,14 @@ YAHOO={
 }
 # Change whenever accounting or qualification semantics change. Browser records
 # retain raw observations and original collection dates, not stale verdicts.
-CALCULATION_REVISION = '2026-10-13-accounting-8'
+CALCULATION_REVISION = '2026-10-14-course-9'
 
 POLICY={
- 'history':'Five consecutive fiscal years; conservative ten for revenue, earnings and CFO. Generally upward trend using the median of all pairwise annual slopes (Theil-Sen), or a positive fitted slope with at most two declines. A temporary bad year or end-point dip alone is not a veto; required positive flows and complete dated history remain enforced.',
+ 'history':'Five consecutive fiscal years; ten preferred, never required by a preset (course 4248). Generally upward trend using the median of all pairwise annual slopes (Theil-Sen), or a positive fitted slope with at most two declines. A temporary bad year or end-point dip alone is not a veto; required positive flows and complete dated history remain enforced.',
  'stability':'Full-window robust/fitted trends plus leave-one-year-out sensitivity with original year spacing. A negative fit dependent on one year is a review warning, not an automatic rejection. Persistent declines fail. All observations stay visible and means are context only. Margin tolerance -0.1 pp/year and statistical methods are app policies, not verbatim course thresholds.',
- 'fcf':'Source allows 1-2 negative FCF years, not persistent deficits. Conservative: zero; moderate: one; optimistic: two, never consecutive and latest positive.',
+ 'fcf':'Source allows 1-2 negative FCF years, not persistent deficits. All presets: two (course 2478), never consecutive and latest positive.',
  'returns':'Annual ROE = NI / year-end equity. Annual ROIC = EBIT x (1-effective tax rate) / (equity + debt - cash). TTM/quarter-end ratios use the same formulas; provider ROIC is not mixed into calculated history averages.',
- 'debt':'Course permits 2/3 debt ratios (moderate and optimistic); conservative explicitly adds a 3/3 policy. All three inputs must be acquired; missing never counts as passing.',
+ 'debt':'Course 2495 permits 2/3 debt ratios in every preset; no extra conservative qualification gate. All three inputs must be acquired; missing never counts as passing.',
  'ccc':'Physical-goods industries, including footwear, only. Latest <= five-year mean +10 days and trend <=2 days/year (explicit app tolerances). No absent balance is assumed zero.',
  'peers':'Three largest distinct S&P 500 issuers in the same GICS sub-industry. A transparent industry proxy, not a claim of identical business mix or a full direct-competitor map.',
  'receivables':'PP method: annual revenue and receivables on one shared dollar scale over five fiscal observations. Compare absolute changes; display percentage changes separately, never use relative percentage growth as a substitute veto. Source: course Microsoft/Amazon chart instructions and user-supplied PP screenshot.',
@@ -265,7 +265,7 @@ def reported_rejections(member,series,issuer,mode):
     recent=issuer.get('filings',{}).get('recent',{});today=dt.date.today().isoformat()
     dates=[end for form,filed,end in zip(recent.get('form',[]),recent.get('filingDate',[]),recent.get('reportDate',[])) if form in ('10-K','10-K/A','20-F','20-F/A') and filed<=today and end and end<=today]
     if not dates: return []
-    newest=max(dates);years=10 if mode=='conservative' else 5;failed=[]
+    newest=max(dates);years=5;failed=[]
     for key in ('revenue','ocf'):
         if key=='ocf' and sector(member)['bank']: continue
         rows=window(series.get(key,[]),years)
@@ -630,7 +630,7 @@ def evaluate(member,data,mode='moderate',include_peers=True):
     from vmi_sp500 import sector,MODES
     if mode not in MODES: raise ValueError('Invalid preset')
     s=calculate(data['series']);cur=calculate({k:[r] for k,r in data.get('current',{}).items()});flags=sector(member)
-    checks=[];years=10 if mode=='conservative' else 5;cutoff=15 if mode=='conservative' else 12
+    checks=[];years=5;cutoff=12
     def add(key,label,ok,detail='',rows=None,na=False):
         checks.append(dict(key=key,label=label,status='N/A' if na else 'ACQUIRE' if ok is None else 'PASS' if ok else 'FAIL',detail=detail,observations=rows or []))
     def trend(key,label,n=5,stable=False):
@@ -649,7 +649,7 @@ def evaluate(member,data,mode='moderate',include_peers=True):
         add('ocf','CFO history',True,'Bank cash-flow exception',na=True);add('fcf','Free cash flow history',True,'Bank cash-flow exception',na=True)
     else:
         trend('ocf','Consistent operating cash flow',years)
-        rows=window(s.get('fcf',[]));allow={'conservative':0,'moderate':1,'optimistic':2}[mode]
+        rows=window(s.get('fcf',[]));allow=2
         vals=[r['val'] for r in rows] if rows else []
         ok=vals[-1]>0 and sum(v<=0 for v in vals)<=allow and not any(a<=0 and b<=0 for a,b in zip(vals,vals[1:])) if vals else None
         add('fcf','Positive free cash flow history',ok,f'At most {allow} isolated deficit years; latest positive',rows or s.get('fcf',[]))
@@ -672,7 +672,7 @@ def evaluate(member,data,mode='moderate',include_peers=True):
         rows=window(s.get(key,[]));current=latest(cur.get(key,[]))
         if rows:
             vals=[r['val'] for r in rows];now=current['val'] if current else vals[-1];mean=sum(vals)/5
-            threshold=(now>cutoff if key=='roe' and mode=='conservative' else now>=cutoff)
+            threshold=now>=cutoff
             stats=stability_summary(vals);direction=stats['passes']
             ok=threshold and direction
             add(key,key.upper()+' threshold and general trend',ok,f'Latest {now:.2f}%; annual mean {mean:.2f}% (comparison only, not a qualification cutoff); cutoff {cutoff}%; threshold {"PASS" if threshold else "FAIL"}; general trend {"PASS" if direction else "FAIL"}; fitted slope {stats["linear"]:.3f}; robust slope {stats["robust"]:.3f}; {stats["basis"]}; '+('TTM / latest quarter' if current else 'latest annual basis'),rows+([current] if current else []))
@@ -705,19 +705,19 @@ def evaluate(member,data,mode='moderate',include_peers=True):
         r=current('cet1');add('debt','Bank CET1 >10%',r['val']>10 if r else None,'Common-equity Tier 1, never total Tier 1 substituted',[r] if r else [])
         r=current('npl');add('npl','Bank non-performing loans <5%',r['val']<5 if r else None,'Non-performing loans / total loans',[r] if r else [])
     elif flags['reit']:
-        r=current('gearing');cut=40 if mode=='conservative' else 45
-        add('debt','REIT gearing',r['val']<=cut if r and mode=='optimistic' else r['val']<cut if r else None,f'Total debt / assets; cutoff {cut}%', [r] if r else [])
+        r=current('gearing');cut=45
+        add('debt','REIT gearing',r['val']<=cut if r else None,f'Total debt / assets; cutoff {cut}%', [r] if r else [])
     elif flags['insurance']: add('debt','Industrial debt ratios',True,'Insurance sector exemption from standard debt tests',na=True)
     else:
         cr=current('currentRatio');debt=current('debtEbitda');service=current('service')
         ca=data.get('current',{}).get('ca');cl=data.get('current',{}).get('cl');deferred=data.get('current',{}).get('deferred')
         upfront=bool(ca and cl and deferred and ca['end']==cl['end']==deferred['end'] and deferred['val']>0 and cl['val']>deferred['val'] and ca['val']/(cl['val']-deferred['val'])>1)
-        outcomes=[True if upfront else (cr['val']>=1 if mode=='optimistic' else cr['val']>1) if cr else None,(debt['val']<3 if mode=='conservative' else debt['val']<=3) if debt else None,(0<=service['val']<30) if service else None]
-        required=3 if mode=='conservative' else 2
+        outcomes=[True if upfront else (cr['val']>1) if cr else None,(debt['val']<=3) if debt else None,(0<=service['val']<30) if service else None]
+        required=2
         ok=None if None in outcomes else sum(outcomes)>=required
-        # A failed known ratio can reject a 3/3 policy without fetching an irrelevant missing ratio.
+        # Two known failures cannot meet the course's 2/3 allowance.
         if sum(x is False for x in outcomes)>3-required: ok=False
-        add('debt','Conservative debt structure',ok,f'{required}/3 required ({"stricter app preset" if mode=="conservative" else "course allowance"}; all inputs required): current {cr["val"] if cr else None}; debt/EBITDA {debt["val"] if debt else None}; interest/CFO % {service["val"] if service else None}'+('; documented deferred-revenue adjusted liquidity exception' if upfront else ''),[r for r in (cr,debt,service) if r])
+        add('debt','Conservative debt structure',ok,f'{required}/3 required ({"course allowance"}; all inputs required): current {cr["val"] if cr else None}; debt/EBITDA {debt["val"] if debt else None}; interest/CFO % {service["val"] if service else None}'+('; documented deferred-revenue adjusted liquidity exception' if upfront else ''),[r for r in (cr,debt,service) if r])
     if include_peers: add('peers','Margins vs comparable businesses',None,'Last-stage closest-industry peer comparison')
     failures=[c['label'] for c in checks if c['status']=='FAIL'];pending=[c['key'] for c in checks if c['status']=='ACQUIRE']
     return dict(symbol=member['symbol'],preset=mode,status='REJECTED' if failures else 'ACQUIRING' if pending else 'QUALIFIED',checks=checks,failures=failures,pending=pending,moatGate=False,valuationGate=False,policies=POLICY)

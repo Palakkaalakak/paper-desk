@@ -225,3 +225,13 @@ test('delete waits for in-flight persistence and cancelled responses cannot refi
   assert.equal(cache.records.size,0);assert.equal(s.state().rows.length,0);
  }finally{global.fetch=original;}
 });
+
+
+test('legacy broad preset veto is recalculated from evidence without downloads or renewed expiry',async()=>{
+ const cache=memoryCache(),stamp=Date.now()-86400000,member={symbol:'X0',cik:1,industry:'Software',sector:'IT'};
+ cache.records.set('universe',{key:'universe',version:CACHE_VERSION,collectedAt:stamp,data:{rows:universe.map((r,i)=>i?{...r,cik:1,industryExcluded:true}:member)}});
+ cache.records.set('broad:financial:X0',{key:'broad:financial:X0',version:CACHE_VERSION,collectedAt:stamp,data:{...member,fields:{ROE:'13%',ROIC:'13%'},source:'fixture',screens:{conservative:{rejected:true,reasons:['Old 15% veto']}}}});
+ const original=global.fetch;global.fetch=async()=>{throw Error('Restore must not download');};
+ try{const scanner=create({mode:()=> 'conservative',cache});await scanner.restore();assert.equal(scanner.state().rows.find(r=>r.symbol==='X0').status,'CANDIDATE');assert.equal(cache.records.get('broad:financial:X0').collectedAt,stamp);assert.equal(scanner.state().stats.qualified,0);}
+ finally{global.fetch=original;}
+});

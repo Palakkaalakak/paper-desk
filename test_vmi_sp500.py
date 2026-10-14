@@ -99,7 +99,7 @@ class ScannerTests(unittest.TestCase):
         member=dict(industry='Software',sector='IT')
         self.assertEqual(m.reported_rejections(member,{'revenue':rows},issuer,'moderate'),['revenue'])
         self.assertEqual(m.reported_rejections(member,{'revenue':rows[:-1]},issuer,'moderate'),[])
-        self.assertEqual(m.reported_rejections(member,{'revenue':rows},issuer,'conservative'),[])
+        self.assertEqual(m.reported_rejections(member,{'revenue':rows},issuer,'conservative'),['revenue'])
         self.assertEqual(m.reported_rejections(member,{'revenue':rows},issuer,None),[])
         self.assertEqual(m.reported_rejections(dict(industry='Diversified Banks',sector='Financials'),{'ocf':rows},issuer,'moderate'),[])
         issuer['filings']['recent']['reportDate']=[f'{year+1}-01-31']
@@ -213,7 +213,7 @@ class ScannerTests(unittest.TestCase):
             return next(c for c in m.evaluate(member,dict(series={},current=current,market={},sources=[]),mode)['checks'] if c['key']=='debt')
         self.assertEqual(check('moderate')['status'],'PASS')
         self.assertIn('course allowance',check('moderate')['detail'])
-        self.assertEqual(check('conservative')['status'],'FAIL')
+        self.assertEqual(check('conservative')['status'],'PASS')
         del current['interest']
         self.assertEqual(check('moderate')['status'],'ACQUIRE')
         current['ca']['val']=110
@@ -540,7 +540,7 @@ class RefreshTests(unittest.TestCase):
         with patch.object(api,'members',return_value={'rows':[member]}),patch.object(api,'bulk',return_value={'TEST':row}) as load:
             out=api.batch('financial','TEST',defer=True,force=True)
         load.assert_called_once();r=out['rows'][0]
-        self.assertTrue(r['screens']['conservative']['rejected'])
+        self.assertFalse(r['screens']['conservative']['rejected'])
         self.assertFalse(r['screens']['moderate']['rejected'])
 
 if __name__=='__main__': unittest.main()
