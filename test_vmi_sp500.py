@@ -256,6 +256,19 @@ class ScannerTests(unittest.TestCase):
         self.assertTrue(m.margin_test(rows([20,22,24,26,14])))
         self.assertFalse(m.margin_test(rows([35,33,31,29,27])))
 
+    def test_stability_distinguishes_one_year_sensitivity_from_persistent_decline(self):
+        for values in ([20,22,40,24,26],[30.548,27.0135,27.9664,25.8545,29.9971],
+                       [35.9518,19.2639,29.7167,36.5377,24.4006]):
+            snapshot=list(values);result=m.stability_summary(values)
+            self.assertTrue(result['passes'],result)
+            self.assertEqual(values,snapshot)
+        for values in ([40,35,30,25,20],[43.6755,35.0887,32.8281,29.6472,30.2335]):
+            self.assertFalse(m.stability_summary(values)['passes'])
+        # Dropping a year must not compress the elapsed fiscal-year distances.
+        stats=m.trend_summary([10,12,16,18],[0,1,3,4])
+        self.assertEqual(stats['linear'],2)
+        self.assertEqual(stats['robust'],2)
+
     def test_ttm_uses_ytd_difference(self):
         annual=[dict(start='2024-01-01',end='2024-12-31',val=100,source='SEC')]
         facts={'Revenue':{'units':{'USD':[

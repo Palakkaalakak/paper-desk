@@ -46,11 +46,11 @@ YAHOO={
 }
 # Change whenever accounting or qualification semantics change. Browser records
 # retain raw observations and original collection dates, not stale verdicts.
-CALCULATION_REVISION = '2026-10-13-accounting-5'
+CALCULATION_REVISION = '2026-10-13-accounting-6'
 
 POLICY={
  'history':'Five consecutive fiscal years; conservative ten for revenue, earnings and CFO. Generally upward trend using the median of all pairwise annual slopes (Theil-Sen), or a positive fitted slope with at most two declines. A temporary bad year or end-point dip alone is not a veto; required positive flows and complete dated history remain enforced.',
- 'stability':'Consistent/rising margins and returns use a robust multi-year trend, not an every-year increase or current-versus-average veto. Five-year means are comparison context only. Margin slope tolerance remains -0.1 percentage point/year; returns require nonnegative general trend. Statistical implementation and tolerance are explicit app policies, not verbatim course thresholds.',
+ 'stability':'Full-window robust/fitted trends plus leave-one-year-out sensitivity with original year spacing. A negative fit dependent on one year is a review warning, not an automatic rejection. Persistent declines fail. All observations stay visible and means are context only. Margin tolerance -0.1 pp/year and statistical methods are app policies, not verbatim course thresholds.',
  'fcf':'Source allows 1-2 negative FCF years, not persistent deficits. Conservative: zero; moderate: one; optimistic: two, never consecutive and latest positive.',
  'returns':'Annual ROE = NI / year-end equity. Annual ROIC = EBIT x (1-effective tax rate) / (equity + debt - cash). TTM/quarter-end ratios use the same formulas; provider ROIC is not mixed into calculated history averages.',
  'debt':'Course permits 2/3 debt ratios (moderate and optimistic); conservative explicitly adds a 3/3 policy. All three inputs must be acquired; missing never counts as passing.',
@@ -513,10 +513,14 @@ def slope(values):
     return sum((i-x)*(v-y) for i,v in enumerate(values))/sum((i-x)**2 for i in range(n)) if n>1 else 0
 
 
-def trend_summary(values):
-    """Keep every year; median pairwise slope reduces a single year's leverage."""
-    pairs=[(b-a)/(j-i) for i,a in enumerate(values) for j,b in enumerate(values) if j>i]
-    return dict(linear=slope(values),robust=median(pairs) if pairs else 0,
+def trend_summary(values, positions=None):
+    """Keep the full history and preserve elapsed years in sensitivity fits."""
+    positions=list(range(len(values))) if positions is None else positions
+    pairs=[(b-a)/(positions[j]-positions[i]) for i,a in enumerate(values) for j,b in enumerate(values) if j>i]
+    x=sum(positions)/len(positions);y=sum(values)/len(values)
+    denominator=sum((p-x)**2 for p in positions)
+    fitted=sum((p-x)*(v-y) for p,v in zip(positions,values))/denominator if denominator else 0
+    return dict(linear=fitted,robust=median(pairs) if pairs else 0,
                 declines=sum(b<a for a,b in zip(values,values[1:])))
 
 
@@ -525,6 +529,24 @@ def general_trend(values, floor=0, strict=False):
     meets=lambda value:value>floor if strict else value>=floor
     # A positive outlier must not rescue a mostly deteriorating business.
     return meets(stats['robust']) or (stats['declines']<=2 and meets(stats['linear']))
+
+
+def stability_summary(values, floor=0):
+    """A one-year-sensitive fit is a warning, not persistent deterioration.
+
+    All years remain in evidence/full-window statistics. Both fitted and robust
+    slopes must stabilize in the sensitivity check, with original time spacing.
+    Current profitability thresholds are still enforced separately.
+    """
+    full=trend_summary(values);sensitive=[]
+    for excluded in range(len(values)):
+        positions=[i for i in range(len(values)) if i!=excluded]
+        stats=trend_summary([values[i] for i in positions],positions)
+        if stats['linear']>=floor and stats['robust']>=floor: sensitive.append(excluded)
+    rising=general_trend(values,floor=floor)
+    return dict(**full,passes=rising or bool(sensitive),
+                basis='Stable/rising full-window trend' if rising else 'Trend sensitive to a single year; review warning, not automatic rejection' if sensitive else 'Persistent declining trend across one-year sensitivity tests',
+                sensitivityYears=sensitive)
 
 
 def growth_test(rows,n):
@@ -581,7 +603,7 @@ def margin_test(rows):
     rows=window(rows)
     if not rows: return None
     values=[r['val'] for r in rows]
-    return general_trend(values,floor=-.1)
+    return stability_summary(values,floor=-.1)['passes']
 
 
 def buyback_exception(series,current,years=5):
@@ -650,9 +672,9 @@ def evaluate(member,data,mode='moderate',include_peers=True):
         if rows:
             vals=[r['val'] for r in rows];now=current['val'] if current else vals[-1];mean=sum(vals)/5
             threshold=(now>cutoff if key=='roe' and mode=='conservative' else now>=cutoff)
-            direction=general_trend(vals);stats=trend_summary(vals)
+            stats=stability_summary(vals);direction=stats['passes']
             ok=threshold and direction
-            add(key,key.upper()+' threshold and general trend',ok,f'Latest {now:.2f}%; annual mean {mean:.2f}% (comparison only, not a qualification cutoff); cutoff {cutoff}%; threshold {"PASS" if threshold else "FAIL"}; general trend {"PASS" if direction else "FAIL"}; fitted slope {stats["linear"]:.3f}; robust slope {stats["robust"]:.3f}; '+('TTM / latest quarter' if current else 'latest annual basis'),rows+([current] if current else []))
+            add(key,key.upper()+' threshold and general trend',ok,f'Latest {now:.2f}%; annual mean {mean:.2f}% (comparison only, not a qualification cutoff); cutoff {cutoff}%; threshold {"PASS" if threshold else "FAIL"}; general trend {"PASS" if direction else "FAIL"}; fitted slope {stats["linear"]:.3f}; robust slope {stats["robust"]:.3f}; {stats["basis"]}; '+('TTM / latest quarter' if current else 'latest annual basis'),rows+([current] if current else []))
         else: add(key,key.upper()+' threshold and general trend',None,'Five matched years required; negative equity is not treated as zero',s.get(key,[]))
     if flags['bank'] or flags['insurance']: add('receivables','Revenue vs receivables growth',True,'Financial-sector trade receivables not comparable',na=True)
     else:
