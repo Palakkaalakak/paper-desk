@@ -235,3 +235,19 @@ test('legacy broad preset veto is recalculated from evidence without downloads o
  try{const scanner=create({mode:()=> 'conservative',cache});await scanner.restore();assert.equal(scanner.state().rows.find(r=>r.symbol==='X0').status,'CANDIDATE');assert.equal(cache.records.get('broad:financial:X0').collectedAt,stamp);assert.equal(scanner.state().stats.qualified,0);}
  finally{global.fetch=original;}
 });
+
+
+test('qualitative review survives cache and cannot masquerade as qualification',async()=>{
+ const cache=memoryCache(),original=global.fetch,calls=[],baseFetch=cacheFixtureFetch(calls);
+ global.fetch=async(path,options)=>{
+  const response=await baseFetch(path,options),data=await response.json();
+  if(path.includes('company'))for(const result of Object.values(data.evaluations)){result.status='REVIEW';result.review=['grossMargin'];result.checks=[{key:'grossMargin',status:'REVIEW'}];}
+  return {ok:true,json:async()=>data};
+ };
+ try{
+  const scanner=create({mode:()=> 'moderate',cache});await scanner.start();assert.equal(scanner.state().stats.qualified,0);assert.equal(scanner.state().stats.review,2);
+  assert.equal(scanner.state().phase,'Scan requires qualitative review');
+  const count=calls.length,reloaded=create({mode:()=> 'moderate',cache});await reloaded.restore();assert.equal(calls.length,count);assert.equal(reloaded.state().stats.review,2);
+  const record=cache.records.get('X0');record.data.evaluations.moderate.status='QUALIFIED';assert.equal(cachedDecision(record,'moderate',record.data.member),null);
+ }finally{global.fetch=original;}
+});

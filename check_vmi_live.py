@@ -67,9 +67,9 @@ def main():
                 if r['status']=='ACQUIRING': pending.update(r['pending'])
                 all_missing.update(k for k in r['pending'] if k!='peers' or not r['failures'])
                 skipped_peers+=int(bool(r['failures']) and 'peers' in r['pending'])
-                emit(stage='deep',symbol=ticker,done=index+1,total=len(candidates),status=r['status'],failures=r['failures'],pending=r['pending'],attempts=data['evidence']['attempts'],checks=[dict(key=c['key'],status=c['status'],detail=c.get('detail','')) for c in r['checks']],sources=data['evidence']['sources'],**({'payload':data} if args.full_evidence else {}))
+                emit(stage='deep',symbol=ticker,done=index+1,total=len(candidates),status=r['status'],failures=r['failures'],pending=r['pending'],review=r.get('review',[]),attempts=data['evidence']['attempts'],checks=[dict(key=c['key'],status=c['status'],detail=c.get('detail','')) for c in r['checks']],sources=data['evidence']['sources'],**({'payload':data} if args.full_evidence else {}))
             except Exception as exc: outcomes['ERROR']+=1;emit(stage='deep',symbol=ticker,error=str(exc))
-    decisions_resolved=not outcomes['ACQUIRING'] and not outcomes['ERROR']
+    decisions_resolved=not outcomes['ACQUIRING'] and not outcomes['REVIEW'] and not outcomes['ERROR']
     complete=decisions_resolved and not all_missing
     emit(stage='summary',seconds=round(time.monotonic()-started,3),deepSeconds=round(time.monotonic()-at,3),universe=len(members),outcomes=dict(outcomes),pending=dict(pending),counts=dict(totals),scanFinished=not outcomes['ERROR'],decisionsResolved=decisions_resolved,detailedMissingIncludingRejected=dict(all_missing),intentionallySkippedPeerChecks=skipped_peers,broadOnly=len(rejected),complete=complete)
     return 0 if complete else 2

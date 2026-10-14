@@ -1,6 +1,6 @@
 """VMI financial evidence, calculations and non-moat business gates.
 Source thresholds: VMI_MASTER_DOCUMENT.md lines 2460-2503, 4241-4295, 4480-4559.
-Qualitative trend tolerances and industry-peer selection are explicit app policies.
+Qualitative uncertainty remains unqualified; no invented statistical trend veto.
 """
 import datetime as dt
 import json
@@ -46,21 +46,21 @@ YAHOO={
 }
 # Change whenever accounting or qualification semantics change. Browser records
 # retain raw observations and original collection dates, not stale verdicts.
-CALCULATION_REVISION = '2026-10-14-course-9'
+CALCULATION_REVISION = '2026-10-14-course-10'
 
 POLICY={
- 'history':'Five consecutive fiscal years; ten preferred, never required by a preset (course 4248). Generally upward trend using the median of all pairwise annual slopes (Theil-Sen), or a positive fitted slope with at most two declines. A temporary bad year or end-point dip alone is not a veto; required positive flows and complete dated history remain enforced.',
- 'stability':'Full-window robust/fitted trends plus leave-one-year-out sensitivity with original year spacing. A negative fit dependent on one year is a review warning, not an automatic rejection. Persistent declines fail. All observations stay visible and means are context only. Margin tolerance -0.1 pp/year and statistical methods are app policies, not verbatim course thresholds.',
- 'fcf':'Source allows 1-2 negative FCF years, not persistent deficits. All presets: two (course 2478), never consecutive and latest positive.',
+ 'history':'Five consecutive fiscal years in every preset; ten preferred, not required (4248). Temporary declines may be acceptable (4263). Mixed charts need qualitative review, not a fitted/robust-slope verdict.',
+ 'stability':'Course 4251-4274, 4496: stable/rising desired, consistently declining margins warn against a business; declining returns merit review. No numeric tolerance, year deletion or current-versus-average veto. REVIEW is not PASS.',
+ 'fcf':'Course 2066-2073, 2478: consistently positive, up to two isolated negative years; consecutive deficits dangerous. No preset-specific or latest-year veto. Zero needs review.',
  'returns':'Annual ROE = NI / year-end equity. Annual ROIC = EBIT x (1-effective tax rate) / (equity + debt - cash). TTM/quarter-end ratios use the same formulas; provider ROIC is not mixed into calculated history averages.',
  'debt':'Course 2495 permits 2/3 debt ratios in every preset; no extra conservative qualification gate. All three inputs must be acquired; missing never counts as passing.',
- 'ccc':'Physical-goods industries, including footwear, only. Latest <= five-year mean +10 days and trend <=2 days/year (explicit app tolerances). No absent balance is assumed zero.',
+ 'ccc':'Course 2207-2213, 4492-4516: physical goods, negative is best, stable/declining desirable; moderate increases may be acceptable. No invented day thresholds; ambiguous charts require review.',
  'peers':'Three largest distinct S&P 500 issuers in the same GICS sub-industry. A transparent industry proxy, not a claim of identical business mix or a full direct-competitor map.',
  'receivables':'PP method: annual revenue and receivables on one shared dollar scale over five fiscal observations. Compare absolute changes; display percentage changes separately, never use relative percentage growth as a substitute veto. Source: course Microsoft/Amazon chart instructions and user-supplied PP screenshot.',
  'dates':'USD; annual windows and latest quarter/TTM retained separately. SEC fiscal periods are preferred; Yahoo dates matched within seven days.',
  'moat':'Excluded from scanner qualification; remains available in the separate manual company review.',
  'buybacks':'Negative equity is not rejected on provider ROE alone. The source exception requires matched positive retained earnings and treasury stock sufficient to explain negative equity, plus increasing earnings and FCF. No numeric infinity is stored; ROIC and debt remain independent.',
- 'marginSubstitution':'Operating margin may substitute for inconsistent net margin independently of the earnings substitution (source section 2.5). Both use the same five-year stability policy.',
+ 'marginSubstitution':'Operating margin may independently substitute for inconsistent net margin (section 2.5). Mixed charts remain REVIEW, not a statistical PASS/FAIL.',
 }
 
 
@@ -525,36 +525,32 @@ def trend_summary(values, positions=None):
                 declines=sum(b<a for a,b in zip(values,values[1:])))
 
 
-def general_trend(values, floor=0, strict=False):
-    stats=trend_summary(values)
-    meets=lambda value:value>floor if strict else value>=floor
-    # A positive outlier must not rescue a mostly deteriorating business.
-    return meets(stats['robust']) or (stats['declines']<=2 and meets(stats['linear']))
+def chart_direction(values, increasing=False):
+    """Literal cases only; mixed charts are REVIEW, not an invented fit."""
+    if len(values)<2: return None
+    changes=[b-a for a,b in zip(values,values[1:])]
+    if all(change>=0 for change in changes):
+        return any(change>0 for change in changes) if increasing else True
+    if all(change<=0 for change in changes): return False
+    return 'REVIEW'
 
 
-def stability_summary(values, floor=0):
-    """A one-year-sensitive fit is a warning, not persistent deterioration.
-
-    All years remain in evidence/full-window statistics. Both fitted and robust
-    slopes must stabilize in the sensitivity check, with original time spacing.
-    Current profitability thresholds are still enforced separately.
-    """
-    full=trend_summary(values);sensitive=[]
-    for excluded in range(len(values)):
-        positions=[i for i in range(len(values)) if i!=excluded]
-        stats=trend_summary([values[i] for i in positions],positions)
-        if stats['linear']>=floor and stats['robust']>=floor: sensitive.append(excluded)
-    rising=general_trend(values,floor=floor)
-    return dict(**full,passes=rising or bool(sensitive),
-                basis='Stable/rising full-window trend' if rising else 'Trend sensitive to a single year; review warning, not automatic rejection' if sensitive else 'Persistent declining trend across one-year sensitivity tests',
-                sensitivityYears=sensitive)
+def stability_summary(values):
+    """Statistics remain descriptive; never gate on a fitted slope."""
+    direction=chart_direction(values)
+    return dict(**trend_summary(values),passes=direction,
+                basis='Stable/rising observations' if direction is True else
+                'Consistently declining observations' if direction is False else
+                'Mixed chart: qualitative course review needed; no statistical verdict')
 
 
 def growth_test(rows,n):
     rows=window(rows,n)
     if not rows: return None
     values=[r['val'] for r in rows]
-    return all(v>0 for v in values) and general_trend(values,strict=True)
+    direction=chart_direction(values,increasing=True)
+    if any(v<=0 for v in values) and direction is not False: return 'REVIEW'
+    return direction
 
 
 def ratio(series,a,b,method,scale=100):
@@ -604,7 +600,7 @@ def margin_test(rows):
     rows=window(rows)
     if not rows: return None
     values=[r['val'] for r in rows]
-    return stability_summary(values,floor=-.1)['passes']
+    return chart_direction(values)
 
 
 def buyback_exception(series,current,years=5):
@@ -622,7 +618,10 @@ def buyback_exception(series,current,years=5):
     earnings=growth_test(series.get('income',[]),years);cash=growth_test(series.get('fcf',[]),years)
     if earnings is None or cash is None: return None,inputs
     income=current.get('income') or latest(series.get('income',[]))
-    ok=treasury['val']>0 and equity['val']+treasury['val']>0 and retained['val']>0 and earnings and cash and income is not None and income['val']>0
+    ok=treasury['val']>0 and equity['val']+treasury['val']>0 and retained['val']>0 and earnings is True and cash is True and income is not None and income['val']>0
+    if (not ok and treasury['val']>0 and equity['val']+treasury['val']>0 and retained['val']>0
+        and income is not None and income['val']>0 and 'REVIEW' in (earnings,cash)
+        and earnings is not False and cash is not False): ok='REVIEW'
     return ok,inputs+series.get('income',[])[-years:]+series.get('fcf',[])[-years:]
 
 
@@ -632,32 +631,32 @@ def evaluate(member,data,mode='moderate',include_peers=True):
     s=calculate(data['series']);cur=calculate({k:[r] for k,r in data.get('current',{}).items()});flags=sector(member)
     checks=[];years=5;cutoff=12
     def add(key,label,ok,detail='',rows=None,na=False):
-        checks.append(dict(key=key,label=label,status='N/A' if na else 'ACQUIRE' if ok is None else 'PASS' if ok else 'FAIL',detail=detail,observations=rows or []))
+        checks.append(dict(key=key,label=label,status='N/A' if na else 'ACQUIRE' if ok is None else 'REVIEW' if ok=='REVIEW' else 'PASS' if ok else 'FAIL',detail=detail,observations=rows or []))
     def trend(key,label,n=5,stable=False):
         rows=window(s.get(key,[]),n)
         if not rows: add(key,label,None,f'Need {n} consecutive recent annual observations',s.get(key,[]));return None
         values=[r['val'] for r in rows];mean=sum(values)/n
         ok=margin_test(rows) if stable else growth_test(rows,n)
         stats=trend_summary(values)
-        add(key,label,ok,f'Latest {values[-1]:.3f}; mean {mean:.3f} (context, not veto); fitted slope {stats["linear"]:.3f}; robust slope {stats["robust"]:.3f}; declining years {stats["declines"]}',rows)
+        add(key,label,ok,f'Latest {values[-1]:.3f}; mean {mean:.3f} (context, not veto); fitted slope {stats["linear"]:.3f}; robust slope {stats["robust"]:.3f}; declining years {stats["declines"]}. Statistics are diagnostic only; mixed charts require qualitative review (course 4263).' ,rows)
         return ok
     add('industry','Industry suitability',not flags['excluded'],member['industry'])
     trend('revenue','Consistent revenue growth',years)
     ni=growth_test(s.get('income',[]),years);op=growth_test(s.get('operatingIncome',[]),years);substitute=ni is not True and op is True
-    add('earnings','Consistent earnings / operating-income substitute',True if ni is True or op is True else False if ni is False and op is False else None,'Operating income substituted' if substitute else 'Net income with operating-income fallback',s.get('operatingIncome' if substitute else 'income',[])[-years:])
+    add('earnings','Consistent earnings / operating-income substitute',True if ni is True or op is True else False if ni is False and op is False else None if ni is None or op is None else 'REVIEW','Operating income substituted' if substitute else 'Net income with operating-income fallback',s.get('operatingIncome' if substitute else 'income',[])[-years:])
     if flags['bank']:
         add('ocf','CFO history',True,'Bank cash-flow exception',na=True);add('fcf','Free cash flow history',True,'Bank cash-flow exception',na=True)
     else:
         trend('ocf','Consistent operating cash flow',years)
         rows=window(s.get('fcf',[]));allow=2
         vals=[r['val'] for r in rows] if rows else []
-        ok=vals[-1]>0 and sum(v<=0 for v in vals)<=allow and not any(a<=0 and b<=0 for a,b in zip(vals,vals[1:])) if vals else None
-        add('fcf','Positive free cash flow history',ok,f'At most {allow} isolated deficit years; latest positive',rows or s.get('fcf',[]))
+        ok=None if not vals else False if sum(v<0 for v in vals)>allow or any(a<0 and b<0 for a,b in zip(vals,vals[1:])) else 'REVIEW' if 0 in vals else True
+        add('fcf','Positive free cash flow history',ok,f'Course 2066-2073, 2478: at most {allow} isolated negative years; consecutive deficits dangerous. No extra latest-year veto; zero requires review.',rows or s.get('fcf',[]))
     if flags['bank'] or flags['insurance']: add('grossMargin','Gross margin',True,'Not a comparable banking/insurance subtotal',na=True)
     else: trend('grossMargin','Gross margin general trend',stable=True)
     net_ok=margin_test(s.get('netMargin',[]));operating_ok=margin_test(s.get('operatingMargin',[]))
     margin_key='netMargin' if net_ok is True else 'operatingMargin' if operating_ok is True else 'netMargin'
-    margin_ok=True if net_ok is True or operating_ok is True else False if net_ok is False and operating_ok is False else None
+    margin_ok=True if net_ok is True or operating_ok is True else False if net_ok is False and operating_ok is False else None if net_ok is None or operating_ok is None else 'REVIEW'
     add('profitMargin','Profit margin general trend',margin_ok,'Operating-margin substitute' if margin_key=='operatingMargin' else 'Net margin with independent operating-margin fallback',s.get(margin_key,[])[-5:])
     projected=v.number(data['market'].get('EPS next 5Y',data['market'].get('EPS Next 5Y')))
     add('growth','Positive projected earnings growth',projected>0 if projected is not None else None,'Next five-year analyst estimate: '+str(projected),[dict(source=u) for u in data.get('sources',[]) if 'finviz' in u])
@@ -674,8 +673,8 @@ def evaluate(member,data,mode='moderate',include_peers=True):
             vals=[r['val'] for r in rows];now=current['val'] if current else vals[-1];mean=sum(vals)/5
             threshold=now>=cutoff
             stats=stability_summary(vals);direction=stats['passes']
-            ok=threshold and direction
-            add(key,key.upper()+' threshold and general trend',ok,f'Latest {now:.2f}%; annual mean {mean:.2f}% (comparison only, not a qualification cutoff); cutoff {cutoff}%; threshold {"PASS" if threshold else "FAIL"}; general trend {"PASS" if direction else "FAIL"}; fitted slope {stats["linear"]:.3f}; robust slope {stats["robust"]:.3f}; {stats["basis"]}; '+('TTM / latest quarter' if current else 'latest annual basis'),rows+([current] if current else []))
+            ok=False if not threshold else True if direction is True else 'REVIEW'
+            add(key,key.upper()+' threshold and general trend',ok,f'Latest {now:.2f}%; annual mean {mean:.2f}% (comparison only, not a qualification cutoff); cutoff {cutoff}%; threshold {"PASS" if threshold else "FAIL"}; general trend {"PASS" if direction is True else "REVIEW"}; fitted slope {stats["linear"]:.3f}; robust slope {stats["robust"]:.3f}; {stats["basis"]}; '+('TTM / latest quarter' if current else 'latest annual basis'),rows+([current] if current else []))
         else: add(key,key.upper()+' threshold and general trend',None,'Five matched years required; negative equity is not treated as zero',s.get(key,[]))
     if flags['bank'] or flags['insurance']: add('receivables','Revenue vs receivables growth',True,'Financial-sector trade receivables not comparable',na=True)
     else:
@@ -697,7 +696,7 @@ def evaluate(member,data,mode='moderate',include_peers=True):
     if not physical: add('ccc','Cash conversion cycle',True,'Industry is not classified as a physical-goods business (explicit policy)',na=True)
     else:
         rows=window(s.get('ccc',[]));vals=[r['val'] for r in rows] if rows else []
-        add('ccc','Cash conversion cycle consistent / declining',vals[-1]<=sum(vals)/5+10 and slope(vals)<=2 if vals else None,'App tolerances: mean +10 days, fitted slope <=2 days/year',rows or s.get('ccc',[]))
+        add('ccc','Cash conversion cycle consistent / declining',None if not vals else True if all(v<0 for v in vals) or all(b<=a for a,b in zip(vals,vals[1:])) else 'REVIEW','Course 2207-2213, 4492-4516: negative CCC is best; stable/declining desirable; moderate rises may be acceptable. No invented day tolerance; other charts require review',rows or s.get('ccc',[]))
     def current(key):
         r=latest(cur.get(key,[])) or latest(s.get(key,[]))
         return r if r and (dt.date.today()-dt.date.fromisoformat(r['end'])).days<=550 else None
@@ -719,5 +718,14 @@ def evaluate(member,data,mode='moderate',include_peers=True):
         if sum(x is False for x in outcomes)>3-required: ok=False
         add('debt','Conservative debt structure',ok,f'{required}/3 required ({"course allowance"}; all inputs required): current {cr["val"] if cr else None}; debt/EBITDA {debt["val"] if debt else None}; interest/CFO % {service["val"] if service else None}'+('; documented deferred-revenue adjusted liquidity exception' if upfront else ''),[r for r in (cr,debt,service) if r])
     if include_peers: add('peers','Margins vs comparable businesses',None,'Last-stage closest-industry peer comparison')
-    failures=[c['label'] for c in checks if c['status']=='FAIL'];pending=[c['key'] for c in checks if c['status']=='ACQUIRE']
-    return dict(symbol=member['symbol'],preset=mode,status='REJECTED' if failures else 'ACQUIRING' if pending else 'QUALIFIED',checks=checks,failures=failures,pending=pending,moatGate=False,valuationGate=False,policies=POLICY)
+    return decision_summary(dict(symbol=member['symbol'],preset=mode,checks=checks,moatGate=False,valuationGate=False,policies=POLICY))
+
+
+def decision_summary(result):
+    """Missing acquisition and qualitative review both prevent qualification."""
+    checks=result['checks']
+    result['failures']=[c['label'] for c in checks if c['status']=='FAIL']
+    result['pending']=[c['key'] for c in checks if c['status']=='ACQUIRE']
+    result['review']=[c['key'] for c in checks if c['status']=='REVIEW']
+    result['status']='REJECTED' if result['failures'] else 'ACQUIRING' if result['pending'] else 'REVIEW' if result['review'] else 'QUALIFIED'
+    return result

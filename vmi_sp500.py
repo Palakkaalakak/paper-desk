@@ -373,7 +373,7 @@ def company(ticker,mode='moderate',force=False,supplement=False,prior=None):
 
 
 def _company(ticker,mode='moderate',supplement=False,prior=None):
-    from vmi_metrics import evidence,evaluate,merge_evidence,normalize_evidence,CALCULATION_REVISION
+    from vmi_metrics import evidence,evaluate,merge_evidence,normalize_evidence,CALCULATION_REVISION,decision_summary
     ticker=v.symbol(ticker)
     if mode not in MODES: raise ValueError('Invalid preset')
     member=next((r for r in members()['rows'] if r['symbol']==ticker),None)
@@ -409,9 +409,7 @@ def _company(ticker,mode='moderate',supplement=False,prior=None):
         trace.event('peers',ticker+' / comparisons')
         check=peer_check(member,data)
         result['checks']=[check if c['key']=='peers' else c for c in result['checks']]
-        result['failures']=[c['label'] for c in result['checks'] if c['status']=='FAIL']
-        result['pending']=[c['key'] for c in result['checks'] if c['status']=='ACQUIRE']
-        result['status']='REJECTED' if result['failures'] else 'ACQUIRING' if result['pending'] else 'QUALIFIED'
+        decision_summary(result)
     evaluations={mode:result}
     peer=next((c for c in result.get('checks',[]) if c['key']=='peers' and c['status']!='ACQUIRE'),None)
     for preset in MODES:
@@ -420,9 +418,7 @@ def _company(ticker,mode='moderate',supplement=False,prior=None):
         if not other['failures']:
             if peer is None: peer=peer_check(member,data)
             other['checks']=[peer if c['key']=='peers' else c for c in other['checks']]
-            other['failures']=[c['label'] for c in other['checks'] if c['status']=='FAIL']
-            other['pending']=[c['key'] for c in other['checks'] if c['status']=='ACQUIRE']
-            other['status']='REJECTED' if other['failures'] else 'ACQUIRING' if other['pending'] else 'QUALIFIED'
+            decision_summary(other)
         evaluations[preset]=other
     trace.event('valuation',ticker+' / '+result['status'])
     research=research_payload(member,data) if any(r['status']=='QUALIFIED' for r in evaluations.values()) else None

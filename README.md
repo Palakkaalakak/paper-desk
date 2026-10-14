@@ -1,6 +1,14 @@
 # Paper Desk — IB Gateway paper-trading workstation
 
-## Current verification and remaining evidence limits — 2026-10-13
+## Current rule-correction status — 2026-10-14
+
+The overall scanner is **not complete**. Latest source-only repairs remove unsupported stricter business presets and statistical trend/CCC gates. Mixed qualitative charts are REVIEW, separate from missing acquisition; neither can qualify a business. A complete source-grounded qualitative judgment workflow is not yet implemented. PP receivables uses the shared dollar scale; the old AAPL/FIX percentage-based FAIL conclusions are withdrawn.
+
+Revision `2026-10-14-course-10` recalculates old verdicts without deleting evidence or renewing its original seven-day expiry. Restart existing `serve.py`, reload `http://localhost:8765`, then use **Scan S&P 500**. **Rescan anyway** is optional fresh acquisition, not necessary just for rule migration. Account storage, local Python, no-submit handoffs and broker protections remain unchanged; no Cloudflare deployment.
+
+Full statement acquisition for TMO, WM and PANW is preserved at https://www.genspark.ai/api/files/s/Zkxvp7qG . Priority audit: META, AAPL, TMO, WM, PANW, AMZN, MSFT. Definitions, periods, peer comparability and missing inputs still need resolution; no company whitelist or target count. Full regression: **198 Python and 154 JavaScript tests passed**. Latest Chromium and a corrected full-universe outcome are not yet claimed. See `docs/SCANNER_CORRECTNESS_AUDIT.md` for sources and outstanding work.
+
+## Historical verification and remaining evidence limits — 2026-10-13
 
 This section supersedes the historical checkpoints below. The application remains the existing local Python Paper Desk at `http://localhost:8765`. No Cloudflare migration, funded research portfolios, broker order submission, or account-storage changes were introduced.
 

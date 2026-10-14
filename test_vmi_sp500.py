@@ -190,7 +190,7 @@ class ScannerTests(unittest.TestCase):
         self.assertTrue(m.buyback_exception(s,current)[0])
         del current['treasury'];self.assertIsNone(m.buyback_exception(s,current)[0])
         current['treasury']=dict(end=dates[-1],val=10);self.assertFalse(m.buyback_exception(s,current)[0])
-        current['treasury']['val']=150;s['fcf'][-1]['val']=-1;self.assertFalse(m.buyback_exception(s,current)[0])
+        current['treasury']['val']=150;s['fcf'][-1]['val']=-1;self.assertEqual(m.buyback_exception(s,current)[0],'REVIEW')
         self.assertFalse(api.quick(dict(industry='Restaurants',sector='Consumer Discretionary'),{'ROE':'-50','ROIC':'20'},'moderate')['rejected'])
 
     def test_footwear_requires_ccc_instead_of_an_industry_exemption(self):
@@ -232,42 +232,43 @@ class ScannerTests(unittest.TestCase):
     def test_consecutive_years_and_declines(self):
         year=dt.date.today().year-1
         rows=[dict(end=f'{year-4+i}-12-31',val=v) for i,v in enumerate([100,110,108,130,150])]
-        self.assertTrue(m.growth_test(rows,5))
+        self.assertEqual(m.growth_test(rows,5),'REVIEW')
         self.assertIsNone(m.growth_test(rows[:-1],5))
         self.assertFalse(m.growth_test([dict(r,val=10-i) for i,r in enumerate(rows)],5))
-    def test_temporary_downturn_is_not_an_endpoint_or_average_veto(self):
+    def test_mixed_charts_are_not_invented_statistical_verdicts(self):
         rows=lambda values:[dict(end=f'{2021+i}-12-31',val=value) for i,value in enumerate(values)]
-        for values in ([100,110,120,130,80],[100,110,70,130,150],[100,110,108,130,125]):
-            self.assertTrue(m.growth_test(rows(values),5),values)
-        for values in ([150,140,130,120,110],[100,90,80,70,200],[100]*5):
-            self.assertFalse(m.growth_test(rows(values),5),values)
+        for values in ([100,110,120,130,80],[100,110,70,130,150],[100,110,108,130,125],[100,90,80,70,200]):
+            self.assertEqual(m.growth_test(rows(values),5),'REVIEW')
+        for values in ([150,140,130,120,110],[100]*5):self.assertIs(m.growth_test(rows(values),5),False)
+        self.assertIs(m.growth_test(rows([100,110,120,130,140]),5),True)
         self.assertIsNone(m.growth_test(rows([100,110,120,130]),5))
         member=dict(symbol='ANY',cik=1,industry='Software',sector='IT')
         def roe(values,current=26.07):
-            data=dict(series=dict(income=rows(values),equity=rows([100]*5)),
-                      current=dict(income=dict(end='2026-06-30',val=current),equity=dict(end='2026-06-30',val=100)),market={},sources=[])
+            data=dict(series=dict(income=rows(values),equity=rows([100]*5)),current=dict(income=dict(end='2026-06-30',val=current),equity=dict(end='2026-06-30',val=100)),market={},sources=[])
             return next(c for c in m.evaluate(member,data)['checks'] if c['key']=='roe')
-        check=roe([31.5265,18.4547,25.5262,34.1442,27.8297])
-        self.assertEqual(check['status'],'PASS')
-        self.assertIn('comparison only',check['detail'])
-        self.assertEqual(roe([20,22,24,26,14],14)['status'],'PASS')
+        for values in ([31.5265,18.4547,25.5262,34.1442,27.8297],[20,22,24,26,14],[35,33,31,29,27]):self.assertEqual(roe(values)['status'],'REVIEW')
+        self.assertEqual(roe([20,22,24,26,28],12)['status'],'PASS')
+        self.assertIn('comparison only',roe([20,22,24,26,28],12)['detail'])
         self.assertEqual(roe([20,22,24,26,14],11)['status'],'FAIL')
-        self.assertEqual(roe([35,33,31,29,27])['status'],'FAIL')
-        self.assertTrue(m.margin_test(rows([20,22,24,26,14])))
-        self.assertFalse(m.margin_test(rows([35,33,31,29,27])))
+        self.assertEqual(m.margin_test(rows([20,22,24,26,14])),'REVIEW')
+        self.assertIs(m.margin_test(rows([35,33,31,29,27])),False)
 
-    def test_stability_distinguishes_one_year_sensitivity_from_persistent_decline(self):
-        for values in ([20,22,40,24,26],[30.548,27.0135,27.9664,25.8545,29.9971],
-                       [35.9518,19.2639,29.7167,36.5377,24.4006]):
-            snapshot=list(values);result=m.stability_summary(values)
-            self.assertTrue(result['passes'],result)
+    def test_statistics_cannot_decide_mixed_chart_review(self):
+        for values in ([20,22,40,24,26],[35.9518,19.2639,29.7167,36.5377,24.4006],[43.6755,35.0887,32.8281,29.6472,30.2335]):
+            snapshot=list(values)
+            with patch.object(m,'trend_summary',return_value=dict(linear=999,robust=999,declines=0)):
+                self.assertEqual(m.stability_summary(values)['passes'],'REVIEW')
             self.assertEqual(values,snapshot)
-        for values in ([40,35,30,25,20],[43.6755,35.0887,32.8281,29.6472,30.2335]):
-            self.assertFalse(m.stability_summary(values)['passes'])
-        # Dropping a year must not compress the elapsed fiscal-year distances.
-        stats=m.trend_summary([10,12,16,18],[0,1,3,4])
-        self.assertEqual(stats['linear'],2)
-        self.assertEqual(stats['robust'],2)
+        self.assertIs(m.stability_summary([40,35,30,25,20])['passes'],False)
+        stats=m.trend_summary([10,12,16,18],[0,1,3,4]);self.assertEqual(stats['linear'],2);self.assertEqual(stats['robust'],2)
+
+    def test_review_is_neither_missing_acquisition_nor_qualified(self):
+        checks=[dict(key='trend',label='Trend',status='REVIEW')];result=m.decision_summary(dict(checks=checks))
+        self.assertEqual(result['status'],'REVIEW');self.assertEqual(result['pending'],[])
+        self.assertEqual(result['review'],['trend']);self.assertEqual(result['failures'],[])
+        checks.append(dict(key='debt',label='Debt',status='ACQUIRE'));self.assertEqual(m.decision_summary(result)['status'],'ACQUIRING')
+        checks.append(dict(key='growth',label='Growth',status='FAIL'));self.assertEqual(m.decision_summary(result)['status'],'REJECTED')
+        self.assertEqual(result['review'],['trend']);self.assertEqual(result['pending'],['debt'])
 
     def test_ttm_uses_ytd_difference(self):
         annual=[dict(start='2024-01-01',end='2024-12-31',val=100,source='SEC')]
