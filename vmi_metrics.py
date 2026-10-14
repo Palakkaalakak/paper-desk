@@ -46,7 +46,7 @@ YAHOO={
 }
 # Change whenever accounting or qualification semantics change. Browser records
 # retain raw observations and original collection dates, not stale verdicts.
-CALCULATION_REVISION = '2026-10-14-course-10'
+CALCULATION_REVISION = '2026-10-14-course-11'
 
 POLICY={
  'history':'Five consecutive fiscal years in every preset; ten preferred, not required (4248). Temporary declines may be acceptable (4263). Mixed charts need qualitative review, not a fitted/robust-slope verdict.',
@@ -240,14 +240,24 @@ def reconcile_debt_scope(series):
         component=match(components,end)
         if component and component.get('completeDebt'): lower.append(component)
         reconciled=[]
-        if lease and lease['val']>0:
+        lease_candidates=[(lease,'total operating lease liabilities')] if lease and lease['val']>0 else []
+        # A partial lease inclusion needs a complete independent debt total and
+        # an observed full lease balance. Never relabel long-term debt as total.
+        if lease and ln and 0<ln['val']<=lease['val'] and ln.get('source')==lease.get('source'):
+            lease_candidates.append((ln,'noncurrent operating lease liabilities only'))
+        for observed_lease,scope in lease_candidates:
             for high in providers:
                 for low in lower:
+                    complete_low=low.get('completeDebt') is True or any(
+                        low is r for key in ('scrapedDebt','yahooDebt') for r in series.get(key,[])
+                        if r.get('completeDebt',True))
+                    if scope.startswith('noncurrent') and not complete_low: continue
                     if low['val']<0 or not high.get('source') or not low.get('source') or high['source']==low['source']: continue
-                    if abs(high['val']-low['val']-lease['val'])>max(1,abs(high['val'])*1e-6): continue
-                    row=calc(end,low['val'],'Provider total reconciled to independently reported debt + filed operating lease liabilities; operating leases excluded',[high,low,lease])
+                    if abs(high['val']-low['val']-observed_lease['val'])>max(1,abs(high['val'])*1e-6): continue
+                    row=calc(end,low['val'],'Provider total reconciled to independently reported debt + filed '+scope+'; operating leases excluded',[high,low,observed_lease])
                     row.update(unit='USD',completeDebt=True,debtScope='reported_debt_excluding_operating_leases',
-                               reconciliation=dict(totalIncludingOperatingLeases=high,reportedDebt=low,operatingLeases=lease))
+                               reconciliation=dict(totalIncludingOperatingLeases=high,reportedDebt=low,
+                                                   operatingLeases=observed_lease,includedLeaseScope=scope))
                     reconciled.append(row)
         result.append(reconciled[0] if reconciled and len({r['val'] for r in reconciled})==1 else existing)
     return result

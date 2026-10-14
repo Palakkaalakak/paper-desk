@@ -152,6 +152,20 @@ class ScannerTests(unittest.TestCase):
         del s['operatingLeaseCurrent']
         self.assertEqual(m.reconcile_debt_scope(s)[0]['val'],375194000)
 
+    def test_partial_operating_lease_scope_requires_complete_independent_debt(self):
+        def obs(val,source='SEC',**extra):return dict(end='2026-06-30',val=val,source=source,unit='USD',**extra)
+        series=dict(debt=[obs(56826000000,'Yahoo')],scrapedDebt=[obs(40294000000,'HTML',completeDebt=True)],
+                    operatingLease=[obs(21925000000)],operatingLeaseNoncurrent=[obs(16532000000)])
+        row=m.reconcile_debt_scope(series)[0]
+        self.assertEqual(row['val'],40294000000)
+        self.assertEqual(row['reconciliation']['includedLeaseScope'],'noncurrent operating lease liabilities only')
+        self.assertEqual(row['inputs'][0]['val'],56826000000)
+        for change in (dict(operatingLease=[]),dict(operatingLease=[obs(100)]),
+                       dict(scrapedDebt=[obs(40294000000,'Yahoo',completeDebt=True)]),
+                       dict(scrapedDebt=[obs(40294000000,'HTML',completeDebt=False)]),
+                       dict(scrapedDebt=[],longDebt=[obs(40294000000)])):
+            self.assertEqual(m.reconcile_debt_scope(dict(series,**change))[0]['val'],56826000000)
+
     def test_debt_prefers_carrying_components_over_rounded_note_amount(self):
         values=dict(longDebt=82300000000,debtNoncurrent=71340000000,longCurrent=11007000000,shortDebt=1997000000)
         s={k:[dict(end='2026-06-27',val=v,source='filed')] for k,v in values.items()}

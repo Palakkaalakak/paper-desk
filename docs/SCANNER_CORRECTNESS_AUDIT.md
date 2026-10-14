@@ -151,3 +151,10 @@ Full regression after restoring these changes: 198 Python and 154 JavaScript tes
 ## Completed Chromium verification at `0423944`
 
 `python browser_vmi_check.py` completed successfully after installing Chromium. The isolated full-app browser workflow verified explicit scan/cache/profile reuse, stock and actual-contract call ticket handoffs without submission, historical preview/recording, backup, persistence and mobile layout. Market/IB data were mocked; no user account or broker order was used. This verifies application wiring, not live financial correctness.
+
+
+## Microsoft debt scope and normalization investigation
+
+MSFT FY2026 saved Yahoo debt 56.826bn equals independent complete debt 40.294bn plus filed NONCURRENT operating leases 16.532bn, not the full operating lease balance 21.925bn. Revision `course-11` allows this exact partial-inclusion reconciliation only with complete independent lower debt and corroborating full lease evidence. Original totals and the included scope remain in the audit. No blanket lease deduction or assumed-zero debt component. Focused tests verify the equality and reject absent/conflicting full leases, incomplete lower debt and same-source corroboration.
+
+User suggested investigating normalised values. Course 2810–2828, 3221 and 5027–5047 explicitly prescribe latest CFO minus five-year average capex for lumpy investment, with Amazon's exact negative-FCF history as a worked example. This is different from indiscriminately substituting issuer non-GAAP earnings. Course 1691/2465 permits disregarding documented one-offs and operating-income substitution. Investigate reconciled adjustments alongside GAAP, retaining each adjustment and source; no automatic GAAP-to-non-GAAP wholesale replacement has been authorised or implemented.
