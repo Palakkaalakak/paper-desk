@@ -415,6 +415,18 @@ class MarketEngine:
         from vmi_ib import observe
         return await observe(self, symbol)
 
+    async def _bpsx_scan(self):
+        from bpsx_data import scan
+        return await scan(self)
+
+    async def _bpsx_stock(self, symbol):
+        from bpsx_data import stock
+        return await stock(self, symbol)
+
+    async def _bpsx_chain(self, symbol, expiry=None, spot=None, ids=None):
+        from bpsx_data import options
+        return await options(self, symbol, expiry, spot, ids)
+
     async def _vmi_chain(self, symbol, expiry=None):
         from vmi_options import chain
         return await chain(self, symbol, expiry)
@@ -429,7 +441,7 @@ class MarketEngine:
                 all(number(q.get(k),True) is not None and q[k]>0 for k in ('bid','ask','last')) and
                 q['ask']>=q['bid'] and isinstance(q.get('at'),(int,float)) and 0<=now-q['at']<15000)
 
-    async def _snapshot_quote(self,c):
+    async def _snapshot_quote(self,c,require_greeks=False):
         # ib_async 2.1 keys tickers by conId. A temporary streaming request can
         # overwrite ticker2ReqId['mktData']; cancelMktData(contract) then cancels
         # the browser stream. Snapshot ownership and cancellation must use IDs.
@@ -444,7 +456,12 @@ class MarketEngine:
                 if self._ib is not ib or self.info.get('generation',0)!=generation:
                     raise ConnectionError('Gateway changed during quote snapshot')
                 q=self._quote(ticker)
-                if self._screen_quote_complete(q,int(time.time()*1000)) and q['at']>=requested_at:
+                complete=self._screen_quote_complete(q,int(time.time()*1000))
+                if require_greeks:
+                    complete=(q.get('status')=='LIVE' and not q.get('error') and not q.get('halted')
+                        and number(q.get('bid'),True) is not None and number(q.get('ask'),True) is not None
+                        and q['bid']>0 and q['ask']>=q['bid'] and number(q.get('greeks',{}).get('delta')) is not None)
+                if complete and q['at']>=requested_at:
                     return q  # Do not wait ~11s for tickSnapshotEnd after the fields arrive.
                 if future.done():
                     future.result()  # Propagate request errors rather than returning fabricated data.

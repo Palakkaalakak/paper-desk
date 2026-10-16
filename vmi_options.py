@@ -6,12 +6,14 @@ import time
 from vmi_data import symbol
 
 
-def contract(detail, under):
+def contract(detail, under, right='C'):
     c = detail.contract
     expiry = c.lastTradeDateOrContractMonth
-    local = re.fullmatch(r'(.{6})(\d{6})C(\d{8})', c.localSymbol or '')
+    if right not in ('C', 'P'):
+        raise ValueError('Invalid option right')
+    local = re.fullmatch(r'(.{6})(\d{6})' + right + r'(\d{8})', c.localSymbol or '')
     if not (under.secType == 'STK' and under.currency == 'USD' and
-            c.secType == 'OPT' and c.right == 'C' and c.currency == 'USD' and
+            c.secType == 'OPT' and c.right == right and c.currency == 'USD' and
             c.symbol == under.symbol and c.tradingClass == under.symbol and
             str(c.multiplier) in ('100', '100.0') and c.conId > 0 and
             detail.underConId == under.conId and detail.underSecType == 'STK' and
@@ -20,7 +22,7 @@ def contract(detail, under):
             c.strike > 0 and local and local[1].strip() == under.symbol and
             local[2] == expiry[2:] and int(local[3]) == round(c.strike * 1000)):
         raise ValueError('Adjusted, expired or ambiguous call contract excluded')
-    return dict(conid=c.conId, symbol=c.localSymbol, secType='OPT', right='C',
+    return dict(conid=c.conId, symbol=c.localSymbol, secType='OPT', right=right,
                 root=under.symbol, underConid=under.conId, strike=c.strike, expiry=expiry,
                 currency='USD', mult=100, exch='SMART', tradingClass=c.tradingClass,
                 deliverableStatus='IB_STANDARD_CLASS_NOT_OCC_VERIFIED')
@@ -31,7 +33,7 @@ def unchanged(engine, ib, generation):
         raise ConnectionError('Gateway changed during option qualification')
 
 
-async def chain(engine, ticker, expiry=None):
+async def chain(engine, ticker, expiry=None, right='C'):
     from ib_async import Option
     ticker = symbol(ticker)
     ib, generation = engine._ib, engine.info.get('generation', 0)
@@ -40,21 +42,25 @@ async def chain(engine, ticker, expiry=None):
     params = [p for p in params if p.exchange == 'SMART' and p.tradingClass == under.symbol and str(p.multiplier) in ('100', '100.0')]
     expirations = sorted({e for p in params for e in p.expirations if re.fullmatch(r'\d{8}', e) and e >= dt.datetime.now(dt.timezone.utc).strftime('%Y%m%d')})
     out = dict(symbol=ticker, underConid=under.conId, expirations=expirations, calls=[], excluded=0, served_by='tws')
+    field = 'calls' if right == 'C' else 'puts'
+    if right not in ('C', 'P'):
+        raise ValueError('Invalid option right')
+    out[field] = []
     if expiry:
         if expiry not in expirations:
             raise ValueError('Expiry is not listed in the matching IB standard class')
-        template = Option(under.symbol, expiry, 0, 'C', 'SMART', tradingClass=under.symbol, multiplier='100', currency='USD')
+        template = Option(under.symbol, expiry, 0, right, 'SMART', tradingClass=under.symbol, multiplier='100', currency='USD')
         # Never use the legacy disk chain; it loses underlying/multiplier metadata.
         details = await asyncio.wait_for(ib.reqContractDetailsAsync(template), 60)
         for detail in details:
             try:
-                row = contract(detail, under)
+                row = contract(detail, under, right)
                 if row['expiry'] != expiry:
                     raise ValueError('Wrong expiry')
-                out['calls'].append(row)
+                out[field].append(row)
             except ValueError:
                 out['excluded'] += 1
-        out['calls'].sort(key=lambda c: c['strike'])
+        out[field].sort(key=lambda c: c['strike'])
         out['expiry'] = expiry
     unchanged(engine, ib, generation)
     out['retrievedAt'] = int(time.time()*1000)

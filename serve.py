@@ -353,6 +353,21 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 import vmi_data
                 ticker = vmi_data.symbol(one('symbol', ''))
                 out = providers._cached((kind, ticker), 21600, lambda: vmi_data.fundamentals(ticker))
+            elif kind == 'bpsx_scan':
+                out = market.ENGINE.call(kind, timeout=30)
+            elif kind == 'bpsx_stock':
+                import vmi_data
+                ticker = vmi_data.symbol(one('symbol', ''))
+                out = providers._cached((kind, ticker, market.ENGINE.info.get('generation',0)),300,
+                    lambda: market.ENGINE.call(kind,ticker,timeout=50))
+            elif kind == 'bpsx_chain':
+                import vmi_data
+                ticker = vmi_data.symbol(one('symbol', ''))
+                ids = tuple(int(x) for x in one('ids','').split(',') if x)
+                if len(ids)>4 or any(x<=0 or x>=2**53 for x in ids):
+                    raise ValueError('Invalid selected option IDs')
+                out = market.ENGINE.call(kind,ticker,one('expiry') or None,
+                    float(one('spot','0')),ids or None,timeout=180)
             elif kind == 'vmi_stock':
                 import vmi_data
                 out = market.ENGINE.call('vmi_stock', vmi_data.symbol(one('symbol', '')), timeout=30)

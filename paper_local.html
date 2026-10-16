@@ -933,6 +933,137 @@ root.VMIUI={create(adapter){
 }};
 })(globalThis);
 </script>
+<style id="bpsx-style">#bpsx-root{min-width:0;overflow-wrap:anywhere}#bpsx-root nav{display:flex;gap:8px;margin:16px 0}#bpsx-root nav button[aria-pressed=true]{border-color:var(--accent);background:var(--accent2)}#bpsx-root label{display:block;margin:10px 0;color:var(--dim)}#bpsx-root input:not([type=checkbox]),#bpsx-root select{display:block;width:100%;min-width:0;box-sizing:border-box;margin-top:5px}#bpsx-root input[type=checkbox]{width:auto;margin-right:5px}.bpsx-layout{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.2fr);gap:16px;align-items:start}.bpsx-layout>*{min-width:0}.bpsx-fields{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:12px}#bpsx-root svg{width:100%;min-height:240px}#bpsx-root .bpsx-chain-table{overflow:auto;max-height:230px}.bpsx-selected{background:var(--accent2)}#bpsx-message,#bpsx-blockers{white-space:pre-line}#bpsx-root .bpsx-payoff{border-left:3px solid var(--accent);padding:10px 14px;background:var(--accent2);margin:12px 0}#bpsx-root .bpsx-actions{display:flex;flex-wrap:wrap;gap:8px}@media(max-width:900px){.bpsx-layout{grid-template-columns:minmax(0,1fr)}}@media(max-width:520px){.bpsx-fields{grid-template-columns:minmax(0,1fr)}}
+</style>
+<script id="bpsx-engine">/* BPSX course rules; numerical support proximity is labelled an app heuristic. */
+(function(root,f){if(typeof module==='object'&&module.exports)module.exports=f();else root.BPSX=f();})(globalThis,function(){'use strict';
+const finite=Number.isFinite,positive=x=>finite(x)&&x>0;
+function sma(xs,n){return xs.map((_,i)=>i<n-1?null:xs.slice(i-n+1,i+1).reduce((a,b)=>a+b,0)/n);}
+function ema(xs,n){let v=null;return xs.map((x,i)=>{if(i<n-1)return null;v=v===null?xs.slice(0,n).reduce((a,b)=>a+b,0)/n:x*2/(n+1)+v*(1-2/(n+1));return v;});}
+function metrics(d,window=252){const bars=d?.bars||[],xs=bars.map(b=>b.c),last=bars.at(-1),iv=(d?.ivHistory||[]).slice(-window),ma={ema20:ema(xs,20),ema40:ema(xs,40),sma50:sma(xs,50),sma150:sma(xs,150)},v=Object.fromEntries(Object.entries(ma).map(([k,x])=>[k,x.at(-1)]));return {ma,...v,price:last?.c,asof:last?.date,
+ averageVolume:bars.length>=30&&bars.slice(-30).every(b=>finite(b.v))?bars.slice(-30).reduce((a,b)=>a+b.v,0)/30:null,
+ ivPercentile:iv.length>=window&&positive(iv.at(-1)?.value)?100*iv.filter(b=>b.value<=iv.at(-1).value).length/iv.length:null,
+ uptrend:positive(v.ema20)&&positive(v.ema40)&&positive(v.sma150)?v.ema20>v.ema40&&v.sma50>v.sma150:null,
+ nearSupport:positive(v.sma50)&&positive(last?.c)?Math.abs(last.c/v.sma50-1)<=.03:null,
+ pullback:xs.length>=10?xs.at(-1)<Math.max(...xs.slice(-10)):null,
+ monthlyDrop:xs.length>=172?xs.slice(22).some((x,i)=>x/xs[i]-1<=-.15):null};}
+function screen(d,cfg={}){const m=metrics(d,cfg.ivWindow||252),reasons=[],pending=[],age=Date.now()-Date.parse(m.asof+'T00:00:00Z');
+ if(!finite(age)||age<0||age>6*86400000)pending.push('Recent completed daily history');
+ if(d?.ivHistory?.at(-1)?.date!==m.asof)pending.push('IV history aligned with daily chart');
+ for(const [value,pass,label] of [[m.price,m.price>=50,'Price ≥$50'],[m.averageVolume,m.averageVolume>1000000,'30-session average volume >1m'],[m.ivPercentile,m.ivPercentile>=35,'IV percentile ≥35']]){if(!finite(value))pending.push(label);else if(!pass)reasons.push(label);}
+ if(cfg.trend){if(m.uptrend===null)pending.push('150-session trend history');else if(!m.uptrend)reasons.push('20 EMA >40 EMA AND 50 SMA >150 SMA');}
+ if(cfg.support&&!(m.nearSupport&&m.pullback))reasons.push('Pullback within 3% of 50 SMA (app heuristic)');
+ if(cfg.drawdown){if(m.monthlyDrop===null)pending.push('Monthly decline history');else if(m.monthlyDrop)reasons.push('Observed ≥15% decline across 22 sessions');}
+ if(/biotech|pharma/i.test((d?.industry||'')+' '+(d?.category||'')))reasons.push('Biotech/pharma excluded');
+ return {m,reasons,pending,status:reasons.length?'FAIL':pending.length?'UNVERIFIED':'PASS'};}
+function days(expiry,now=Date.now()){if(!/^\d{8}$/.test(expiry||''))return NaN;return Math.round((Date.parse(expiry.slice(0,4)+'-'+expiry.slice(4,6)+'-'+expiry.slice(6,8)+'T00:00:00Z')-Date.parse(new Date(now).toISOString().slice(0,10)+'T00:00:00Z'))/86400000);}
+function expiration(xs,now=Date.now()){return xs.filter(x=>days(x,now)>=20&&days(x,now)<=45).sort((a,b)=>Math.abs(days(a,now)-26)-Math.abs(days(b,now)-26))[0]||null;}
+function fresh(r,now=Date.now()){const q=r?.quote;return q?.brokerConid===r?.conid&&q.status==='LIVE'&&!q.halted&&!q.error&&positive(q.bid)&&positive(q.ask)&&q.ask>=q.bid&&finite(q.at)&&now-q.at>=-1000&&now-q.at<60000;}
+function economics(s,l,credit,qty=1){const width=s?.strike-l?.strike;return {credit:credit*100*qty,maxLoss:(width-credit)*100*qty,ratio:(width-credit)/credit,breakeven:s?.strike-credit,width,takeProfitDebit:credit*.1,lossAlertDebit:credit*4};}
+function validate(s,l,credit,qty,spot,under,now=Date.now()){const out=[];if(!s||!l)return ['Select both put legs'];
+ for(const r of [s,l]){if(r.secType!=='OPT'||r.right!=='P'||r.currency!=='USD'||r.mult!==100||r.underConid!==under||!Number.isSafeInteger(r.conid)||r.conid<=0||r.deliverableStatus!=='IB_STANDARD_CLASS_NOT_OCC_VERIFIED')out.push('Verified standard USD 100-share put contracts required');if(!fresh(r,now))out.push('Fresh LIVE two-sided IB quotes required');if(r.quote&&r.quote.ask-r.quote.bid>.40000001)out.push('Option bid/ask spread exceeds $0.40');}
+ if(s.conid===l.conid||s.root!==l.root||s.expiry!==l.expiry||!positive(l.strike)||s.strike<=l.strike||!positive(spot)||s.strike>=spot)out.push('Sell higher OTM put / buy lower put, same underlying and expiry');
+ if(!(days(s.expiry,now)>=20&&days(s.expiry,now)<=45))out.push('Select 20–45 DTE');
+ const delta=s.quote?.greeks?.delta;if(!finite(delta)||delta>-.09||delta<-.15)out.push('Observed short put delta must be −0.09 to −0.15');
+ if(!positive(credit)||!Number.isSafeInteger(qty)||qty<=0)out.push('Positive credit / whole spread quantity required');
+ const e=economics(s,l,credit,qty);if(!positive(e.maxLoss)||!finite(e.ratio)||e.ratio>10.00000001)out.push('Maximum loss must be positive and ≤10× credit');return [...new Set(out)];}
+function recommend(rows,spot,now=Date.now()){rows=rows.slice().sort((a,b)=>a.strike-b.strike);const results=[];for(let i=0;i<rows.length;i++){const s=rows[i];for(const step of [1,2]){const l=rows[i-step];if(!l)continue;const credit=Math.round(((s.quote?.bid||0)-(l.quote?.ask||0))*10000)/10000;if(validate(s,l,credit,1,spot,s.underConid,now).length)continue;results.push({short:s,long:l,credit,step,buffer:1-s.strike/spot,score:Math.abs(s.quote.greeks.delta+.1)+(1-s.strike/spot<.15?.1:0)});}}return results.sort((a,b)=>a.score-b.score||a.step-b.step)[0]||null;}
+return {sma,ema,metrics,screen,days,expiration,fresh,economics,validate,recommend};});
+</script>
+<script id="bpsx-ui">/* BPSX chart review and explicit paper-combo workflow. Never calls broker order APIs. */
+(function(root){'use strict';const C=root.BPSX;
+const esc=x=>String(x??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])),fmt=x=>Number.isFinite(x)?x.toLocaleString(undefined,{maximumFractionDigits:3}):'Unverified';
+root.BPSXUI={create(a){
+ let el=null,mode='scanner',rows=[],selection=null,epoch=0,scanEpoch=0,busy=false,scanning=false,message='',allocation=20000,revision=0;
+ const cfg={trend:false,support:false,drawdown:false,ivWindow:252},decisions=new Map();
+ const empty=()=>({qty:1,credit:'',earnings:'',cap:false,support:false,sector:false,weekly:false,deliverable:false,bufferReason:''});let ticket=empty();
+ const active=()=>a.active()&&el?.isConnected,book=()=>a.book().id;
+ const current=(s,id)=>s===selection&&id===epoch&&s.bookId===book()&&active();
+ async function request(path){const response=await fetch('/data/'+path,{signal:AbortSignal.timeout(190000)});if(!response.ok)throw Error('IB data HTTP '+response.status);const d=await response.json();if(d.error)throw Error(d.error);return d;}
+ const protect=fn=>async(...args)=>{try{await fn(...args);}catch(e){message=e.message;draw();}};
+ const queue=()=>rows.filter(r=>!decisions.has(book()+':'+r.symbol)&&(!r.data||C.screen(r.data,cfg).status!=='FAIL'));
+ function chart(d){if(!d?.bars?.length)return '<p>Loading completed daily candles. No synthetic chart data.</p>';
+  const m=C.metrics(d,cfg.ivWindow),bars=d.bars.slice(-110),offset=d.bars.length-bars.length,range=bars.flatMap(b=>[b.h,b.l]);for(const v of Object.values(m.ma))range.push(...v.slice(offset).filter(Number.isFinite));
+  const low=Math.min(...range)*.99,high=Math.max(...range)*1.01,x=i=>40+i*690/Math.max(1,bars.length-1),y=v=>20+(high-v)/(high-low)*305;
+  return '<svg viewBox="0 0 800 360" role="img" aria-label="'+esc(d.symbol)+' daily candlesticks with 20 EMA, 40 EMA, 50 SMA and 150 SMA"><rect width="800" height="360" fill="var(--bg)"/>'+[0,1,2,3,4].map(i=>{const v=low+(high-low)*i/4;return '<path d="M35 '+y(v)+'H740" stroke="var(--line)"/><text x="744" y="'+y(v)+'" font-size="11" fill="currentColor">'+fmt(v)+'</text>';}).join('')+bars.map((b,i)=>{const color=b.c>=b.o?'#35bd92':'#ef6c7a';return '<g><title>'+esc(b.date+' O '+b.o+' H '+b.h+' L '+b.l+' C '+b.c)+'</title><path d="M'+x(i)+' '+y(b.h)+'V'+y(b.l)+'" stroke="'+color+'"/><rect x="'+(x(i)-2)+'" y="'+Math.min(y(b.o),y(b.c))+'" width="4" height="'+Math.max(1,Math.abs(y(b.o)-y(b.c)))+'" fill="'+color+'"/></g>';}).join('')+Object.entries(m.ma).map(([k,values],i)=>'<polyline fill="none" stroke="'+['#ffac65','#75a9ff','#b994fb','#50d0b0'][i]+'" stroke-width="1.7" points="'+values.slice(offset).map((v,j)=>Number.isFinite(v)?x(j)+','+y(v):'').filter(Boolean).join(' ')+'"/>').join('')+'<text x="40" y="350" fill="currentColor" font-size="12">'+esc(bars[0].date+' → '+bars.at(-1).date)+'</text></svg><p>20 EMA <b style="color:#ffac65">'+fmt(m.ema20)+'</b> · 40 EMA <b style="color:#75a9ff">'+fmt(m.ema40)+'</b> · 50 SMA <b style="color:#b994fb">'+fmt(m.sma50)+'</b> · 150 SMA <b style="color:#50d0b0">'+fmt(m.sma150)+'</b></p>';
+ }
+ const check=(key,label,value)=>'<label><input data-ticket="'+key+'" type="checkbox"'+(value?' checked':'')+'> '+label+'</label>';
+ function blockers(){const s=selection;if(!s?.chain?.expiry)return ['Load the put chain'];
+  const short=s.chain.puts.find(r=>r.conid===s.short),long=s.chain.puts.find(r=>r.conid===s.long),out=C.validate(short,long,Number(ticket.credit),Number(ticket.qty),C.metrics(s.data).price,s.data.underConid),screen=C.screen(s.data,cfg);
+  out.push(...screen.reasons,...screen.pending.map(v=>'Unverified: '+v));
+  if(!s.marketCapScreen&&!ticket.cap)out.push('Confirm market cap ≥$30bn');
+  if(!ticket.support)out.push('Confirm wave down into previously tested support');
+  if(!ticket.sector)out.push('Confirm no biotech/pharma or known binary event');
+  if(!ticket.weekly)out.push('Confirm weekly-option liquidity proxy');
+  if(!ticket.deliverable)out.push('Confirm standard OCC deliverables');
+  if(!/^\d{4}-\d{2}-\d{2}$/.test(ticket.earnings)||!Number.isFinite(Date.parse(ticket.earnings+'T00:00:00Z'))||ticket.earnings.replaceAll('-','')<=s.chain.expiry)out.push('Verified next earnings date must be after expiration');
+  if(short&&1-short.strike/C.metrics(s.data).price<.15&&!ticket.bufferReason.trim())out.push('Below 15% buffer: exception reason required');
+  const steps=s.chain.puts.findIndex(r=>r.conid===s.short)-s.chain.puts.findIndex(r=>r.conid===s.long);if(![1,2].includes(steps))out.push('Long put must be one or two listed strikes below');
+  if(!Number.isFinite(allocation)||allocation<=0)out.push('Positive strategy allocation required');
+  return [...new Set(out)];
+ }
+ function chainView(){const s=selection;if(!s.qualified)return '<section class="panel"><h3>Review the chart first</h3><p>Qualify to see the editable BPSX spread, or disqualify to move immediately to the next stock.</p></section>';
+  const ch=s.chain;if(!ch)return '<section class="panel"><h3>Preparing BPSX put chain…</h3><p>'+esc(message)+'</p><button data-action="chain"'+(busy?' disabled':'')+'>Retry chain</button></section>';
+  const options=id=>'<option value="">Choose listed put</option>'+ch.puts.map(r=>'<option value="'+r.conid+'"'+(r.conid===id?' selected':'')+'>'+esc(r.strike+' · δ '+fmt(r.quote?.greeks?.delta)+' · '+(r.quote?.status||'not quoted'))+'</option>').join('');
+  const short=ch.puts.find(r=>r.conid===s.short),long=ch.puts.find(r=>r.conid===s.long),e=C.economics(short,long,Number(ticket.credit),Number(ticket.qty));
+  return '<section class="panel"><h3>Put chain · '+esc(s.symbol)+'</h3><label>Expiration<select id="bpsx-expiry"'+(busy?' disabled':'')+'>'+ch.expirations.filter(x=>C.days(x)>=20&&C.days(x)<=45).map(x=>'<option value="'+x+'"'+(x===ch.expiry?' selected':'')+'>'+x+' · '+C.days(x)+' days</option>').join('')+'</select></label><div class="bpsx-fields"><label>SELL higher put<select id="bpsx-short"'+(busy?' disabled':'')+'>'+options(s.short)+'</select></label><label>BUY lower put<select id="bpsx-long"'+(busy?' disabled':'')+'>'+options(s.long)+'</select></label></div><div class="bpsx-actions"><button data-action="refresh"'+(busy?' disabled':'')+'>Refresh selected quotes</button><button data-action="auto"'+(busy?' disabled':'')+'>Re-select Adam’s spread</button></div><p>'+esc(ch.note||'')+'</p><div class="bpsx-chain-table"><table><thead><tr><th>Put strike</th><th>Bid</th><th>Ask</th><th>Delta</th><th>Observed</th></tr></thead><tbody>'+ch.puts.filter(r=>r.quote||r.conid===s.short||r.conid===s.long).map(r=>'<tr'+([s.short,s.long].includes(r.conid)?' class="bpsx-selected"':'')+'><td>'+fmt(r.strike)+(r.conid===s.short?' SELL':r.conid===s.long?' BUY':'')+'</td><td>'+fmt(r.quote?.bid)+'</td><td>'+fmt(r.quote?.ask)+'</td><td>'+fmt(r.quote?.greeks?.delta)+'</td><td>'+esc(r.quote?.at?new Date(r.quote.at).toLocaleTimeString():r.quoteError||'unavailable')+'</td></tr>').join('')+'</tbody></table></div><div class="bpsx-fields"><label>Spreads<input data-ticket="qty" type="number" min="1" step="1" value="'+esc(ticket.qty)+'"></label><label>Minimum credit / share<input data-ticket="credit" type="number" min="0.01" step="0.01" value="'+esc(ticket.credit)+'"></label><label>Strategy allocation $<input id="bpsx-allocation" type="number" min="1" value="'+esc(allocation)+'"></label><label>Verified next earnings date<input data-ticket="earnings" type="date" value="'+esc(ticket.earnings)+'"></label></div><p>Target premium per trade ≈ $'+fmt(allocation/100)+' (allocation ÷10 ÷10 trades). Quantity remains editable; income is not guaranteed.</p><section class="bpsx-payoff" aria-label="Payoff preview"><b>Credit $'+fmt(e.credit)+' · max loss $'+fmt(e.maxLoss)+' · loss/credit '+fmt(e.ratio)+'×</b><p>Break-even '+fmt(e.breakeven)+' · 90% profit close debit '+fmt(e.takeProfitDebit)+' · 3× credit P&L-loss alert at debit '+fmt(e.lossAlertDebit)+' (4× opening credit).</p></section>'+check('cap','Market cap verified ≥$30bn',ticket.cap||s.marketCapScreen)+check('support','Wave down near previously tested MA / horizontal support; not after a wave up',ticket.support)+check('sector','Not biotech/pharma and no known binary event',ticket.sector)+check('weekly','Weekly options and liquidity reviewed',ticket.weekly)+check('deliverable','Both OCC deliverables are 100 ordinary shares, no adjustments',ticket.deliverable)+'<label>Exception reason if short strike is less than 15% below stock<input data-ticket="bufferReason" value="'+esc(ticket.bufferReason)+'"></label><p id="bpsx-blockers" role="status">'+esc(blockers().join(' · ')||'Ready for paper-order confirmation')+'</p><button id="bpsx-send" data-action="send"'+(busy?' disabled':'')+'>Review & send PAPER spread</button><p class="note">No broker submission. Monitor daily. Close before earnings/expiry; review trend/support breaks, 90% profit and 3× credit loss. These are informational levels, not automatic exits or guaranteed stops. Gaps can cause the structural maximum loss.</p></section>';
+ }
+ function draw(){if(!active())return;
+  if(selection&&selection.bookId!==book()){epoch++;selection=null;ticket=empty();busy=false;message='Paper account changed; select a stock again.';}
+  if(scanning&&el.contains(document.activeElement)&&document.activeElement.matches('input:not([type=checkbox]),textarea'))return;
+  const s=selection,m=s?.data?C.screen(s.data,cfg):null;
+  el.innerHTML='<header><p class="dim">BULL PUT SPREAD EXTREME · BPSX v1</p><h2>Scan → review → spread</h2><p>Adam’s revised scanner. Defined-risk credit spreads, target 10 delta. Experienced traders only.</p></header><nav><button data-mode="scanner" aria-pressed="'+(mode==='scanner')+'">Quick scanner</button><button data-mode="selected" aria-pressed="'+(mode==='selected')+'">Pre-selected stock</button></nav><p id="bpsx-message" role="status">'+esc(message)+'</p>'+(mode==='scanner'?'<section class="panel"><h3>Adam’s scanner</h3><p>US optionable corporate stocks · price ≥$50 · cap ≥$30bn · average volume >1m · IV percentile ≥35. First 50 IB-ranked seeds are progressively verified, not an exhaustive market search. Run during regular market hours.</p><div class="bpsx-fields"><label>IV-percentile lookback<select id="bpsx-window"><option value="252"'+(cfg.ivWindow===252?' selected':'')+'>52 weeks · 252 sessions (course default)</option><option value="63"'+(cfg.ivWindow===63?' selected':'')+'>13 weeks · 63 sessions (optional app variant)</option></select></label><div>'+['trend','support','drawdown'].map((k,i)=>'<label><input data-filter="'+k+'" type="checkbox"'+(cfg[k]?' checked':'')+'> '+['Add Adam’s exact uptrend test: EMA20 >EMA40 AND SMA50 >SMA150','Add pullback near 50 SMA (3% app heuristic)','Exclude observed ≥15% / 22-session declines'][i]+'</label>').join('')+'</div></div><div class="bpsx-actions"><button data-action="scan"'+(scanning?' disabled':'')+'>Run quick scan</button><button data-action="stop">Stop scan</button><button data-action="reset">Reset review decisions</button></div><p>'+rows.filter(r=>r.data||r.error).length+' / '+rows.length+' checked · '+queue().length+' remaining</p><label>Review stock<select id="bpsx-candidate"><option value="">Choose candidate</option>'+queue().map(r=>'<option value="'+esc(r.symbol)+'"'+(s?.symbol===r.symbol?' selected':'')+'>'+esc(r.symbol+' · '+(r.error?'DATA UNAVAILABLE':r.data?C.screen(r.data,cfg).status:'VERIFYING'))+'</option>').join('')+'</select></label></section>':'<section class="panel"><h3>Already have a stock in mind?</h3><form id="bpsx-search"><label>US stock ticker<input name="symbol" placeholder="AAPL" required maxlength="24" autocomplete="off"></label><button>Open chart & pre-selected spread</button></form><p>Exact ticker lookup. Direct selection skips the scanner, not its entry checks.</p></section>')+(s?'<div class="bpsx-layout"><div>'+chainView()+'</div><section class="panel"><h3>'+esc(s.symbol)+' · daily chart</h3>'+chart(s.data)+(m?'<p><b>'+esc(m.status)+'</b> · close '+fmt(m.m.price)+' ('+esc(m.m.asof)+') · 30-session average volume '+fmt(m.m.averageVolume)+' · '+cfg.ivWindow+'-session IV percentile '+fmt(m.m.ivPercentile)+'%</p><p>'+esc([...m.reasons,...m.pending].join(' · '))+'</p>':'')+'<p>Identify previously tested support manually; MA proximity does not prove support. Chart excludes the incomplete current day.</p><label>Review note<input id="bpsx-review-note" value="'+esc(s.note||'')+'" placeholder="Reason for rejection / qualification"></label><label><input id="bpsx-disqualify" type="checkbox"> Disqualify this stock and move to next</label><div class="bpsx-actions"><button data-action="qualify"'+(!s.data||busy?' disabled':'')+'>Qualify → show BPSX spread</button><button data-action="next">Next stock</button></div></section></div>':'<section class="panel"><p>Run the scanner or search a ticker to begin.</p></section>')+'<details class="panel"><summary>Course rules & boundaries</summary><p>Short put delta 9–15, target 10. Buy one or two listed strikes lower with the same expiry. 20–45 DTE supported; prefer 20–30. Max loss ≤10× credit. 15% distance is a guideline; exceptions need a reason. Per-leg spread ≤$0.40. IV percentile is computed from historical underlying IV, not raw IV or range-based IV rank. Average volume uses 30 sessions (app policy). Weekly liquidity, earnings date, OCC deliverables and previously tested support require confirmation. No automatic earnings calendar, assignment handling, or background exits. Review decisions are session-local.</p></details>';
+ }
+ async function choose(symbol,qualified=false){const id=++epoch,bid=book(),r=rows.find(r=>r.symbol===symbol);busy=false;revision++;ticket=empty();const s=selection={symbol,bookId:bid,qualified,marketCapScreen:!!r?.marketCapScreen,data:r?.data||null};message='Loading '+symbol+' completed daily chart and IV history…';draw();
+  const d=r?.data||await request('bpsx_stock?symbol='+encodeURIComponent(symbol));if(!current(s,id))return;s.data=d;message='Daily chart ready; inspect support and event risk.';draw();if(qualified)await loadChain();
+ }
+ function auto(){const s=selection,p=C.recommend(s.chain.puts,C.metrics(s.data).price);s.short=p?.short.conid||null;s.long=p?.long.conid||null;ticket=empty();revision++;if(p){ticket.credit=Number(p.credit.toFixed(2));ticket.qty=Math.max(1,Math.floor((allocation/100)/(ticket.credit*100)));message='Pre-selected observed delta '+fmt(p.short.quote.greeks.delta)+' · '+fmt(p.buffer*100)+'% buffer. Review all entry checks.';}else message='No observed 9–15 delta pair meets the liquidity / 10× risk rule in this quote window. No invented Greeks or fallback spread. Edit strikes/expiry and refresh.';draw();}
+ async function loadChain(expiry){if(!selection?.data||busy)return;const s=selection,id=epoch;busy=true;s.qualified=true;s.chain=null;s.short=null;s.long=null;ticket=empty();revision++;message='Loading verified puts and observed deltas…';draw();try{
+  if(!expiry){const meta=await request('bpsx_chain?symbol='+encodeURIComponent(s.symbol));if(!current(s,id))return;expiry=C.expiration(meta.expirations);}
+  if(!expiry)throw Error('No expiration within 20–45 DTE; nothing pre-selected');
+  const ch=await request('bpsx_chain?symbol='+encodeURIComponent(s.symbol)+'&expiry='+expiry+'&spot='+C.metrics(s.data).price);if(!current(s,id))return;if(ch.underConid!==s.data.underConid)throw Error('Option chain underlying mismatch');s.chain=ch;auto();
+ }finally{if(id===epoch){busy=false;draw();}}}
+ async function refresh(){const s=selection,id=epoch;if(!s?.chain||!s.short||!s.long)throw Error('Select both legs first');
+  const ids=[s.short,s.long],d=await request('bpsx_chain?symbol='+encodeURIComponent(s.symbol)+'&expiry='+s.chain.expiry+'&spot='+C.metrics(s.data).price+'&ids='+ids.join(','));
+  if(!current(s,id)||s.short!==ids[0]||s.long!==ids[1])throw Error('Selection/account changed; refresh discarded');if(d.underConid!==s.data.underConid)throw Error('Refreshed chain identity mismatch');
+  for(const r of d.puts)if(ids.includes(r.conid)){const target=s.chain.puts.find(x=>x.conid===r.conid);delete target.quote;delete target.quoteError;Object.assign(target,r);}return s;
+ }
+ async function next(){const candidates=queue(),index=candidates.findIndex(r=>r.symbol===selection?.symbol),r=candidates[index+1]||candidates[0];if(r)await choose(r.symbol);else{epoch++;selection=null;message='Review queue complete.';draw();}}
+ async function scan(){const id=++scanEpoch;epoch++;selection=null;busy=false;ticket=empty();rows=[];scanning=true;message='Requesting IB optionable large-cap candidates…';draw();try{
+  const d=await request('bpsx_scan');if(id!==scanEpoch||!active())return;rows=d.rows;message=d.source+' · '+d.note;draw();let index=0;
+  async function worker(){while(index<rows.length&&id===scanEpoch&&active()){const row=rows[index++];try{row.data=await request('bpsx_stock?symbol='+encodeURIComponent(row.symbol));}catch(e){row.error=e.message;}if(id!==scanEpoch)return;if(!selection&&row.data&&C.screen(row.data,cfg).status==='PASS')await choose(row.symbol);draw();}}
+  await Promise.all([worker(),worker(),worker()]);
+ }finally{if(id===scanEpoch){scanning=false;draw();}}}
+ async function send(){if(busy)return;busy=true;draw();const rev=revision;try{const s=await refresh();if(rev!==revision)throw Error('Ticket changed while refreshing; review and send again');let errors=blockers();if(errors.length)throw Error(errors.join(' · '));
+  const short=s.chain.puts.find(r=>r.conid===s.short),long=s.chain.puts.find(r=>r.conid===s.long),qty=Number(ticket.qty),credit=Number(ticket.credit),e=C.economics(short,long,credit,qty);
+  if(!confirm('PAPER ONLY · '+a.book().name+'\n'+s.symbol+' sell '+short.strike+' / buy '+long.strike+' put · '+s.chain.expiry+'\n'+qty+' spreads · minimum credit $'+credit+' per share\nMaximum loss $'+e.maxLoss.toFixed(2)+' before fees. No automated exits.\nSend this PAPER limit order?'))return;
+  errors=blockers();if(errors.length)throw Error(errors.join(' · '));
+  a.send({short,long,qty,credit,spot:C.metrics(s.data).price,underConid:s.data.underConid,symbol:s.symbol,bookId:s.bookId,allocation,evidence:{earnings:ticket.earnings,bufferReason:ticket.bufferReason,screen:C.screen(s.data,cfg),confirmedAt:Date.now()}});
+  message='Paper spread submitted. Inspect Orders / Positions. No broker order was sent.';
+ }finally{busy=false;draw();}}
+ function mount(){const node=document.getElementById('bpsx-root');if(!node)return;if(node===el){if(selection&&selection.bookId!==book())draw();return;}el=node;
+  el.addEventListener('keydown',e=>e.stopPropagation());
+  el.addEventListener('click',e=>{e.stopPropagation();const b=e.target.closest('button');if(!b)return;protect(async()=>{if(b.dataset.mode){epoch++;scanEpoch++;scanning=false;selection=null;busy=false;ticket=empty();mode=b.dataset.mode;revision++;draw();return;}switch(b.dataset.action){
+   case 'scan':await scan();break;case 'stop':scanEpoch++;scanning=false;message='Scan stopped; completed rows retained.';draw();break;case 'reset':decisions.clear();draw();break;
+   case 'qualify':{const r=C.screen(selection.data,cfg);if(r.status!=='PASS')throw Error('Entry screen: '+[...r.reasons,...r.pending].join(' · '));await loadChain();break;}
+   case 'chain':await loadChain();break;case 'next':await next();break;case 'auto':auto();break;
+   case 'refresh':if(!busy){busy=true;draw();try{await refresh();message='Selected quotes refreshed; edited credit retained.';}finally{busy=false;draw();}}break;
+   case 'send':await send();break;
+  }})();});
+  el.addEventListener('submit',e=>{e.preventDefault();e.stopPropagation();if(e.target.id==='bpsx-search'){const symbol=new FormData(e.target).get('symbol').trim().toUpperCase();protect(async()=>{if(!/^[A-Z0-9. -]{1,24}$/.test(symbol))throw Error('Enter a valid US ticker');await choose(symbol,true);})();}});
+  el.addEventListener('input',e=>{const t=e.target;if(t.dataset.ticket){ticket[t.dataset.ticket]=t.type==='checkbox'?t.checked:t.value;revision++;const out=el.querySelector('#bpsx-blockers');if(out)out.textContent=blockers().join(' · ')||'Ready for paper-order confirmation';}if(t.id==='bpsx-allocation'){allocation=Number(t.value);revision++;}if(t.id==='bpsx-review-note'&&selection)selection.note=t.value;});
+  el.addEventListener('change',e=>{e.stopPropagation();const t=e.target;protect(async()=>{
+   if(t.dataset.filter){cfg[t.dataset.filter]=t.checked;revision++;draw();}if(t.id==='bpsx-window'){cfg.ivWindow=Number(t.value);revision++;draw();}
+   if(t.id==='bpsx-candidate'&&t.value)await choose(t.value);if(t.id==='bpsx-expiry')await loadChain(t.value);
+   if(t.id==='bpsx-short'||t.id==='bpsx-long'){if(busy)throw Error('Wait for refresh to finish');selection[t.id==='bpsx-short'?'short':'long']=Number(t.value);ticket.deliverable=false;revision++;message='Leg edited; refresh quotes. Edited credit retained.';draw();}
+   if(t.id==='bpsx-disqualify'&&t.checked){decisions.set(book()+':'+selection.symbol,{at:Date.now(),reason:selection.note||''});epoch++;await next();}
+   if(t.dataset.ticket||t.id==='bpsx-allocation')draw();
+  })();});draw();
+ }
+ return {view:()=>'<section id="bpsx-root" aria-label="BPSX scanner and spread workspace"></section>',mount};
+}};
+})(globalThis);
+</script>
 <!-- VMI_BUNDLE_END -->
 <script>
 var PAPER_LOCAL = true;
@@ -1584,7 +1715,7 @@ var S = JSON.parse(document.getElementById('st').textContent);
 var Q = {};            // conid -> quote
 var mcp = null, artifact = null, server = IBKR_FALLBACK, readOnly = false;
 var DIAG = {cap:'checking', storage:'checking', servers:[], server:'', tools:0, lastErr:'', lastTool:''};
-var guns = null, trading = null, tradingUI = null, vmi = null;
+var guns = null, trading = null, tradingUI = null, vmi = null, bpsx = null;
 var tab = 'trade', sel = null, dirty = false, pubTimer = null, busy = 0;
 var LOCAL = (typeof PAPER_LOCAL!=='undefined' && PAPER_LOCAL);
 function errText(e){
@@ -3185,7 +3316,7 @@ function renderLive(){
     var cid=Number(el.getAttribute('data-wl')),w=S.watchlist.find(function(x){return x.conid===cid;}),q=Q[cid];
     if(w)putHTML(el,esc(w.symbol)+(q&&q.last!=null?' <span class="mono">'+px(q.last)+'</span>':''));
   });
-  if(tab==='vmi')return; // Market ticks must not destroy research form edits.
+  if(tab==='vmi'||tab==='bpsx')return; // Market ticks must not destroy research form edits.
   if(tab==='guns' && guns){guns.live();return;}
   if(tab==='pos'){renderPositionPrices();return;}
   if(tab==='trade'){
@@ -3201,7 +3332,7 @@ function renderLive(){
 }
 
 /* ---------- render ---------- */
-var TABS=[['trade','Trade'],['guns','GUNS'],['vmi','VMI'],['pos','Positions'],['ord','Orders'],['hist','History'],['acct','Account']];
+var TABS=[['trade','Trade'],['guns','GUNS'],['vmi','VMI'],['bpsx','BPSX'],['pos','Positions'],['ord','Orders'],['hist','History'],['acct','Account']];
 function renderTabs(){
   putHTML($('tabs'), TABS.map(function(t){
     var extra='';
@@ -3784,7 +3915,7 @@ function viewAcct(){
    + bookPanel() + sourcePanel() + lclassPanel() + feeTable() + futTable() + marginNote();
 }
 function viewFor(t){
-  return t==='vmi'&&vmi?vmi.view():t==='guns'&&guns?guns.view():t==='trade'?viewTrade():t==='pos'?viewPos():t==='ord'?viewOrd():t==='hist'?viewHist():viewAcct();
+  return t==='bpsx'&&bpsx?bpsx.view():t==='vmi'&&vmi?vmi.view():t==='guns'&&guns?guns.view():t==='trade'?viewTrade():t==='pos'?viewPos():t==='ord'?viewOrd():t==='hist'?viewHist():viewAcct();
 }
 function applySide(){
   document.body.classList.toggle('side-calls', S.chainSide!=='puts');
@@ -3818,6 +3949,7 @@ function render(){
   updateTradeButtons();
   if(tab==='guns' && guns)guns.live();
   if(tab==='vmi' && vmi)vmi.mount();
+  if(tab==='bpsx' && bpsx)bpsx.mount();
 }
 
 /* ---------- events ---------- */
@@ -4204,6 +4336,31 @@ function paperCorrectionContext(){
   var active=[...(S.guns?.books?.[S.bookId]?.active||[]),...(S.desk?.active||[])];
   return {protectedConids:active.map(function(x){return x.inst?.conid||x.conid;}).filter(Number.isFinite)};
 }
+if(window.BPSXUI)bpsx=window.BPSXUI.create({
+  active:function(){return tab==='bpsx';},
+  book:function(){return {id:S.bookId,name:bookOf(S.bookId)?.name||S.bookId};},
+  send:function(p){
+    if(!LOCAL||readOnly||tab!=='bpsx'||S.bookId!==p.bookId)throw Error('Writable paper account changed; review again');
+    if(!usingTws())throw Error('Select IB Gateway as the data source in Account');
+    var errors=window.BPSX.validate(p.short,p.long,p.credit,p.qty,p.spot,p.underConid);
+    if(errors.length)throw Error(errors.join(' · '));
+    if(!S.settings.allowShort||S.account.type==='cash')throw Error('Choose a margin paper account and enable short selling in Account. BPSX never changes account settings automatically.');
+    if(S.positions.some(function(x){return x.qty&&(x.conid===p.short.conid||x.conid===p.long.conid||x.underConid===p.underConid);})||S.orders.some(function(o){return o.status==='working'&&(o.legs||[o]).some(function(l){return l.underConid===p.underConid;});}))throw Error('Existing option exposure / working order for this underlying; reconcile before adding BPSX');
+    var exposures=S.orders.filter(function(o){return o.bpsx&&(o.status==='working'||o.status==='filled'&&o.legs.some(function(l){return (posOf(l.conid)?.qty||0)!==0;}));});
+    var premium=0,used=0;
+    exposures.forEach(function(o){var n=o.status==='working'?o.qty:Math.max.apply(null,o.legs.map(function(l){return Math.abs(posOf(l.conid)?.qty||0);}));var c=o.status==='filled'&&Number.isFinite(o.avgFill)&&o.avgFill<0?-o.avgFill:o.bpsx.credit;premium+=c*100*n;used+=(o.bpsx.width-c)*100*n;});
+    var e=window.BPSX.economics(p.short,p.long,p.credit,p.qty);
+    if(!Number.isFinite(p.allocation)||p.allocation<=0||exposures.length>=10||premium+e.credit>p.allocation/10+1e-8||used+e.maxLoss>p.allocation+1e-8)throw Error('BPSX allocation cap: maximum 10 open/pending trades, open credit ≤allocation/10 and total defined risk ≤allocation');
+    var legs=[Object.assign({},p.short,{side:'SELL',ratio:1,deliverableConfirmed:true}),Object.assign({},p.long,{side:'BUY',ratio:1,deliverableConfirmed:true})];
+    legs.forEach(function(l){Q[l.conid]=Object.assign({},l.quote);});
+    var touch=comboNet(legs,false,p.qty);if(!touch)throw Error('Two-sided spread market unavailable');
+    var fills=legs.map(function(l,i){return Object.assign({},l,{qty:(l.side==='BUY'?1:-1)*p.qty,price:touch.prices[i],commission:commission(l,p.qty,touch.prices[i],l.side)});});
+    if(!affordable(fills,'BPSX spread'))throw Error('Insufficient paper buying power; inspect the account warning');
+    var o={id:uid(),ts:Date.now(),day:today(),symbol:p.symbol+' BPSX '+p.short.strike+'/'+p.long.strike+' '+p.short.expiry,strategy:'BPSX',conid:p.short.conid,secType:'OPT',mult:100,exch:'SMART',side:'BUY',qty:p.qty,type:'COMBO',limit:-p.credit,stop:null,tif:'DAY',status:'working',filledQty:0,avgFill:0,commission:0,triggered:false,legs:legs,bpsx:{credit:p.credit,width:e.width,maxLossPerSpread:e.maxLoss/p.qty,allocation:p.allocation,evidence:p.evidence}};
+    S.orders.unshift(o);say('BPSX PAPER spread submitted · '+o.symbol+' x'+p.qty);tryFill(o);save();syncSubs();
+    if(o.status==='rejected')throw Error(o.note||'Paper risk engine rejected this spread');
+  }
+});
 var vmiHandoffSequence=0;
 if(window.VMIUI)vmi=window.VMIUI.create({
   currentBook:function(){return {id:S.bookId,name:bookOf(S.bookId)?.name||S.bookId};},
