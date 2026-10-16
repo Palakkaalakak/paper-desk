@@ -21,16 +21,22 @@ class BpsxTests(unittest.IsolatedAsyncioTestCase):
         return e,under,details
 
     async def test_verified_puts_and_fresh_owned_quotes_not_cached_prices(self):
-        e,u,details=self.fixture();out=await e._bpsx_chain('META','20990116',100)
-        self.assertEqual([r['right'] for r in out['puts']],['P','P'])
-        self.assertEqual(out['calls'],[])
-        self.assertEqual(out['quotedCount'],2)
-        self.assertTrue(e._snapshot_quote.call_args.kwargs['require_greeks'])
-        self.assertNotIn('quote',e._bpsx_definitions[('META','20990116',0)][1]['puts'][0])
-        e._ib.reqContractDetailsAsync.reset_mock()
-        await e._bpsx_chain('META','20990116',100,(1,2))
-        e._ib.reqContractDetailsAsync.assert_not_awaited()
-        self.assertEqual(e._snapshot_quote.await_count,4)
+        from unittest.mock import patch
+        e,u,details=self.fixture()
+        def start(engine,definition,spot,mode):
+            out=dict(definition)
+            out['puts']=[dict(r,quote=dict(brokerConid=r['conid'],bid=.5,ask=.6,status='LIVE',at=int(time.time()*1000),greeks={'delta':-.1})) for r in definition['puts']]
+            return SimpleNamespace(snapshot=lambda:out,priority=[],closed=False)
+        with patch('bpsx_stream.start',side_effect=start) as starter:
+            out=await e._bpsx_chain('META','20990116',100)
+            self.assertEqual([r['right'] for r in out['puts']],['P','P'])
+            self.assertEqual(out['calls'],[])
+            self.assertNotIn('quote',e._bpsx_definitions[('META','20990116',0)][1]['puts'][0])
+            e._ib.reqContractDetailsAsync.reset_mock()
+            await e._bpsx_chain('META','20990116',100,(1,2))
+            e._ib.reqContractDetailsAsync.assert_not_awaited()
+            self.assertEqual(starter.call_count,2)
+        e._snapshot_quote.assert_not_awaited()
 
     async def test_invalid_puts_and_foreign_ids_fail_closed(self):
         e,u,details=self.fixture()

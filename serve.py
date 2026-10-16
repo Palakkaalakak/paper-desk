@@ -367,7 +367,15 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 if len(ids)>4 or any(x<=0 or x>=2**53 for x in ids):
                     raise ValueError('Invalid selected option IDs')
                 out = market.ENGINE.call(kind,ticker,one('expiry') or None,
-                    float(one('spot','0')),ids or None,timeout=180)
+                    float(one('spot','0')),ids or None,one('mode','live'),timeout=80)
+            elif kind in ('bpsx_quotes','bpsx_close'):
+                sid=one('stream','')
+                if not re.fullmatch(r'[A-Za-z0-9_-]{16,60}',sid):
+                    raise ValueError('Invalid chain stream ID')
+                out=market.ENGINE.call(kind,sid,timeout=10)
+            elif kind == 'bpsx_chart':
+                import vmi_data
+                out=market.ENGINE.call(kind,vmi_data.symbol(one('symbol','')),one('frame','d'),timeout=40)
             elif kind == 'vmi_stock':
                 import vmi_data
                 out = market.ENGINE.call('vmi_stock', vmi_data.symbol(one('symbol', '')), timeout=30)

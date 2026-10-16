@@ -185,6 +185,8 @@ class MarketEngine:
             self._status(problem='%s: %s' % (code,text))
 
     def _clear_active(self):
+        import bpsx_stream
+        bpsx_stream.close_all(self)
         for sym in list(getattr(self,'_depth_streams',{})): self._close_depth(sym)
         for task in list(self._loading.values()):
             task.cancel()
@@ -374,7 +376,7 @@ class MarketEngine:
             async def work():
                 try:
                     result = await getattr(self,'_'+name)(*args)
-                    ttl = 15 if name == 'vmi_observation' else 21600 if name == 'guns_float' and result.get('status')=='returned' else 30 if name == 'guns_float' else 3600 if name in ('guns_schedule','guns_capabilities') else .25 if name == 'guns_bars' else 0 if name == 'guns_scan' else 10 if name == 'guns_verify' else 30 if name == 'guns_news' else 300 if name in ('search','chain') or name == 'guns_article' and result.get('contentStatus') in ('body_returned','brief','pdf') else 1
+                    ttl = 0 if name in ('bpsx_chain','bpsx_quotes','bpsx_close') else 30 if name == 'bpsx_chart' else 15 if name == 'vmi_observation' else 21600 if name == 'guns_float' and result.get('status')=='returned' else 30 if name == 'guns_float' else 3600 if name in ('guns_schedule','guns_capabilities') else .25 if name == 'guns_bars' else 0 if name == 'guns_scan' else 10 if name == 'guns_verify' else 30 if name == 'guns_news' else 300 if name in ('search','chain') or name == 'guns_article' and result.get('contentStatus') in ('body_returned','brief','pdf') else 1
                     self._cache[key] = (time.monotonic()+ttl,result)
                     if len(self._cache)>1000:
                         self._cache.pop(next(iter(self._cache)))
@@ -423,9 +425,55 @@ class MarketEngine:
         from bpsx_data import stock
         return await stock(self, symbol)
 
-    async def _bpsx_chain(self, symbol, expiry=None, spot=None, ids=None):
+    async def _bpsx_chain(self, symbol, expiry=None, spot=None, ids=None, mode='live'):
         from bpsx_data import options
-        return await options(self, symbol, expiry, spot, ids)
+        return await options(self, symbol, expiry, spot, ids, mode)
+
+    async def _bpsx_quotes(self, sid):
+        import bpsx_stream
+        return bpsx_stream.read(self, sid)
+
+    async def _bpsx_close(self, sid):
+        import bpsx_stream
+        session=bpsx_stream.sessions(self).pop(sid,None)
+        if session: session.close()
+        return {'closed':True}
+
+    async def _bpsx_chart(self, symbol, frame='d'):
+        from bpsx_data import chart
+        return await chart(self, symbol, frame)
+
+    def _open_chain_stream(self, contract):
+        # Isolated ticker and request ID: never overwrite the browser's mktData
+        # ownership map, and never cancel another subscription for the same conId.
+        from ib_async import Ticker
+        ib, generation = self._ib, self.info.get('generation',0)
+        req_id = ib.client.getReqId()
+        ticker = Ticker(contract=contract, defaults=ib.wrapper.defaults)
+        handle = dict(ib=ib,generation=generation,id=req_id,ticker=ticker,errors=[])
+        def error(rid,code,text,*args):
+            if rid==req_id: handle['errors'].append(dict(code=code,message=str(text)))
+        handle['errorHandler']=error
+        ib.errorEvent += error
+        ib.wrapper.reqId2Ticker[req_id]=ticker
+        ib.wrapper._reqId2Contract[req_id]=contract
+        try:
+            ib.client.reqMktData(req_id,contract,'',False,False,[])
+        except BaseException:
+            self._close_chain_stream(handle)
+            raise
+        return handle
+
+    def _close_chain_stream(self, handle):
+        ib,rid,ticker=handle['ib'],handle['id'],handle['ticker']
+        ib.errorEvent -= handle['errorHandler']
+        if self._ib is ib and self.info.get('generation',0)==handle['generation']:
+            try: ib.client.cancelMktData(rid)
+            except Exception: pass
+        if ib.wrapper.reqId2Ticker.get(rid) is ticker:
+            ib.wrapper.reqId2Ticker.pop(rid,None)
+            ib.wrapper._reqId2Contract.pop(rid,None)
+        ib.wrapper.pendingTickers.discard(ticker)
 
     async def _vmi_chain(self, symbol, expiry=None):
         from vmi_options import chain

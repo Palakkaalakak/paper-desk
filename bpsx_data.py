@@ -64,48 +64,57 @@ async def stock(engine, ticker):
         retrievedAt=int(time.time()*1000))
 
 
-async def options(engine,ticker,expiry=None,spot=None,ids=None):
-    from ib_async import Contract
+async def options(engine,ticker,expiry=None,spot=None,ids=None,mode='live'):
+    import bpsx_stream
     ticker=symbol(ticker)
+    if mode not in ('live','frozen'):
+        raise ValueError('Invalid chain data mode')
     ib,generation=engine._ib,engine.info.get('generation',0)
-    if not hasattr(engine,'_bpsx_definitions'):
-        engine._bpsx_definitions={}
+    if not hasattr(engine,'_bpsx_definitions'):engine._bpsx_definitions={}
     key=(ticker,expiry,generation)
     cached=engine._bpsx_definitions.get(key)
-    if cached and time.monotonic()-cached[0]<300:
+    if cached and time.monotonic()-cached[0]<900:
         out=copy.deepcopy(cached[1])
     else:
         out=await chain(engine,ticker,expiry,right='P')
         unchanged(engine,ib,generation)
         engine._bpsx_definitions[key]=(time.monotonic(),copy.deepcopy(out))
-        if len(engine._bpsx_definitions)>50:
-            engine._bpsx_definitions.pop(next(iter(engine._bpsx_definitions)))
-    if not expiry:
-        return out
-    rows=out['puts']
-    if ids:
-        wanted=set(ids)
-        if len(wanted)>4 or not wanted.issubset({r['conid'] for r in rows}):
-            raise ValueError('Selected put is not in this verified chain')
-        chosen=[r for r in rows if r['conid'] in wanted]
-    else:
-        if not finite(spot) or spot<=0:
-            raise ValueError('Positive reference stock price required')
-        chosen=sorted((r for r in rows if r['strike']<spot),key=lambda r:abs(r['strike']-spot*.85))[:32]
-    if not hasattr(engine,'_bpsx_quote_slots'):
-        engine._bpsx_quote_slots=asyncio.Semaphore(4)
-    async def acquire(row):
-        async with engine._bpsx_quote_slots:
-            try:
-                q=await engine._snapshot_quote(Contract(conId=row['conid'],secType='OPT',exchange='SMART',currency='USD'),require_greeks=True)
-                unchanged(engine,ib,generation)
-                if q.get('brokerConid')!=row['conid']:
-                    raise ValueError('Put quote contract mismatch')
-                row['quote']=q
-            except Exception as exc:
-                row['quoteError']=str(exc)
-    await asyncio.gather(*(acquire(r) for r in chosen))
+        if len(engine._bpsx_definitions)>50:engine._bpsx_definitions.pop(next(iter(engine._bpsx_definitions)))
+    if not expiry:return out
+    if not finite(spot) or spot<=0:raise ValueError('Positive reference stock price required')
+    wanted=set(ids or ())
+    if len(wanted)>4 or not wanted.issubset({r['conid'] for r in out['puts']}):
+        raise ValueError('Selected put is not in this verified chain')
+    stream=bpsx_stream.start(engine,out,spot,mode)
+    if wanted:
+        requested=int(time.time()*1000)
+        stream.priority=list(wanted)+[c for c in stream.priority if c not in wanted]
+        # Selected-leg validation waits only for these legs, never the whole chain.
+        deadline=time.monotonic()+8
+        while time.monotonic()<deadline and not stream.closed:
+            result=stream.snapshot()
+            selected=[r for r in result['puts'] if r['conid'] in wanted]
+            if all(bpsx_stream.quote_ready(r.get('quote')) and r['quote'].get('at',0)>=requested-2000 for r in selected):break
+            if any(r.get('quoteState') in ('PERMISSION','IB_ERROR') for r in selected):break
+            await asyncio.sleep(.08)
+    return stream.snapshot()
+
+
+async def chart(engine,ticker,frame='d'):
+    frames={'1m':('2 D','1 min'), '5m':('1 W','5 mins'), '15m':('2 W','15 mins'),
+            '1h':('2 M','1 hour'), 'd':('2 Y','1 day'), 'w':('10 Y','1 week')}
+    if frame not in frames:raise ValueError('Unsupported chart timeframe')
+    ib,generation=engine._ib,engine.info.get('generation',0)
+    under=await engine._stock(symbol(ticker))
+    duration,interval=frames[frame]
+    rows=await asyncio.wait_for(ib.reqHistoricalDataAsync(under,endDateTime='',durationStr=duration,
+        barSizeSetting=interval,whatToShow='TRADES',useRTH=True,formatDate=2,keepUpToDate=False),30)
     unchanged(engine,ib,generation)
-    out['quotedCount']=len(chosen)
-    out['note']='Quotes cover up to 32 OTM strikes near the 15% buffer. All listed strikes are editable; refresh selected legs. No observed delta = no automatic recommendation.'
-    return out
+    bars=[]
+    for b in rows:
+        if not all(finite(getattr(b,k,None)) and getattr(b,k)>0 for k in ('open','high','low','close')):continue
+        value=b.date
+        label=value.isoformat() if hasattr(value,'isoformat') else str(value)
+        bars.append(dict(date=label,o=b.open,h=b.high,l=b.low,c=b.close,v=float(b.volume) if finite(b.volume) else None))
+    return dict(symbol=ticker,underConid=under.conId,frame=frame,bars=bars,served_by='tws',
+        source='IBKR historical TRADES · regular session · last candle may be forming',retrievedAt=int(time.time()*1000))

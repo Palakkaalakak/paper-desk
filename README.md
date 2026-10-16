@@ -1,6 +1,23 @@
 # Paper Desk — IB Gateway paper-trading workstation
 
-## BPSX workspace — 2026-10-16
+## BPSX v2 — full streaming chain and chart controls — 2026-10-16
+
+This section supersedes the original 32-strike snapshot implementation described below. After pulling `main`, restart `python serve.py` and reload; the committed HTML includes the rebuilt UI, with no local Node build required.
+
+- **Faster chain acquisition:** no sequential groups of four 11-second snapshots. Actual standard-class definitions are returned first, and every listed put for the selected expiry is covered by paced streaming requests. Quotes populate progressively (800ms UI polling). Likely 10-delta strikes are prioritized; there is no 32-strike cutoff or hidden ITM/OTM truncation. Contract definitions and option parameters are cached for 15 minutes per IB connection generation.
+- Chains fitting the subscription budget stay continuously subscribed. Larger chains rotate through paced batches with selected-leg priority, preserving the full strike table. `PAPER_BPSX_LINES` defaults to 32, capped at 48 per chain; remaining stock/browser subscriptions and the standard 100-line allowance limit concurrency. This is not permission to exceed the user's actual IB market-data allowance. Streams and the underlying subscription are released when idle for 25 seconds, explicitly closed, or disconnected.
+- Request IDs/tickers are isolated from normal browser subscriptions. Cancellation cannot overwrite or cancel a stock/option watchlist owner. The underlying is subscribed too, because IB requires both underlying and option market-data permissions for live Greeks. Valid bid/ask/last computation Greeks can supplement missing model Greeks; no local synthetic Greeks are substituted.
+- Every strike displays a real market or an actual lifecycle/feed state: receiving ticks, no bid/ask, missing Greek computation, or the specific IB error code/permission message. A zero bid is retained as zero; absent quotes are never fabricated as zero. Tiny deltas retain precision rather than becoming misleading `-0`. The old `Unverified` quote-cell placeholder is gone.
+- The default quote mode requests live/last-close data using IB type 2, with each returned quote's actual LIVE/FROZEN status displayed. Live-only mode is also available. Frozen data allows inspection and spread preview only; order validation still requires fresh LIVE quotes. OPRA and underlying subscriptions are still required. The app cannot manufacture an exchange quote when no market exists or bypass IB entitlements. No paid regulatory snapshots are requested.
+- **Charts:** 1-minute, 5-minute, 15-minute, hourly, daily and weekly views; candle-count selector, zoom, earlier/later navigation, latest-view reset and refresh. Bollinger Bands default to SMA20 ±2 population standard deviations; toggle them or select 1σ, 3σ or period 50. Moving averages/bands use the selected chart timeframe. Adam's scanner, entry checks and sizing reference remain daily and do not silently change with the chart.
+
+New read-only routes: `/data/bpsx_quotes?stream=<id>` (full live chain state), `/data/bpsx_close?stream=<id>` (release data subscriptions only), and `/data/bpsx_chart?symbol=AAPL&frame=1m|5m|15m|1h|d|w`. `/data/bpsx_chain` now accepts `mode=live|frozen` and returns a `streamId`; selected-leg refresh still accepts `ids`. Chart requests are cached for 30 seconds; stream reads are not cached. New module: `bpsx_stream.py`; account persistence and all broker-order prohibitions remain unchanged.
+
+IB documentation consulted: [snapshot timing / missing fields](https://interactivebrokers.github.io/tws-api/md_request.html), [live versus frozen market data and after-hours -1 bid/ask](https://interactivebrokers.github.io/tws-api/market_data_type.html), and [option computations / underlying permissions](https://interactivebrokers.github.io/tws-api/option_computations.html).
+
+Verification: actual `ib_async` tick-routing fixtures cover 41 strikes (beyond the old cutoff), immediate metadata return, owned cancellation, zero versus absent bids, IB permission errors and frozen-mode restoration. Browser fixtures exercise progressive arrival, all six chart timeframes, Bollinger settings/toggle, zoom/navigation and paper-order safeguards. These are offline checks, not a claim of live access to the user's IB Gateway.
+
+## Original BPSX workspace — 2026-10-16
 
 **BPSX is included in the committed `paper_local.html` served by `python serve.py`.** No Node build is required after `git pull origin main`. Restart the Python runner and reload `http://localhost:8765`; BPSX appears beside VMI. Existing account data and broker read-only safeguards are unchanged.
 

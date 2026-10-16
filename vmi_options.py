@@ -38,7 +38,18 @@ async def chain(engine, ticker, expiry=None, right='C'):
     ticker = symbol(ticker)
     ib, generation = engine._ib, engine.info.get('generation', 0)
     under = await engine._stock(ticker)
-    params = await asyncio.wait_for(ib.reqSecDefOptParamsAsync(under.symbol, '', 'STK', under.conId), 20)
+    if not hasattr(engine, '_vmi_option_params'):
+        engine._vmi_option_params = {}
+    key = (under.conId, generation)
+    cached = engine._vmi_option_params.get(key)
+    if cached and time.monotonic()-cached[0]<900:
+        params = cached[1]
+    else:
+        params = await asyncio.wait_for(ib.reqSecDefOptParamsAsync(under.symbol, '', 'STK', under.conId), 20)
+        unchanged(engine, ib, generation)
+        engine._vmi_option_params[key] = (time.monotonic(), params)
+        if len(engine._vmi_option_params)>100:
+            engine._vmi_option_params.pop(next(iter(engine._vmi_option_params)))
     params = [p for p in params if p.exchange == 'SMART' and p.tradingClass == under.symbol and str(p.multiplier) in ('100', '100.0')]
     expirations = sorted({e for p in params for e in p.expirations if re.fullmatch(r'\d{8}', e) and e >= dt.datetime.now(dt.timezone.utc).strftime('%Y%m%d')})
     out = dict(symbol=ticker, underConid=under.conId, expirations=expirations, calls=[], excluded=0, served_by='tws')

@@ -33,7 +33,18 @@ with sync_playwright() as p:
         ticker=q.get('symbol',['TEST'])[0]
         if kind=='bpsx_scan':return r.fulfill(json=dict(rows=[dict(symbol='TEST',marketCapScreen=True),dict(symbol='NEXT',marketCapScreen=True)],source='Fixture IB screen',note='Offline test'))
         if kind=='bpsx_stock':return r.fulfill(json=dict(symbol=ticker,underConid=100,bars=bars,ivHistory=iv,industry='Software',category='Technology',served_by='tws'))
-        if kind=='bpsx_chain':return r.fulfill(json=chain(ticker,'expiry' in q))
+        if kind=='bpsx_chain':
+            out=chain(ticker,'expiry' in q)
+            if 'expiry' in q:
+                out.update(streamId='fixture-stream-'+ticker,total=2,readyCount=2 if 'ids' in q else 0)
+                if 'ids' not in q:
+                    for row in out['puts']:row.pop('quote',None);row['quoteState']='QUEUED'
+            return r.fulfill(json=out)
+        if kind=='bpsx_quotes':
+            ticker=q['stream'][0].replace('fixture-stream-','')
+            return r.fulfill(json=dict(chain(ticker,True),streamId=q['stream'][0],total=2,readyCount=2,settledCount=2))
+        if kind=='bpsx_close':return r.fulfill(json={'closed':True})
+        if kind=='bpsx_chart':return r.fulfill(json=dict(symbol=ticker,underConid=100,frame=q['frame'][0],bars=bars,served_by='tws',source='IB fixture '+q['frame'][0]))
         if kind=='providers':return r.fulfill(json={'providers':{'tws':{'name':'IB Gateway','local':True,'quotes':True,'chain':True}}})
         if kind=='twsstatus':return r.fulfill(json=dict(connected=True,sealed=True,readonly=True,accounts=[]))
         if kind=='stream':return r.fulfill(content_type='text/event-stream',body=': fixture\n\n')
@@ -52,16 +63,33 @@ with sync_playwright() as p:
     page.locator('#bpsx-disqualify').click()
     page.wait_for_function("document.querySelector('#bpsx-root').textContent.includes('NEXT · daily chart')")
     page.locator('#bpsx-root [data-action="qualify"]').click()
-    page.wait_for_selector('#bpsx-short')
+    page.wait_for_function("document.querySelector('#bpsx-short')?.value==='2'")
     assert page.locator('#bpsx-short').input_value()=='2'
     assert page.locator('#bpsx-long').input_value()=='1'
     assert page.locator('#bpsx-root svg').count()==1
     page.locator('#bpsx-root [data-mode="selected"]').click()
     page.locator('#bpsx-search input').fill('DIRECT')
     page.locator('#bpsx-search button').click()
-    page.wait_for_selector('#bpsx-short')
+    page.wait_for_function("document.querySelector('#bpsx-short')?.value==='2'")
     assert page.locator('#bpsx-short').input_value()=='2'
     assert page.locator('#bpsx-root .bpsx-layout > div').bounding_box()['x']<page.locator('#bpsx-root .bpsx-layout > section').bounding_box()['x']
+    assert 'Unverified' not in page.locator('#bpsx-chain-live').inner_text()
+    assert page.locator('[data-chain-row]').count()==2
+    assert page.locator('[data-study="bollinger"]').count()==3
+    for frame in ('5m','15m','1h','w','1m','d'):
+        page.locator('#bpsx-chart-frame').select_option(frame)
+        if frame!='d':page.wait_for_function("document.querySelector('#bpsx-chart-status').textContent.includes('IB fixture '+"+json.dumps(frame)+")")
+        assert page.locator('#bpsx-chart-frame').input_value()==frame
+    page.locator('#bpsx-chart-bands').uncheck()
+    assert page.locator('[data-study="bollinger"]').count()==0
+    page.locator('#bpsx-chart-bands').check()
+    page.locator('#bpsx-chart-band-settings').select_option('50:2')
+    assert page.locator('[data-study="bollinger"]').count()==3
+    before=page.locator('#bpsx-chart-panel svg').inner_html()
+    page.locator('[data-action="chart-zoom-in"]').click()
+    assert page.locator('#bpsx-chart-panel svg').inner_html()!=before
+    page.locator('[data-action="chart-older"]').click()
+    page.locator('[data-action="chart-latest"]').click()
     page.locator('#bpsx-send').click()
     page.wait_for_function("document.querySelector('#bpsx-message').textContent.includes('earnings')")
     assert page.evaluate('window.__paper.S.orders.length')==0
