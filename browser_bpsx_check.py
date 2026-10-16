@@ -20,7 +20,7 @@ bars=[dict(date=(now-dt.timedelta(days=200-i)).date().isoformat(),o=60+i*.2,h=61
 iv=[dict(date=(now-dt.timedelta(days=260-i)).date().isoformat(),value=.2+i*.001) for i in range(260)]
 def chain(ticker,quoted):
     return dict(symbol=ticker,underConid=100,expirations=[expiry],expiry=expiry if quoted else None,served_by='tws',excluded=0,listedStrikes=[80,85,99],atmStrike=99,coverageDone=True,underlyingQuote=dict(brokerConid=100,last=99.8,status='LIVE',at=int(time.time()*1000)),puts=[dict(conid=i,strike=k,expiry=expiry,secType='OPT',right='P',root=ticker,underConid=100,currency='USD',mult=100,symbol=f'{ticker} {expiry} {k} P',exch='SMART',tradingClass=ticker,deliverableStatus='IB_STANDARD_CLASS_NOT_OCC_VERIFIED',quote=dict(brokerConid=i,bid=bid,ask=ask,status='LIVE',at=int(time.time()*1000),bidSize=100,askSize=100,greeks={'delta':delta if ticker!='NOPAIR' else -.5})) for i,k,bid,ask,delta in [(1,80,.2,.25,-.06),(2,85,.8,.85,-.1),(3,99,4.9,5.,-.5)]] if quoted else [])
-control={'puts_ready':False,'calls_ready':False,'expire':False,'polls':0,'chain_loads':0,'queries':[]}
+control={'wide':False,'puts_ready':False,'calls_ready':False,'expire':False,'polls':0,'chain_loads':0,'queries':[]}
 errors=[]
 with sync_playwright() as p:
     browser=p.chromium.launch(args=['--no-sandbox'])
@@ -56,6 +56,8 @@ with sync_playwright() as p:
                     return r.fulfill(json={'error':'IB Gateway: Chain stream expired; reload the chain'})
             out=dict(chain(ticker,True),streamId=q['stream'][0],total=3,readyCount=3,settledCount=3)
             out['calls']=[dict(row,conid=row['conid']+100,right='C') for row in out['puts']]
+            if ticker=='DIRECT' and control['wide']:
+                for row in out['puts'][:2]:row['quote'].update(bid=.1,ask=20)
             if ticker=='DIRECT' and not control['puts_ready']:
                 # A bid with no ask, even after a timeout, is NOT a completed put.
                 out['puts'][1]['quote'].pop('ask')
@@ -123,6 +125,55 @@ with sync_playwright() as p:
     assert page.locator('tr.bpsx-long[data-chain-row="1"] .bpsx-long-badge').inner_text()=='BUY'
     control['calls_ready']=True
     page.wait_for_function("!document.querySelector('#bpsx-chain-live').textContent.includes('Loading')")
+    # Sizing reacts to edits without replacing focused inputs or the chain DOM.
+    assert page.locator('[data-ticket="autoSize"]').is_checked()
+    assert page.locator('[data-ticket="qty"]').input_value()=='3'
+    page.locator('[data-ticket="credit"]').fill('1')
+    assert page.locator('[data-ticket="qty"]').input_value()=='2'
+    assert page.locator('[data-ticket="credit"]').evaluate('(e)=>e===document.activeElement')
+    page.locator('#bpsx-allocation').fill('10000')
+    assert page.locator('[data-ticket="qty"]').input_value()=='1'
+    page.locator('[data-ticket="qty"]').fill('2')
+    assert not page.locator('[data-ticket="autoSize"]').is_checked()
+    page.locator('[data-ticket="credit"]').fill('0.6')
+    page.wait_for_timeout(1000)
+    assert page.locator('[data-ticket="qty"]').input_value()=='2'
+    assert 'Manual quantity override' in page.locator('#bpsx-sizing').inner_text()
+    page.locator('[data-ticket="autoSize"]').check()
+    assert page.locator('[data-ticket="qty"]').input_value()=='1'
+    page.locator('#bpsx-allocation').fill('20000')
+    page.locator('[data-ticket="credit"]').fill('0.55')
+    assert page.locator('[data-ticket="qty"]').input_value()=='3'
+    # Account funds and existing pending BPSX exposure affect the real adapter.
+    page.evaluate('window.__paper.S.cash=900')
+    page.wait_for_function("document.querySelector('[data-ticket=qty]').value==='1'")
+    page.evaluate('window.__paper.S.cash=100000')
+    page.wait_for_function("document.querySelector('[data-ticket=qty]').value==='3'")
+    page.evaluate("window.__paper.S.orders.push({id:'size-fixture',status:'working',qty:40,bpsx:{credit:.5,width:5},legs:[{conid:777},{conid:778}]})")
+    page.wait_for_function("document.querySelector('[data-ticket=qty]').value==='0'")
+    page.evaluate("window.__paper.S.orders=window.__paper.S.orders.filter(o=>o.id!=='size-fixture')")
+    page.wait_for_function("document.querySelector('[data-ticket=qty]').value==='3'")
+    # A valid initial selection can worsen: keep its identity, never imply suitability.
+    page.evaluate("window.__qualityRow=document.querySelector('[data-chain-row=\"2\"]')")
+    control['wide']=True
+    page.wait_for_function("document.querySelector('.bpsx-selected-summary').textContent.includes('NOT currently eligible')")
+    assert '0.10 / 20.00' in page.locator('tr[data-chain-row="2"] .bpsx-put-price').inner_text()
+    assert 'LIVE' in page.locator('tr[data-chain-row="2"] .bpsx-put-price').inner_text()
+    assert 'WIDE' in page.locator('tr[data-chain-row="2"] .bpsx-quote-quality').last.inner_text()
+    assert 'width $19.90' in page.locator('tr[data-chain-row="2"] .bpsx-put-price').inner_text()
+    assert 'Natural credit/share: -19.9' in page.locator('.bpsx-selected-summary').inner_text()
+    assert page.locator('[data-ticket="qty"]').input_value()=='0'
+    assert page.locator('#bpsx-short').input_value()=='2'
+    assert page.locator('#bpsx-long').input_value()=='1'
+    assert page.evaluate("window.__qualityRow===document.querySelector('[data-chain-row=\"2\"]')")
+    assert 'exceeds $0.40' in page.locator('#bpsx-blockers').inner_text()
+    control['wide']=False
+    page.wait_for_function("!document.querySelector('.bpsx-selected-summary').textContent.includes('NOT currently eligible')")
+    assert page.locator('[data-ticket="qty"]').input_value()=='3'
+    page.locator('#bpsx-guide summary').click()
+    for text in ('not a hard cutoff','13.3%','Pepsi','BABA','19%','round DOWN','not promised income'):
+        assert text in page.locator('#bpsx-guide').inner_text(),text
+    page.locator('#bpsx-guide summary').click()
     # Window controls use the Trade-style bounded backend request, not all 199 strikes.
     with page.expect_response(lambda r:'/data/bpsx_chain?' in r.url and 'count=13' in r.url):
         page.locator('#bpsx-chain-count').select_option('13')
@@ -267,4 +318,4 @@ with sync_playwright() as p:
     assert len(page.evaluate('window.__paper.S.orders'))==2
     assert not errors,errors
     browser.close()
-print('BPSX browser passed: marked ATM-down ordering, auto/manual active leg buttons and deselection, construction guide, payoff dollars, stable quotes/renewal, real paper TP execution with one closing combo, duplicate safeguards, chart controls, light/dark themes and mobile')
+print('BPSX browser passed: reactive automatic/manual sizing with funds and pending exposure caps, raw wide LIVE quote warnings, nuanced buffer guide, marked ATM-down ordering, auto/manual active leg buttons and deselection, construction guide, payoff dollars, stable quotes/renewal, real paper TP execution with one closing combo, duplicate safeguards, chart controls, light/dark themes and mobile')

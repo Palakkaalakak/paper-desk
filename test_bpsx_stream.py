@@ -76,6 +76,27 @@ class ChainTests(unittest.IsolatedAsyncioTestCase):
             self.assertIsNone(rows[1001]['quote']['bid'])
             self.assertEqual(rows[1001]['quoteState'],'NO_MARKET')
 
+    async def test_extreme_wide_live_market_preserves_raw_prices_and_original_receipt(self):
+        stream=s.start(self.e,self.definition(1),100)
+        await asyncio.sleep(.15)
+        h=stream.handles[1000];w=self.ib.wrapper
+        w.tcpDataArrived()
+        w.priceSizeTick(h['id'],1,.1,10)
+        w.priceSizeTick(h['id'],2,20,10)
+        w.tcpDataProcessed()
+        stream.capture(1000,h)
+        q=stream.snapshot()['puts'][0]['quote']
+        self.assertEqual((q['bid'],q['ask']),(.1,20))
+        self.assertEqual(q['status'],'LIVE')
+        self.assertEqual(q['brokerConid'],1000)
+        self.assertEqual(q['source'],'IB Gateway')
+        original=q['at']
+        await asyncio.sleep(.03)
+        again=stream.snapshot()['puts'][0]['quote']
+        self.assertEqual(again['at'],original)
+        self.assertEqual(stream.snapshot()['puts'][0]['displayQuote']['ask'],20)
+        self.assertEqual(again['ask']-again['bid'],19.9)
+
     async def test_permission_error_has_actual_ib_code_and_no_fake_market(self):
         self.permission.add(1000)
         stream=s.start(self.e,self.definition(1),100)

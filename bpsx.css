@@ -22,6 +22,10 @@
 #bpsx-root .bpsx-chain .bpsx-put-actions button[aria-pressed=true]{color:var(--panel);background:var(--up);box-shadow:0 0 0 2px var(--up)}
 #bpsx-root .bpsx-chain .bpsx-put-actions button.lgs[aria-pressed=true]{background:var(--dn);box-shadow:0 0 0 2px var(--dn)}
 #bpsx-root .bpsx-selected-summary{min-height:28px;margin:8px 0}
+#bpsx-root .bpsx-selected-summary [role=status]{display:block;color:var(--dn);margin-top:7px}
+#bpsx-root .bpsx-quote-quality{font-size:10px;color:var(--dim);white-space:normal}
+#bpsx-root .bpsx-quote-quality[data-wide=true]{color:var(--dn);font-weight:800}
+#bpsx-root #bpsx-sizing{padding:8px 12px;border:1px solid var(--line);border-radius:6px;margin:10px 0}
 #bpsx-root .bpsx-share-price{padding:8px 0;border-bottom:1px solid var(--line);margin:0}
 #bpsx-root .bpsx-market-row td{background:var(--accent2);color:var(--accent);text-align:center;font-family:var(--sans);white-space:normal;border-top:2px dashed var(--accent);border-bottom:1px dashed var(--accent);padding:7px}
 #bpsx-root .bpsx-atm-badge{display:block;font-size:12px;font-weight:900;padding:4px 7px;background:var(--accent);color:var(--panel);border-radius:4px;margin-top:4px}

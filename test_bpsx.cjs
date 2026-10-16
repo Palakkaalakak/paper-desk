@@ -14,6 +14,39 @@ test('Bollinger bands use 20-period SMA and population standard deviation',()=>{
 test('tiny deltas never format as misleading minus zero',()=>{assert.equal(C.deltaText(-.00000000123),'-1.23e-9');assert.equal(C.deltaText(-0),'0');assert.equal(C.deltaText(-.095),'-0.095');});
 test('frozen quotes allow inspection recommendations but cannot validate an order',()=>{const s=structuredClone(short),l=structuredClone(long);s.quote.status='FROZEN';l.quote.status='FROZEN';assert.equal(C.recommend([l,s],100,now),null);assert.ok(C.recommend([l,s],100,now,true));assert.ok(C.validate(s,l,.55,1,100,100,now).some(x=>x.includes('LIVE')));});
 test('payoff dollar amounts scale quantity and translate 3x P&L loss to 4x buyback',()=>{const e=C.economics(short,long,.5,3);assert.equal(e.maxProfit,150);assert.equal(e.maxLoss,1350);assert.equal(e.takeProfitProfit,135);assert.equal(e.stopLossLoss,450);assert.equal(e.takeProfitCost,15);assert.equal(e.stopLossCost,600);assert.equal(e.lossAlertDebit,2);});
+test('LIVE identifies feed, not quote quality; raw 0.10 / 20.00 cannot recommend',()=>{
+ const s=put(21,1440,.1,20,-.096789),l=put(22,1430,.1,20,-.088585),before=JSON.stringify([s,l]);
+ assert.equal(C.quoteQuality(null,now).usable,false);assert.equal(C.fresh(undefined,now),false);
+ const rejected=structuredClone(short);rejected.quoteError='354: permission';assert.equal(C.quoteQuality(rejected,now).usable,false);
+ const quality=C.quoteQuality(s,now);assert.equal(quality.width,19.9);assert.equal(quality.usable,false);assert.match(quality.label,/WIDE/);assert.equal(C.fresh(s,now),true);
+ assert.equal(C.recommend([l,s],1659.7,now),null);assert.ok(C.validate(s,l,1,1,1659.7,100,now).includes('Option bid/ask spread exceeds $0.40'));assert.equal(s.quote.bid-l.quote.ask,-19.9);assert.equal(JSON.stringify([s,l]),before);
+ for(const mutate of [r=>r.quote.status='FROZEN',r=>r.quote.at=now-61000,r=>r.quote.ask=.1,r=>delete r.quote.bid,r=>r.quote.brokerConid=999]){const r=structuredClone(short);mutate(r);assert.equal(C.quoteQuality(r,now).usable,false);}
+ assert.ok(Math.abs((1-1440/1661)*100-13.305237808549)<1e-9);
+});
+const noUsage={trades:0,premium:0,risk:0,pendingRisk:0};
+function sized(changes={}){return C.size({allocation:20000,credit:.5,width:5,usage:noUsage,available:100000,...changes});}
+test('automatic sizing recomputes premium target and floors without forcing one spread',()=>{
+ assert.equal(sized().qty,4);assert.equal(sized({credit:1}).qty,2);assert.equal(sized({allocation:10000}).qty,2);assert.equal(sized({allocation:1000}).qty,0);assert.equal(sized({credit:0}).qty,0);assert.equal(sized({width:10}).qty,0);assert.equal(sized({credit:.55}).qty,3);
+ assert.equal(sized({allocation:20000,credit:2.01,width:20}).qty,0);
+});
+test('sizing respects ten trades, remaining premium/risk, pending risk, funds and fees',()=>{
+ assert.equal(sized({usage:{...noUsage,trades:10}}).qty,0);
+ assert.equal(sized({usage:{...noUsage,premium:1950}}).qty,1);
+ assert.equal(sized({usage:{...noUsage,risk:19550}}).qty,1);
+ assert.equal(sized({available:900,feePerSpread:2}).qty,1);
+ assert.equal(sized({accountQty:1}).qty,1);assert.equal(sized({accountQty:0}).maxQty,0);assert.equal(sized({accountQty:NaN}).qty,0);
+ assert.equal(sized({available:1000,usage:{...noUsage,pendingRisk:600}}).qty,0);
+ assert.equal(sized({available:NaN}).qty,0);assert.equal(sized({usage:{...noUsage,risk:NaN}}).qty,0);assert.equal(sized({usage:{...noUsage,error:'Reconcile'}}).qty,0);
+ assert.ok(sized().maxQty>4); // Manual sizes may exceed the premium target, never hard caps.
+});
+test('exposure uses actual filled credit, excludes closed trades and reserves working entries',()=>{
+ const entry={bpsx:{credit:.5,width:5},status:'working',qty:4,legs:[{conid:2},{conid:1}]};
+ assert.deepEqual(C.exposure({orders:[entry],positions:[]}),{trades:1,premium:200,risk:1800,pendingRisk:1800,error:''});
+ entry.status='filled';entry.avgFill=-.6;const positions=[{conid:2,qty:-2},{conid:1,qty:2}];
+ assert.deepEqual(C.exposure({orders:[entry],positions}),{trades:1,premium:120,risk:880.0000000000001,pendingRisk:0,error:''});
+ assert.equal(C.exposure({orders:[entry],positions:[]}).trades,0);
+ positions[0].qty=-1;assert.match(C.exposure({orders:[entry],positions}).error,/Reconcile/);
+});
 function exitFixture(){
  const entry={id:'entry',symbol:'TEST BPSX',status:'filled',filledQty:2,qty:2,avgFill:-.5,legs:[{...short,side:'SELL',ratio:1},{...long,side:'BUY',ratio:1}],bpsx:{credit:.9,exits:{version:1,enabled:true,status:'WAITING_ENTRY'}}};
  const state={orders:[entry],positions:[{...short,qty:-2},{...long,qty:2}],cash:10000},q={1:{...long.quote},2:{...short.quote}},f={state,q,entry,connected:true,session:{start:now-1000,end:now+3600000},noFill:false,fills:0};

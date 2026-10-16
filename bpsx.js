@@ -21,7 +21,30 @@ function screen(d,cfg={}){const m=metrics(d,cfg.ivWindow||252),reasons=[],pendin
  return {m,reasons,pending,status:reasons.length?'FAIL':pending.length?'UNVERIFIED':'PASS'};}
 function days(expiry,now=Date.now()){if(!/^\d{8}$/.test(expiry||''))return NaN;return Math.round((Date.parse(expiry.slice(0,4)+'-'+expiry.slice(4,6)+'-'+expiry.slice(6,8)+'T00:00:00Z')-Date.parse(new Date(now).toISOString().slice(0,10)+'T00:00:00Z'))/86400000);}
 function expiration(xs,now=Date.now()){return xs.filter(x=>days(x,now)>=20&&days(x,now)<=45).sort((a,b)=>Math.abs(days(a,now)-26)-Math.abs(days(b,now)-26))[0]||null;}
-function fresh(r,now=Date.now(),inspection=false){const q=r?.quote;return q?.brokerConid===r?.conid&&(q.status==='LIVE'||inspection&&q.status==='FROZEN')&&!q.halted&&!q.error&&finite(q.bid)&&q.bid>=0&&positive(q.ask)&&q.ask>=q.bid&&finite(q.at)&&now-q.at>=-1000&&now-q.at<60000;}
+function fresh(r,now=Date.now(),inspection=false){const q=r?.quote;return !!q&&!!r&&q.brokerConid===r.conid&&(q.status==='LIVE'||inspection&&q.status==='FROZEN')&&!q.halted&&!q.error&&finite(q.bid)&&q.bid>=0&&positive(q.ask)&&q.ask>=q.bid&&finite(q.at)&&now-q.at>=-1000&&now-q.at<60000;}
+// Feed type is independent of liquidity. Never rewrite raw bid/ask prices.
+function quoteQuality(r,now=Date.now(),inspection=false){const q=r?.quote,width=finite(q?.bid)&&finite(q?.ask)?q.ask-q.bid:null;let label=!q?'No current market':q.error||r.quoteError?'Quote error':!finite(q.bid)||!positive(q.ask)?'Missing market':width<0?'Crossed market':width>.40000001?'WIDE — fails $0.40 rule':!fresh(r,now,inspection)?'Not fresh LIVE market':'Width OK — not execution assurance';return {width,label,usable:!r?.quoteError&&fresh(r,now,inspection)&&finite(width)&&width<=.40000001};}
+// Course premium target with conservative floor rounding (app policy).
+function size({allocation,credit,width,usage,available,feePerSpread=0,accountQty=Number.MAX_SAFE_INTEGER}){
+ const target=allocation/100,perCredit=credit*100,perRisk=(width-credit)*100;
+ const fail=reason=>({qty:0,maxQty:0,target,perCredit,perRisk,reason});
+ if(!positive(allocation)||!positive(credit)||!positive(perRisk)||!usage||!finite(available)||!finite(feePerSpread)||feePerSpread<0||!Number.isSafeInteger(accountQty)||accountQty<0)return fail('Sizing inputs/account limits unavailable');
+ if(usage.error)return fail(usage.error);
+ if(![usage.trades,usage.premium,usage.risk,usage.pendingRisk].every(x=>finite(x)&&x>=0))return fail('Account exposure unverified');
+ if(usage.trades>=10)return fail('Ten open/pending BPSX trades already');
+ if(perRisk/perCredit>10.00000001)return fail('Maximum loss exceeds 10× credit');
+ const floor=x=>Math.max(0,Math.floor(x+1e-9)),targetQty=floor(target/perCredit),premiumQty=floor((allocation/10-usage.premium)/perCredit),riskQty=floor((allocation-usage.risk)/perRisk),fundsQty=floor((available-usage.pendingRisk)/(perRisk+feePerSpread)),maxQty=Math.min(premiumQty,riskQty,fundsQty,accountQty),qty=Math.min(targetQty,maxQty);
+ return {qty,maxQty,target,perCredit,perRisk,targetQty,premiumQty,riskQty,fundsQty,reason:!qty?(targetQty===0?'One spread exceeds the per-trade premium target; no forced minimum':'No capacity within premium / risk / available-funds limits'):qty<targetQty?'Reduced by remaining account / strategy capacity':'Rounded down to whole spreads at the course premium target'};
+}
+function exposure(state){
+ const positions=state?.positions||[],orders=state?.orders||[];let trades=0,premium=0,risk=0,pendingRisk=0,error='';
+ for(const o of orders){if(!o.bpsx||!['working','filled'].includes(o.status))continue;const legs=o.legs||[],held=legs.map(l=>Math.abs(positions.find(p=>p.conid===l.conid)?.qty||0));if(o.status==='filled'&&!held.some(Boolean))continue;
+  const n=o.status==='working'?o.qty:Math.max(...held),credit=o.status==='filled'&&finite(o.avgFill)&&o.avgFill<0?-o.avgFill:o.bpsx.credit,loss=(o.bpsx.width-credit)*100*n;
+  if(legs.length!==2||!Number.isSafeInteger(n)||n<=0||!positive(credit)||!positive(loss)||o.status==='filled'&&held[0]!==held[1]){error='Reconcile BPSX exposure before sizing';continue;}
+  trades++;premium+=credit*100*n;risk+=loss;if(o.status==='working')pendingRisk+=loss;
+ }
+ return {trades,premium,risk,pendingRisk,error};
+}
 function economics(s,l,credit,qty=1){const width=s?.strike-l?.strike;return {credit:credit*100*qty,maxProfit:credit*100*qty,maxLoss:(width-credit)*100*qty,ratio:(width-credit)/credit,breakeven:s?.strike-credit,width,takeProfitDebit:credit*.1,lossAlertDebit:credit*4,takeProfitProfit:credit*90*qty,stopLossLoss:credit*300*qty,takeProfitCost:credit*10*qty,stopLossCost:credit*400*qty};}
 function validate(s,l,credit,qty,spot,under,now=Date.now(),inspection=false){const out=[];if(!s||!l)return ['Select both put legs'];
  for(const r of [s,l]){if(r.secType!=='OPT'||r.right!=='P'||r.currency!=='USD'||r.mult!==100||r.underConid!==under||!Number.isSafeInteger(r.conid)||r.conid<=0||r.deliverableStatus!=='IB_STANDARD_CLASS_NOT_OCC_VERIFIED')out.push('Verified standard USD 100-share put contracts required');if(!fresh(r,now,inspection))out.push('Fresh LIVE two-sided IB quotes required');if(r.quote&&r.quote.ask-r.quote.bid>.40000001)out.push('Option bid/ask spread exceeds $0.40');}
@@ -62,4 +85,4 @@ function createExecution(a){
  }
  return {manage,guard};
 }
-return {sma,ema,metrics,screen,days,expiration,fresh,economics,validate,recommend,bollinger,deltaText,createExecution};});
+return {sma,ema,metrics,screen,days,expiration,fresh,quoteQuality,size,exposure,economics,validate,recommend,bollinger,deltaText,createExecution};});
