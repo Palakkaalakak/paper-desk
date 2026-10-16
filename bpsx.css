@@ -24,7 +24,14 @@
 #bpsx-root .bpsx-selected-summary{min-height:28px;margin:8px 0}
 #bpsx-root .bpsx-share-price{padding:8px 0;border-bottom:1px solid var(--line);margin:0}
 #bpsx-root .bpsx-market-row td{background:var(--accent2);color:var(--accent);text-align:center;font-family:var(--sans);white-space:normal;border-top:2px dashed var(--accent);border-bottom:1px dashed var(--accent);padding:7px}
-#bpsx-root .bpsx-atm-badge{display:block;font-size:9px;color:var(--accent)}
+#bpsx-root .bpsx-atm-badge{display:block;font-size:12px;font-weight:900;padding:4px 7px;background:var(--accent);color:var(--panel);border-radius:4px;margin-top:4px}
+#bpsx-root tr.atm>.k{border:3px solid var(--accent);font-size:15px}
+#bpsx-root .bpsx-guide{margin:8px 0;padding:9px;border:1px solid var(--accent);border-radius:6px}
+#bpsx-root .bpsx-guide summary{cursor:pointer;color:var(--accent);font-weight:700}
+#bpsx-root .bpsx-guide li{margin:8px 0}
+#bpsx-root .bpsx-risk-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin:0}
+#bpsx-root .bpsx-risk-grid dt{font-size:11px;color:var(--dim)}
+#bpsx-root .bpsx-risk-grid dd{margin:4px 0;font:700 18px var(--mono)}
 #bpsx-root .bpsx-chain-progress{padding:18px;border:1px solid var(--accent);border-radius:6px;background:var(--accent2)}
 #bpsx-message,#bpsx-blockers{white-space:pre-line}
 #bpsx-root .bpsx-payoff{border-left:3px solid var(--accent);padding:10px 14px;background:var(--accent2);margin:12px 0}

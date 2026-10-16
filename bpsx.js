@@ -22,7 +22,7 @@ function screen(d,cfg={}){const m=metrics(d,cfg.ivWindow||252),reasons=[],pendin
 function days(expiry,now=Date.now()){if(!/^\d{8}$/.test(expiry||''))return NaN;return Math.round((Date.parse(expiry.slice(0,4)+'-'+expiry.slice(4,6)+'-'+expiry.slice(6,8)+'T00:00:00Z')-Date.parse(new Date(now).toISOString().slice(0,10)+'T00:00:00Z'))/86400000);}
 function expiration(xs,now=Date.now()){return xs.filter(x=>days(x,now)>=20&&days(x,now)<=45).sort((a,b)=>Math.abs(days(a,now)-26)-Math.abs(days(b,now)-26))[0]||null;}
 function fresh(r,now=Date.now(),inspection=false){const q=r?.quote;return q?.brokerConid===r?.conid&&(q.status==='LIVE'||inspection&&q.status==='FROZEN')&&!q.halted&&!q.error&&finite(q.bid)&&q.bid>=0&&positive(q.ask)&&q.ask>=q.bid&&finite(q.at)&&now-q.at>=-1000&&now-q.at<60000;}
-function economics(s,l,credit,qty=1){const width=s?.strike-l?.strike;return {credit:credit*100*qty,maxLoss:(width-credit)*100*qty,ratio:(width-credit)/credit,breakeven:s?.strike-credit,width,takeProfitDebit:credit*.1,lossAlertDebit:credit*4};}
+function economics(s,l,credit,qty=1){const width=s?.strike-l?.strike;return {credit:credit*100*qty,maxProfit:credit*100*qty,maxLoss:(width-credit)*100*qty,ratio:(width-credit)/credit,breakeven:s?.strike-credit,width,takeProfitDebit:credit*.1,lossAlertDebit:credit*4,takeProfitProfit:credit*90*qty,stopLossLoss:credit*300*qty,takeProfitCost:credit*10*qty,stopLossCost:credit*400*qty};}
 function validate(s,l,credit,qty,spot,under,now=Date.now(),inspection=false){const out=[];if(!s||!l)return ['Select both put legs'];
  for(const r of [s,l]){if(r.secType!=='OPT'||r.right!=='P'||r.currency!=='USD'||r.mult!==100||r.underConid!==under||!Number.isSafeInteger(r.conid)||r.conid<=0||r.deliverableStatus!=='IB_STANDARD_CLASS_NOT_OCC_VERIFIED')out.push('Verified standard USD 100-share put contracts required');if(!fresh(r,now,inspection))out.push('Fresh LIVE two-sided IB quotes required');if(r.quote&&r.quote.ask-r.quote.bid>.40000001)out.push('Option bid/ask spread exceeds $0.40');}
  if(s.conid===l.conid||s.root!==l.root||s.expiry!==l.expiry||!positive(l.strike)||s.strike<=l.strike||!positive(spot)||s.strike>=spot)out.push('Sell higher OTM put / buy lower put, same underlying and expiry');
@@ -33,4 +33,33 @@ function validate(s,l,credit,qty,spot,under,now=Date.now(),inspection=false){con
 function recommend(rows,spot,now=Date.now(),inspection=false){rows=rows.slice().sort((a,b)=>a.strike-b.strike);const results=[];for(let i=0;i<rows.length;i++){const s=rows[i];for(const step of [1,2]){const l=rows[i-step];if(!l)continue;const credit=Math.round(((s.quote?.bid||0)-(l.quote?.ask||0))*10000)/10000;if(validate(s,l,credit,1,spot,s.underConid,now,inspection).length)continue;results.push({short:s,long:l,credit,step,buffer:1-s.strike/spot,score:Math.abs(s.quote.greeks.delta+.1)+(1-s.strike/spot<.15?.1:0)});}}return results.sort((a,b)=>a.score-b.score||a.step-b.step)[0]||null;}
 function bollinger(xs,n=20,k=2){if(!Number.isInteger(n)||n<2||n>200||!positive(k)||k>5)throw Error('Bollinger settings: period 2–200; deviations >0 to 5');const middle=sma(xs,n),upper=[],lower=[];for(let i=0;i<xs.length;i++){if(i<n-1){upper.push(null);lower.push(null);continue;}const sd=Math.sqrt(xs.slice(i-n+1,i+1).reduce((v,x)=>v+(x-middle[i])**2,0)/n);upper.push(middle[i]+k*sd);lower.push(middle[i]-k*sd);}return {middle,upper,lower};}
 function deltaText(x){if(!finite(x))return '—';return x===0?'0':Number(x.toPrecision(5)).toString();}
-return {sma,ema,metrics,screen,days,expiration,fresh,economics,validate,recommend,bollinger,deltaText};});
+// Browser-local paper bracket. No network or broker order API exists here.
+function createExecution(a){
+ const position=cid=>a.state().positions.find(p=>p.conid===cid),note=(e,text)=>{if(e.status===text)return false;e.status=text;return true;};
+ function owned(entry){const legs=entry.legs||[],s=legs.find(l=>l.side==='SELL'),l=legs.find(l=>l.side==='BUY');if(legs.length!==2||!s||!l||s.right!=='P'||l.right!=='P'||s.ratio!==1||l.ratio!==1||s.expiry!==l.expiry||s.underConid!==l.underConid||s.strike<=l.strike)return null;const sp=position(s.conid),lp=position(l.conid),sq=-(sp?.qty||0),lq=lp?.qty||0;if(sq===0&&lq===0)return {closed:true};if(!Number.isSafeInteger(sq)||sq<=0||sq!==lq||sq>entry.filledQty)return null;return {s,l,qty:sq};}
+ function live(pair,now){return a.connected()&&[pair.s,pair.l].every(r=>{const q=a.quotes()[r.conid];return a.ready(r.conid)&&q?.brokerConid===r.conid&&q.status==='LIVE'&&!q.error&&!q.halted&&finite(q.at)&&now-q.at>=0&&now-q.at<15000&&finite(q.bid)&&q.bid>=0&&positive(q.ask)&&q.ask>=q.bid;});}
+ function guard(o){if(!o.bpsxExit)return true;if(a.writable&&!a.writable())return false;const S=a.state(),entry=S.orders.find(e=>e.id===o.bpsxExit.entryId),pair=entry&&owned(entry),now=a.now();if(!entry?.bpsx?.exits?.enabled||!pair||pair.closed||o.qty-o.filledQty!==pair.qty||!a.session(now)||!live(pair,now))return false;if(S.orders.some(other=>other!==o&&other.status==='working'&&(other.legs||[other]).some(l=>[pair.s.conid,pair.l.conid].includes(l.conid))))return false;const expected=[pair.s,pair.l];return o.legs?.length===2&&o.legs.every((l,i)=>l.conid===expected[i].conid&&l.side===(i===0?'BUY':'SELL')&&l.ratio===1);}
+ function manage(){if(a.writable&&!a.writable())return false;const S=a.state(),now=a.now();let changed=false;
+  for(const entry of S.orders.slice()){
+   const e=entry.bpsx?.exits;if(!e?.enabled||entry.status!=='filled'||!positive(-entry.avgFill)||!Number.isSafeInteger(entry.filledQty))continue;
+   const pair=owned(entry);if(!pair){changed=note(e,'RECONCILE_LEGS')||changed;continue;}if(pair.closed){changed=note(e,'CLOSED')||changed;continue;}
+   const existing=e.exitOrderId&&S.orders.find(o=>o.id===e.exitOrderId);
+   if(e.exitOrderId){if(!existing){changed=note(e,'RECONCILE_EXIT')||changed;continue;}if(existing.status==='working'&&guard(existing)){a.fill(existing);changed=true;}changed=note(e,existing.status==='filled'?'CLOSED':existing.status==='working'?'EXIT_WORKING':existing.status==='cancelled'?'EXIT_CANCELLED_MANUALLY':'EXIT_REJECTED')||changed;continue;}
+   if(S.orders.some(o=>o.status==='working'&&(o.legs||[o]).some(l=>[pair.s.conid,pair.l.conid].includes(l.conid)))){changed=note(e,'OTHER_ORDER_REQUIRES_REVIEW')||changed;continue;}
+   const session=a.session(now);if(!session){changed=note(e,'WAITING_REGULAR_SESSION')||changed;continue;}if(!live(pair,now)){changed=note(e,'WAITING_FRESH_LIVE_QUOTES')||changed;continue;}
+   const credit=-entry.avgFill,qs=a.quotes()[pair.s.conid],ql=a.quotes()[pair.l.conid],debit=qs.ask-ql.bid;
+   if(!finite(debit)||debit<0){changed=note(e,'INVALID_SPREAD_MARKET')||changed;continue;}
+   e.entryCredit=credit;e.tpDebit=credit*.1;e.slDebit=credit*4;e.lastDebit=debit;
+   const today=new Intl.DateTimeFormat('en-CA',{timeZone:'America/New_York',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date(now)).replaceAll('-','');
+   const reason=debit>=e.slDebit-1e-9?'SL':debit<=e.tpDebit+1e-9?'TP':pair.s.expiry===today&&now>=session.end-5*60000?'EXPIRY':null;
+   if(!reason){changed=note(e,'ARMED')||changed;continue;}
+   const legs=[{...pair.s,side:'BUY',ratio:1},{...pair.l,side:'SELL',ratio:1}],id=a.uid();
+   const exit={id,ts:now,day:a.today(),symbol:entry.symbol+' '+reason+' close',strategy:'BPSX '+reason,conid:pair.s.conid,secType:'OPT',mult:100,exch:'SMART',side:'BUY',qty:pair.qty,type:'COMBO',limit:reason==='TP'?e.tpDebit:null,stop:null,tif:'GTC',status:'working',filledQty:0,avgFill:0,commission:0,triggered:true,legs,bpsxExit:{entryId:entry.id,reason,triggerDebit:debit,triggerAt:now,entryCredit:credit}};
+   // Persist the latch before the fill: repeated ticks/reloads cannot create duplicates.
+   e.exitOrderId=id;e.reason=reason;e.triggerAt=now;e.status='EXIT_WORKING';S.orders.unshift(exit);a.fill(exit);e.status=exit.status==='filled'?'CLOSED':'EXIT_WORKING';changed=true;
+  }
+  if(changed)a.save();return changed;
+ }
+ return {manage,guard};
+}
+return {sma,ema,metrics,screen,days,expiration,fresh,economics,validate,recommend,bollinger,deltaText,createExecution};});

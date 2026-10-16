@@ -28,7 +28,7 @@ class BpsxTests(unittest.IsolatedAsyncioTestCase):
             out=dict(definition)
             out['puts']=[dict(r,quote=dict(brokerConid=r['conid'],bid=.5,ask=.6,status='LIVE',at=int(time.time()*1000),greeks={'delta':-.1})) for r in definition['puts']]
             return SimpleNamespace(snapshot=lambda:out,priority=[],closed=False)
-        with patch('bpsx_stream.start',side_effect=start) as starter:
+        with patch('bpsx_stream.start',side_effect=start) as starter, patch('bpsx_data.reference_quote',new=AsyncMock(return_value=(100,{'last':100,'status':'LIVE'}))):
             out=await e._bpsx_chain('META','20990116',100)
             self.assertEqual([r['right'] for r in out['puts']],['P','P'])
             self.assertEqual([r['right'] for r in out['calls']],['C','C'])
@@ -61,11 +61,16 @@ class BpsxTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(positions,list(range(positions[0],positions[0]+25)))
         self.assertEqual({r['strike'] for r in out['calls']},{r['strike'] for r in out['puts']})
         self.assertEqual(len(definitions['puts']),199)
-        for count,center in [(199,90),(25,float('nan')),(13,49)]:
-            with self.assertRaises(ValueError):b.strike_window(definitions,160,count,center)
+        self.assertEqual(out['atmStrike'],159.5)
+        self.assertTrue(all(r['strike']<=160 for r in out['puts']))
+        self.assertEqual(out['puts'][-1]['strike'],159.5)
+        self.assertTrue(out['remainingPuts'])
+        for count in (0,199,True):
+            with self.assertRaises(ValueError):b.strike_window(definitions,160,count)
+        with self.assertRaises(ValueError):b.strike_window(definitions,float('nan'))
         shifted=b.strike_window(definitions,160,25,90,(1,2))
         self.assertEqual([r['conid'] for r in shifted['puts'][:2]],[1,2])
-        with self.assertRaises(ValueError):b.strike_window(definitions,160,25,90,(1,100))
+        with self.assertRaises(ValueError):b.strike_window(definitions,160,25,90,(1,199))
 
     async def test_market_cap_uses_millions_and_average_volume_not_intraday_volume(self):
         from ib_async import ScannerSubscription

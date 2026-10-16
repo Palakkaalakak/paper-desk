@@ -19,7 +19,7 @@ earnings=(now+dt.timedelta(days=70)).date().isoformat()
 bars=[dict(date=(now-dt.timedelta(days=200-i)).date().isoformat(),o=60+i*.2,h=61+i*.2,l=59+i*.2,c=60.2+i*.2,v=2000000) for i in range(200)]
 iv=[dict(date=(now-dt.timedelta(days=260-i)).date().isoformat(),value=.2+i*.001) for i in range(260)]
 def chain(ticker,quoted):
-    return dict(symbol=ticker,underConid=100,expirations=[expiry],expiry=expiry if quoted else None,served_by='tws',excluded=0,listedStrikes=[80,85,100],underlyingQuote=dict(brokerConid=100,last=99.8,status='LIVE',at=int(time.time()*1000)),puts=[dict(conid=i,strike=k,expiry=expiry,secType='OPT',right='P',root=ticker,underConid=100,currency='USD',mult=100,symbol=f'{ticker} {expiry} {k} P',exch='SMART',tradingClass=ticker,deliverableStatus='IB_STANDARD_CLASS_NOT_OCC_VERIFIED',quote=dict(brokerConid=i,bid=bid,ask=ask,status='LIVE',at=int(time.time()*1000),bidSize=100,askSize=100,greeks={'delta':delta if ticker!='NOPAIR' else -.5})) for i,k,bid,ask,delta in [(1,80,.2,.25,-.06),(2,85,.8,.85,-.1),(3,100,4.9,5.,-.5)]] if quoted else [])
+    return dict(symbol=ticker,underConid=100,expirations=[expiry],expiry=expiry if quoted else None,served_by='tws',excluded=0,listedStrikes=[80,85,99],atmStrike=99,coverageDone=True,underlyingQuote=dict(brokerConid=100,last=99.8,status='LIVE',at=int(time.time()*1000)),puts=[dict(conid=i,strike=k,expiry=expiry,secType='OPT',right='P',root=ticker,underConid=100,currency='USD',mult=100,symbol=f'{ticker} {expiry} {k} P',exch='SMART',tradingClass=ticker,deliverableStatus='IB_STANDARD_CLASS_NOT_OCC_VERIFIED',quote=dict(brokerConid=i,bid=bid,ask=ask,status='LIVE',at=int(time.time()*1000),bidSize=100,askSize=100,greeks={'delta':delta if ticker!='NOPAIR' else -.5})) for i,k,bid,ask,delta in [(1,80,.2,.25,-.06),(2,85,.8,.85,-.1),(3,99,4.9,5.,-.5)]] if quoted else [])
 control={'puts_ready':False,'calls_ready':False,'expire':False,'polls':0,'chain_loads':0,'queries':[]}
 errors=[]
 with sync_playwright() as p:
@@ -32,6 +32,7 @@ with sync_playwright() as p:
         if u.path=='/':return r.fulfill(content_type='text/html',body=html)
         if u.path.startswith('/assets/') and (ROOT/kind).exists():return r.fulfill(content_type='text/css' if kind.endswith('.css') else 'text/javascript',body=(ROOT/kind).read_text())
         ticker=q.get('symbol',['TEST'])[0]
+        if kind=='guns_schedule':return r.fulfill(json=dict(sessions=[dict(start=int(time.time()*1000)-3600000,end=int(time.time()*1000)+3600000)],source='IB fixture session',at=int(time.time()*1000)))
         if kind=='bpsx_scan':return r.fulfill(json=dict(rows=[dict(symbol='TEST',marketCapScreen=True),dict(symbol='NEXT',marketCapScreen=True)],source='Fixture IB screen',note='Offline test'))
         if kind=='bpsx_stock':return r.fulfill(json=dict(symbol=ticker,underConid=100,bars=bars,ivHistory=iv,industry='Software',category='Technology',served_by='tws'))
         if kind=='bpsx_chain':
@@ -106,9 +107,17 @@ with sync_playwright() as p:
     assert page.locator('#bpsx-chain-live thead th').all_text_contents()==['Call bid / ask','','Strike','Put bid / ask','+ BUY / − SELL']
     assert '$99.8' in page.locator('.bpsx-share-price').inner_text()
     assert 'LIVE' in page.locator('.bpsx-share-price').inner_text()
-    assert page.locator('tr.atm[data-chain-row="3"] .bpsx-atm-badge').inner_text()=='ATM'
+    assert 'ATM' in page.locator('tr.atm[data-chain-row="3"] .bpsx-atm-badge').inner_text()
+    assert page.locator('[data-chain-row]').first.get_attribute('data-chain-row')=='3'
+    assert 'SELL 85 PUT' in page.locator('.bpsx-selected-summary').inner_text()
+    assert 'BUY 80 PUT' in page.locator('.bpsx-selected-summary').inner_text()
+    assert page.locator('[data-bpsx-leg="short"][data-conid="2"]').get_attribute('aria-pressed')=='true'
+    assert page.locator('[data-bpsx-leg="long"][data-conid="1"]').get_attribute('aria-pressed')=='true'
+    page.locator('#bpsx-guide summary').click()
+    assert '4×credit closing debit' in page.locator('#bpsx-guide').inner_text()
+    page.locator('#bpsx-guide summary').click()
     assert '$99.8' in page.locator('.bpsx-market-row').inner_text()
-    assert 'Loading…' in page.locator('#bpsx-chain-live tbody tr').first.locator('td').first.inner_text()
+    assert 'Loading…' in page.locator('#bpsx-chain-live tr[data-chain-row]').first.locator('td').first.inner_text()
     assert 'Loading' not in page.locator('.bpsx-put-price').all_inner_texts()
     assert page.locator('tr.bpsx-short[data-chain-row="2"] .bpsx-short-badge').inner_text()=='SELL'
     assert page.locator('tr.bpsx-long[data-chain-row="1"] .bpsx-long-badge').inner_text()=='BUY'
@@ -119,15 +128,10 @@ with sync_playwright() as p:
         page.locator('#bpsx-chain-count').select_option('13')
     page.wait_for_function("document.querySelector('#bpsx-short')?.value==='2'")
     assert control['queries'][-1]['count']==['13']
-    page.locator('#bpsx-chain-center').fill('85')
-    with page.expect_response(lambda r:'/data/bpsx_chain?' in r.url and 'center=85' in r.url):
-        page.locator('#bpsx-chain-center').press('Tab')
-    page.wait_for_function("document.querySelector('#bpsx-short')?.value==='2'")
-    assert control['queries'][-1]['center']==['85']
     with page.expect_response(lambda r:'/data/bpsx_chain?' in r.url and 'center=100' in r.url):
         page.locator('[data-action="chain-atm"]').click()
     page.wait_for_function("document.querySelector('#bpsx-short')?.value==='2'")
-    assert page.locator('#bpsx-chain-center').input_value()=='100'
+    assert control['queries'][-1]['center']==['100']
     # Direct Trade-style row controls replace either leg and keep the other leg.
     page.locator('[data-bpsx-leg="short"][data-conid="3"]').click()
     assert page.locator('#bpsx-short').input_value()=='3'
@@ -148,6 +152,15 @@ with sync_playwright() as p:
         long_color=page.locator('tr.bpsx-long .k').evaluate('(e)=>getComputedStyle(e).backgroundColor')
         assert short_color=='rgb(237, 135, 80)',short_color
         assert long_color=='rgb(71, 184, 224)',long_color
+    # Active auto/manual leg buttons toggle OFF, and polling must not undo it.
+    page.locator('[data-bpsx-leg="short"][data-conid="2"]').click()
+    assert page.locator('#bpsx-short').input_value()==''
+    page.wait_for_timeout(1000)
+    assert page.locator('#bpsx-short').input_value()==''
+    page.locator('[data-bpsx-leg="short"][data-conid="2"]').click()
+    page.locator('[data-bpsx-leg="long"][data-conid="1"]').click()
+    assert page.locator('#bpsx-long').input_value()==''
+    page.locator('[data-bpsx-leg="long"][data-conid="1"]').click()
     # Multiple incomplete polls cannot hide the chain or destroy last complete prices.
     page.evaluate("window.__bpsxRow=document.querySelector('[data-chain-row=\"2\"]');window.__bpsxButton=document.querySelector('[data-bpsx-leg=\"short\"][data-conid=\"2\"]')")
     control['puts_ready']=False
@@ -201,7 +214,12 @@ with sync_playwright() as p:
     for key in ('cap','support','sector','weekly','deliverable'):
         page.locator('[data-ticket="'+key+'"]').check()
     page.locator('[data-ticket="earnings"]').fill(earnings)
+    page.locator('[data-ticket="bufferReason"]').fill('Fixture: stable support and low historical volatility')
     page.locator('[data-ticket="qty"]').fill('1')
+    assert page.locator('[data-payoff="max-profit"]').inner_text()=='$55.00', (page.locator('.bpsx-payoff').inner_text(),page.locator('[data-ticket="credit"]').input_value(),page.locator('[data-ticket="qty"]').input_value(),errors)
+    assert page.locator('[data-payoff="max-loss"]').inner_text()=='$445.00'
+    assert page.locator('[data-payoff="tp-profit"]').inner_text()=='$49.50'
+    assert page.locator('[data-payoff="sl-loss"]').inner_text()=='$165.00'
     page.locator('[data-ticket="qty"]').press('Tab')
     page.locator('#bpsx-send').click()
     page.wait_for_function("document.querySelector('#bpsx-message').textContent.includes('Paper spread submitted')")
@@ -212,6 +230,25 @@ with sync_playwright() as p:
     page.locator('#bpsx-send').click()
     page.wait_for_function("document.querySelector('#bpsx-message').textContent.includes('Existing option exposure')")
     assert page.evaluate('window.__paper.S.orders.length')==1
+    assert orders[0]['bpsx']['exits']['enabled'] is True
+    # Feed the real app, not a mock fill function: entry then one automatic TP combo.
+    page.evaluate("""() => {const now=Date.now();window.__paper.applyFeed({connected:true,feedHealthy:true,generation:0,quotes:{
+      1:{brokerConid:1,bid:.2,ask:.25,status:'LIVE',at:now,bidSize:100,askSize:100},
+      2:{brokerConid:2,bid:.8,ask:.85,status:'LIVE',at:now,bidSize:100,askSize:100}}});}""")
+    page.wait_for_function("window.__paper.S.orders.find(o=>o.bpsx)?.status==='filled'")
+    page.wait_for_function("window.__paper.S.orders.find(o=>o.bpsx)?.bpsx.exits.status==='ARMED'")
+    cash_before=page.evaluate('window.__paper.S.cash')
+    page.evaluate("""() => {const now=Date.now();window.__paper.applyFeed({connected:true,feedHealthy:true,generation:0,quotes:{
+      1:{brokerConid:1,bid:.22,ask:.24,status:'LIVE',at:now,bidSize:100,askSize:100},
+      2:{brokerConid:2,bid:.26,ask:.27,status:'LIVE',at:now,bidSize:100,askSize:100}}});}""")
+    page.wait_for_function("window.__paper.S.orders.some(o=>o.bpsxExit?.reason==='TP'&&o.status==='filled')")
+    exits=page.evaluate('window.__paper.S.orders.filter(o=>o.bpsxExit)')
+    assert len(exits)==1
+    assert abs(exits[0]['avgFill']-.05)<1e-9
+    assert page.evaluate('window.__paper.S.positions.every(p=>p.qty===0)')
+    assert page.evaluate('window.__paper.S.cash')<cash_before  # buyback debit + actual fees
+    page.wait_for_timeout(1200)
+    assert page.evaluate('window.__paper.S.orders.filter(o=>o.bpsxExit).length')==1
     page.set_viewport_size({'width':390,'height':844})
     assert page.evaluate('document.querySelector("#bpsx-root").scrollWidth')<=page.evaluate('document.querySelector("#bpsx-root").clientWidth')+2
     # No eligible observed deltas: say so, never fabricate an automatic pair.
@@ -227,7 +264,7 @@ with sync_playwright() as p:
     page.wait_for_timeout(1100)
     assert page.locator('tr.bpsx-short[data-chain-row="2"]').count()==1
     assert 'Observed short put delta' in page.locator('#bpsx-blockers').inner_text()
-    assert len(page.evaluate('window.__paper.S.orders'))==1
+    assert len(page.evaluate('window.__paper.S.orders'))==2
     assert not errors,errors
     browser.close()
-print('BPSX browser passed: initial put gate, stable markets across partial ticks/renewal, focused auto-selection, direct +/- leg controls, computed light/dark highlights, current share/ATM markers, Trade-style compact table, window controls, chart controls, paper safeguards and mobile')
+print('BPSX browser passed: marked ATM-down ordering, auto/manual active leg buttons and deselection, construction guide, payoff dollars, stable quotes/renewal, real paper TP execution with one closing combo, duplicate safeguards, chart controls, light/dark themes and mobile')

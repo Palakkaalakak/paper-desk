@@ -33,11 +33,14 @@ class ChainStream:
             raise ValueError('Chain data mode must be live or frozen')
         self.engine=engine;self.ib=engine._ib;self.generation=engine.info.get('generation',0)
         self.id=secrets.token_urlsafe(18);self.mode=mode
-        self.out=copy.deepcopy(definitions);self.rows={r['conid']:r for r in self.out['puts']+self.out.get('calls',[])}
+        self.out=copy.deepcopy(definitions)
+        self.remaining_puts=self.out.pop('remainingPuts',[]);self.remaining_calls=self.out.pop('remainingCalls',[])
+        self.out['coverageDone']=not self.out.get('atmAnchored');self.out['coverageReason']=''
+        self.rows={r['conid']:r for r in self.out['puts']+self.out.get('calls',[])}
         self.last_read=time.monotonic();self.handles={};self.priority=[];self.task=None;self.closed=False
         self.under_handle=None;self.error=None;self.cycle=0
         # Trade-style bounded window: finish puts before spending lines on calls.
-        self.order=sorted(self.rows,key=lambda cid:(self.rows[cid]['right']!='P',abs(self.rows[cid]['strike']-spot*.90)))
+        self.order=sorted(self.rows,key=lambda cid:(self.rows[cid]['right']!='P',-self.rows[cid]['strike']))
         self.limit=max(2,min(48,int(os.environ.get('PAPER_BPSX_LINES','32'))))
         self.capacity=min(engine.capacity,max(1,int(os.environ.get('PAPER_TWS_LINES','100'))))
         for r in self.rows.values():r['quoteState']='QUEUED'
@@ -116,6 +119,33 @@ class ChainStream:
         elif q.get('bid') is not None and q.get('ask') is not None:r['quoteState']='WAIT_GREEKS'
         else:r['quoteState']='LOADING'
 
+    def extend_delta_range(self):
+        """Walk down only until observed <=9 delta plus two protective strikes."""
+        if self.out['coverageDone']:return []
+        puts=self.out['puts']
+        if any(not r.get('bidAskResolved') or r.get('quoteError') for r in puts):return []
+        low=puts[0];delta=(low.get('quote') or {}).get('greeks',{}).get('delta')
+        band=[i for i,r in enumerate(puts) if finite((r.get('quote') or {}).get('greeks',{}).get('delta')) and -.15<=(r['quote']['greeks']['delta'])<=-.09]
+        if finite(delta) and -.09<=delta<=0 and (not band or min(band)>=2):
+            self.out.update(coverageDone=True,coverageReason='ATM through observed 9–15 delta region plus protective strikes')
+            return []
+        if not finite(delta):
+            self.out.update(coverageDone=True,coverageReason='IB Greeks missing at lower boundary; delta coverage unverified. No synthetic delta used.')
+            return []
+        if not self.remaining_puts:
+            self.out.update(coverageDone=True,coverageReason='All listed puts below ATM checked; no further listed strikes')
+            return []
+        extra=self.remaining_puts[-13:];self.remaining_puts=self.remaining_puts[:-len(extra)]
+        strikes={r['strike'] for r in extra}
+        calls=[r for r in self.remaining_calls if r['strike'] in strikes]
+        self.remaining_calls=[r for r in self.remaining_calls if r['strike'] not in strikes]
+        self.out['puts']=extra+puts;self.out.setdefault('calls',[]).extend(calls)
+        self.out['calls'].sort(key=lambda r:r['strike'])
+        for r in extra+calls:r['quoteState']='QUEUED';self.rows[r['conid']]=r
+        self.order=sorted(self.rows,key=lambda cid:(self.rows[cid]['right']!='P',-self.rows[cid]['strike']))
+        self.out['coverageReason']='Extending downward using observed deltas…'
+        return [r['conid'] for r in reversed(extra)]+[r['conid'] for r in calls]
+
     async def run(self):
         from ib_async import Option
         try:
@@ -151,7 +181,7 @@ class ChainStream:
                     self.handles[cid]=self.open(Option(row['root'],row['expiry'],row['strike'],row['right'],'SMART',conId=cid,multiplier='100',currency='USD',tradingClass=row['tradingClass']))
                     await asyncio.sleep(.035)  # Request/cancel combined stays below default 50 msg/s.
                 deadline=time.monotonic()+BATCH_SECONDS
-                persistent=len(batch)==len(self.rows)
+                persistent=len(batch)==len(self.rows) and self.out['coverageDone']
                 while (persistent or time.monotonic()<deadline) and not self.closed:
                     unchanged(self.engine,self.ib,self.generation)
                     for cid,h in self.handles.items():self.capture(cid,h)
@@ -171,6 +201,8 @@ class ChainStream:
                         self.rows[cid]['quoteState']='GREEKS_MISSING' if q.get('bid') is not None and q.get('ask') is not None else 'NO_QUOTE'
                     self.cancel(h);self.handles.pop(cid,None)
                     await asyncio.sleep(.025)
+                extra=self.extend_delta_range()
+                if extra:remaining=[c for c in extra if self.rows[c]['right']=='P']+remaining+[c for c in extra if self.rows[c]['right']=='C']
                 if self.cycle==0 and not remaining:self.cycle=1
         except asyncio.CancelledError:raise
         except Exception as exc:self.error=str(exc)

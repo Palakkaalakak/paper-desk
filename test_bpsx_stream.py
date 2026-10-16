@@ -158,6 +158,39 @@ class ChainTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(row['displayQuote']['at'],old_at)
         self.assertEqual(row['quoteState'],'PERMISSION')
 
+    async def test_atm_down_extends_by_observed_delta_without_requesting_itm_puts(self):
+        from bpsx_data import strike_window
+        definition=strike_window(self.definition(80),100,25)
+        def respond(rid,c,*args):
+            self.respond(rid,c,*args)
+            if c.secType=='OPT':
+                w=self.ib.wrapper;w.tcpDataArrived()
+                w.tickOptionComputation(rid,13,0,.3,-max(.005,(c.strike-65)/100),.55,0,.01,.02,-.03,100)
+                w.tcpDataProcessed()
+        self.ib.client.reqMktData.side_effect=respond
+        with patch.object(s,'BATCH_SECONDS',.1):
+            stream=s.start(self.e,definition,100)
+            deadline=time.monotonic()+6
+            while not stream.snapshot()['coverageDone'] and time.monotonic()<deadline:await asyncio.sleep(.05)
+            out=stream.snapshot()
+            self.assertTrue(out['coverageDone'])
+            self.assertEqual(out['atmStrike'],100)
+            self.assertGreater(len(out['puts']),25)
+            self.assertTrue(all(r['strike']<=100 for r in out['puts']))
+            self.assertLess(out['puts'][0]['quote']['greeks']['delta']*-1,.09)
+            self.assertNotIn('remainingPuts',out)
+            requested=[x.args[1].strike for x in self.ib.client.reqMktData.call_args_list if x.args[1].secType=='OPT']
+            self.assertLessEqual(max(requested),100)
+            self.assertEqual(requested[0],100)
+
+    async def test_atm_reference_uses_owned_share_data_and_cleans_up(self):
+        from bpsx_data import reference_quote
+        price,q=await reference_quote(self.e,'TEST','live')
+        self.assertEqual(price,.55)
+        self.assertEqual(q['brokerConid'],999)
+        self.assertFalse(self.ib.wrapper.reqId2Ticker)
+        self.ib.client.cancelMktData.assert_called_once()
+
     async def test_close_releases_owned_ids_and_underlying(self):
         stream=s.start(self.e,self.definition(3),100)
         await asyncio.sleep(.15)
