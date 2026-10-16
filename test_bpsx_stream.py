@@ -19,7 +19,7 @@ class ChainTests(unittest.IsolatedAsyncioTestCase):
         self.ib.client.getReqId=Mock(side_effect=lambda:next(counter))
         self.ib.client.reqMktData=Mock(side_effect=self.respond)
         self.ib.client.cancelMktData=Mock();self.ib.client.reqMarketDataType=Mock()
-        self.skip=set();self.no_bid=set();self.permission=set();self.zero=set()
+        self.skip=set();self.no_bid=set();self.permission=set();self.zero=set();self.no_greeks=set();self.bid_only=set()
 
     def respond(self,rid,c,generic,snapshot,regulatory,options):
         self.assertFalse(snapshot);self.assertFalse(regulatory)
@@ -30,8 +30,8 @@ class ChainTests(unittest.IsolatedAsyncioTestCase):
             return
         w.tcpDataArrived()
         w.priceSizeTick(rid,1,-1 if c.conId in self.no_bid else 0 if c.conId in self.zero else .5,10)
-        w.priceSizeTick(rid,2,.6,10)
-        if c.secType=='OPT':w.tickOptionComputation(rid,13,0,.3,-.1,.55,0,.01,.02,-.03,100)
+        if c.conId not in self.bid_only:w.priceSizeTick(rid,2,.6,10)
+        if c.secType=='OPT' and c.conId not in self.no_greeks:w.tickOptionComputation(rid,13,0,.3,-.1 if c.right=='P' else .9,.55,0,.01,.02,-.03,100)
         w.tcpDataProcessed()
 
     def definition(self,n=3):
@@ -84,6 +84,56 @@ class ChainTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(row['quoteState'],'PERMISSION')
         self.assertIn('354',row['quoteError'])
         self.assertNotIn('quote',row)
+
+    async def test_put_gate_requires_both_sides_but_not_greeks_and_calls_can_follow(self):
+        definition=self.definition(2)
+        definition['calls']=[dict(r,conid=r['conid']+100,right='C') for r in definition['puts']]
+        self.skip.update([1100,1101]);self.no_greeks.add(1000);self.bid_only.add(1001)
+        stream=s.start(self.e,definition,100)
+        await asyncio.sleep(.25)
+        out=stream.snapshot()
+        self.assertFalse(out['putsComplete'])
+        self.assertEqual(out['putResolvedCount'],1)
+        self.assertTrue(out['puts'][0]['bidAskResolved'])
+        self.assertFalse(out['puts'][1]['bidAskResolved'])
+        # Missing ask arrives separately; table gate must not wait for either Greek or call.
+        h=stream.handles[1001];w=self.ib.wrapper
+        w.tcpDataArrived();w.priceSizeTick(h['id'],2,.6,10);w.tcpDataProcessed()
+        out=stream.snapshot()
+        self.assertTrue(out['putsComplete'])
+        self.assertEqual(out['callsResolvedCount'],0)
+
+    async def test_timeout_and_permission_are_not_successful_put_acquisition(self):
+        self.skip.add(1000);self.permission.add(1001)
+        with patch.object(s,'BATCH_SECONDS',.05):
+            stream=s.start(self.e,self.definition(2),100)
+            await asyncio.sleep(.25)
+            out=stream.snapshot()
+            self.assertFalse(out['putsComplete'])
+            self.assertEqual(out['putResolvedCount'],0)
+            self.assertEqual(out['puts'][0]['quoteState'],'NO_QUOTE')
+
+    async def test_old_25_second_pause_no_longer_expires_and_window_sessions_are_distinct(self):
+        stream=s.start(self.e,self.definition(2),100)
+        await asyncio.sleep(.12)
+        stream.last_read=time.monotonic()-30
+        self.assertIn(stream.id,s.sessions(self.e))
+        self.assertEqual(s.read(self.e,stream.id)['streamId'],stream.id)
+        other=s.start(self.e,self.definition(3),100)
+        self.assertNotEqual(stream.id,other.id)
+        stream.last_read=time.monotonic()-s.IDLE_SECONDS-1
+        with self.assertRaisesRegex(ValueError,'expired'):s.read(self.e,stream.id)
+
+    async def test_calls_use_call_contracts_and_positive_delta(self):
+        definition=self.definition(1)
+        definition['calls']=[dict(definition['puts'][0],conid=1100,right='C')]
+        stream=s.start(self.e,definition,100)
+        await asyncio.sleep(.2)
+        call=stream.snapshot()['calls'][0]
+        self.assertEqual(call['quoteState'],'READY')
+        self.assertEqual(call['quote']['greeks']['delta'],.9)
+        requested=[c.args[1] for c in self.ib.client.reqMktData.call_args_list if c.args[1].secType=='OPT']
+        self.assertEqual([c.right for c in requested],['P','C'])
 
     async def test_close_releases_owned_ids_and_underlying(self):
         stream=s.start(self.e,self.definition(3),100)

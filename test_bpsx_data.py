@@ -14,7 +14,8 @@ class BpsxTests(unittest.IsolatedAsyncioTestCase):
         e=MarketEngine();under=Stock('META','SMART','USD',conId=100)
         details=[ContractDetails(contract=Option('META','20990116',strike,'P','SMART',conId=i,multiplier='100',currency='USD',tradingClass='META',localSymbol=f'META  990116P{strike*1000:08d}'),underConId=100,underSecType='STK') for i,strike in [(1,80),(2,85)]]
         e._stock=AsyncMock(return_value=under)
-        e._ib=SimpleNamespace(reqContractDetailsAsync=AsyncMock(return_value=details),reqSecDefOptParamsAsync=AsyncMock(return_value=[SimpleNamespace(exchange='SMART',tradingClass='META',multiplier='100',expirations={'20990116'})]))
+        calls=[ContractDetails(contract=Option('META','20990116',strike,'C','SMART',conId=i+100,multiplier='100',currency='USD',tradingClass='META',localSymbol=f'META  990116C{strike*1000:08d}'),underConId=100,underSecType='STK') for i,strike in [(1,80),(2,85)]]
+        e._ib=SimpleNamespace(reqContractDetailsAsync=AsyncMock(side_effect=lambda c:details if c.right=='P' else calls),reqSecDefOptParamsAsync=AsyncMock(return_value=[SimpleNamespace(exchange='SMART',tradingClass='META',multiplier='100',expirations={'20990116'})]))
         async def snapshot(c,require_greeks=False):
             return dict(brokerConid=c.conId,bid=.5,ask=.6,status='LIVE',at=int(time.time()*1000),greeks={'delta':-.1})
         e._snapshot_quote=AsyncMock(side_effect=snapshot)
@@ -30,7 +31,7 @@ class BpsxTests(unittest.IsolatedAsyncioTestCase):
         with patch('bpsx_stream.start',side_effect=start) as starter:
             out=await e._bpsx_chain('META','20990116',100)
             self.assertEqual([r['right'] for r in out['puts']],['P','P'])
-            self.assertEqual(out['calls'],[])
+            self.assertEqual([r['right'] for r in out['calls']],['C','C'])
             self.assertNotIn('quote',e._bpsx_definitions[('META','20990116',0)][1]['puts'][0])
             e._ib.reqContractDetailsAsync.reset_mock()
             await e._bpsx_chain('META','20990116',100,(1,2))
@@ -46,6 +47,24 @@ class BpsxTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(ValueError):v.contract(details[0],u,'P')
         details[0].contract.multiplier='100';details[0].contract.right='C'
         with self.assertRaises(ValueError):v.contract(details[0],u,'P')
+
+    def test_window_contains_only_existing_contiguous_strikes_and_preserves_adjacency(self):
+        strikes=[50+i+(0.5 if i>80 else 0) for i in range(199)]
+        definitions=dict(puts=[dict(conid=i+1,strike=k) for i,k in enumerate(strikes)],
+            calls=[dict(conid=i+1000,strike=k) for i,k in enumerate(strikes)])
+        out=b.strike_window(definitions,160,25,90)
+        self.assertEqual(len(out['puts']),25)
+        self.assertEqual(len(out['calls']),25)
+        self.assertEqual(out['listedPutCount'],199)
+        positions=[strikes.index(r['strike']) for r in out['puts']]
+        self.assertEqual(positions,list(range(positions[0],positions[0]+25)))
+        self.assertEqual({r['strike'] for r in out['calls']},{r['strike'] for r in out['puts']})
+        self.assertEqual(len(definitions['puts']),199)
+        for count,center in [(199,90),(25,float('nan')),(13,49)]:
+            with self.assertRaises(ValueError):b.strike_window(definitions,160,count,center)
+        shifted=b.strike_window(definitions,160,25,90,(1,2))
+        self.assertEqual([r['conid'] for r in shifted['puts'][:2]],[1,2])
+        with self.assertRaises(ValueError):b.strike_window(definitions,160,25,90,(1,100))
 
     async def test_market_cap_uses_millions_and_average_volume_not_intraday_volume(self):
         from ib_async import ScannerSubscription

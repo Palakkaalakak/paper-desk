@@ -11,7 +11,7 @@ import secrets
 import time
 from vmi_options import unchanged
 
-IDLE_SECONDS = 25
+IDLE_SECONDS = 180
 BATCH_SECONDS = 5
 ERRORS = {100,101,200,354,420,10089,10090,10167,10168,10197}
 
@@ -20,10 +20,11 @@ def finite(x):
     return isinstance(x,(int,float)) and not isinstance(x,bool) and math.isfinite(x) and abs(x)<1e100
 
 
-def quote_ready(q):
+def quote_ready(q, right='P'):
+    low,high=(-1,0) if right=='P' else (0,1)
     return (q and finite(q.get('bid')) and finite(q.get('ask')) and q['bid']>=0 and
             q['ask']>0 and q['ask']>=q['bid'] and finite(q.get('greeks',{}).get('delta')) and
-            -1<=q['greeks']['delta']<=0)
+            low<=q['greeks']['delta']<=high)
 
 
 class ChainStream:
@@ -32,11 +33,11 @@ class ChainStream:
             raise ValueError('Chain data mode must be live or frozen')
         self.engine=engine;self.ib=engine._ib;self.generation=engine.info.get('generation',0)
         self.id=secrets.token_urlsafe(18);self.mode=mode
-        self.out=copy.deepcopy(definitions);self.rows={r['conid']:r for r in self.out['puts']}
+        self.out=copy.deepcopy(definitions);self.rows={r['conid']:r for r in self.out['puts']+self.out.get('calls',[])}
         self.last_read=time.monotonic();self.handles={};self.priority=[];self.task=None;self.closed=False
         self.under_handle=None;self.error=None;self.cycle=0
-        # Quote likely 10-delta strikes first, then cover EVERY listed ITM/OTM strike.
-        self.order=sorted(self.rows,key=lambda cid:abs(self.rows[cid]['strike']-spot*.93))
+        # Trade-style bounded window: finish puts before spending lines on calls.
+        self.order=sorted(self.rows,key=lambda cid:(self.rows[cid]['right']!='P',abs(self.rows[cid]['strike']-spot*.90)))
         self.limit=max(2,min(48,int(os.environ.get('PAPER_BPSX_LINES','32'))))
         self.capacity=min(engine.capacity,max(1,int(os.environ.get('PAPER_TWS_LINES','100'))))
         for r in self.rows.values():r['quoteState']='QUEUED'
@@ -90,17 +91,21 @@ class ChainStream:
         if not getattr(t,'time',None):return
         q['greeks']=q.get('greeks',{})
         # Model first; real bid/ask option computations are valid alternatives.
-        if not finite(q['greeks'].get('delta')) or not -1<=q['greeks']['delta']<=0:
+        low,high=(-1,0) if r['right']=='P' else (0,1)
+        if not finite(q['greeks'].get('delta')) or not low<=q['greeks']['delta']<=high:
             for name in ('bidGreeks','askGreeks','lastGreeks'):
                 g=getattr(t,name,None)
-                if g and finite(getattr(g,'delta',None)) and -1<=g.delta<=0:
+                if g and finite(getattr(g,'delta',None)) and low<=g.delta<=high:
                     q['greeks']={k:getattr(g,n,None) for k,n in [('delta','delta'),('iv','impliedVol'),('gamma','gamma'),('theta','theta'),('vega','vega')]}
                     q['greeksSource']=name;break
         r['quote']=q
         raw_bid=getattr(t,'bid',None);raw_ask=getattr(t,'ask',None)
         r['bidAbsent']=finite(raw_bid) and raw_bid<0
         r['askAbsent']=finite(raw_ask) and raw_ask<0
-        if quote_ready(q):r['quoteState']='READY'
+        # Each side must actually have arrived. IB -1 is confirmed absence, not 0.
+        # A timeout/permission error is NOT successful bid/ask acquisition.
+        r['bidAskResolved']=finite(raw_bid) and finite(raw_ask)
+        if quote_ready(q,r['right']):r['quoteState']='READY'
         elif r['bidAbsent'] or r['askAbsent']:r['quoteState']='NO_MARKET'
         elif q.get('bid') is not None and q.get('ask') is not None:r['quoteState']='WAIT_GREEKS'
         else:r['quoteState']='LOADING'
@@ -131,18 +136,20 @@ class ChainStream:
                     if cid in remaining:remaining.remove(cid)
                     if cid in self.priority:self.priority.remove(cid)
                     if len(batch)>=budget:break
+                    # Do not start calls in the same batch as still-unresolved puts.
+                    if any(not r.get('bidAskResolved') for r in self.out['puts']) and all(self.rows[c]['right']=='P' for c in batch) and not any(self.rows[c]['right']=='P' for c in remaining):break
                 for cid in batch:
                     row=self.rows[cid]
                     row.pop('quoteError',None)
                     if not row.get('quote'):row['quoteState']='LOADING'
-                    self.handles[cid]=self.open(Option(row['root'],row['expiry'],row['strike'],'P','SMART',conId=cid,multiplier='100',currency='USD',tradingClass=row['tradingClass']))
+                    self.handles[cid]=self.open(Option(row['root'],row['expiry'],row['strike'],row['right'],'SMART',conId=cid,multiplier='100',currency='USD',tradingClass=row['tradingClass']))
                     await asyncio.sleep(.035)  # Request/cancel combined stays below default 50 msg/s.
                 deadline=time.monotonic()+BATCH_SECONDS
-                persistent=len(self.rows)<=budget
+                persistent=len(batch)==len(self.rows)
                 while (persistent or time.monotonic()<deadline) and not self.closed:
                     unchanged(self.engine,self.ib,self.generation)
                     for cid,h in self.handles.items():self.capture(cid,h)
-                    settled=all(self.rows[c].get('quoteState') in ('READY','PERMISSION','IB_ERROR') for c in batch)
+                    settled=all(self.rows[c].get('quoteState') in ('READY','PERMISSION','IB_ERROR') or self.rows[c].get('bidAskResolved') and self.rows[c].get('quoteState')=='NO_MARKET' for c in batch)
                     if settled and not persistent:break
                     if persistent and time.monotonic()>deadline:
                         for cid in batch:
@@ -175,12 +182,15 @@ class ChainStream:
         underlying_errors=(self.under_handle or {}).get('errors',[])
         underlying_issue=next((e for e in underlying_errors if e['code'] in ERRORS),None)
         issue=self.error or ('Underlying IB '+str(underlying_issue['code'])+': '+underlying_issue['message'] if underlying_issue else None)
-        states=[r.get('quoteState') for r in self.rows.values()]
+        states=[r.get('quoteState') for r in self.out['puts']]
+        resolved=sum(bool(r.get('bidAskResolved')) and not r.get('quoteError') for r in self.out['puts'])
         out.update(streamId=self.id,streaming=not self.closed,cycle=self.cycle,
             total=len(states),readyCount=states.count('READY'),
+            putResolvedCount=resolved,putsComplete=bool(states) and resolved==len(states),
+            callsResolvedCount=sum(bool(r.get('bidAskResolved')) for r in self.out.get('calls',[])),
             settledCount=sum(s not in ('QUEUED','LOADING','WAIT_GREEKS') for s in states),
             streamError=issue,dataMode=self.mode,served_by='tws',retrievedAt=int(time.time()*1000),
-            note='Every listed put is requested using paced streaming batches. LIVE/FROZEN status is explicit; frozen/delayed quotes cannot submit orders. No exchange bid/ask is not a numeric zero. No paid regulatory snapshots.')
+            note='Contiguous verified strikes in the selected window; puts first, calls second. LIVE/FROZEN status is explicit; frozen/delayed quotes cannot submit orders. No exchange bid/ask is not a numeric zero. No paid regulatory snapshots.')
         return out
 
     def close(self):
@@ -199,7 +209,7 @@ def sessions(engine):
 def start(engine,definitions,spot,mode='live'):
     all_sessions=sessions(engine)
     for s in all_sessions.values():
-        if s.out['symbol']==definitions['symbol'] and s.out['expiry']==definitions['expiry'] and s.mode==mode:
+        if s.out['symbol']==definitions['symbol'] and s.out['expiry']==definitions['expiry'] and s.mode==mode and set(s.rows)=={r['conid'] for r in definitions['puts']+definitions.get('calls',[])}:
             return s
     if len(all_sessions)>=3:raise ValueError('Close an existing BPSX chain before opening another')
     s=ChainStream(engine,definitions,spot,mode)

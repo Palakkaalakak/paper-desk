@@ -60,6 +60,23 @@ class ServerSecurityTests(unittest.TestCase):
     def authed(self, **extra):
         return {'Cookie': 'pd_token=test-access-token', **extra}
 
+    def test_bpsx_errors_are_ib_labeled_and_window_parameters_reach_owner(self):
+        status,_,html=self.request('GET','/',self.authed())
+        self.assertEqual(status,200)
+        for marker in (b'BPSX v3',b'bpsx-chain-progress',b'putsComplete',b'bpsx-short-badge'):
+            self.assertIn(marker,html)
+        with patch.object(serve.market.ENGINE,'call',side_effect=ValueError('Chain stream expired; reload the chain')):
+            status,_,body=self.request('GET','/data/bpsx_quotes?provider=alpaca&stream=abcdefghijklmnop',self.authed())
+            self.assertEqual(status,200)
+            error=json.loads(body)['error']
+            self.assertIn('expired',error)
+            self.assertNotIn('Alpaca',error)
+            self.assertIn(providers.PROVIDERS['tws']['name'],error)
+        with patch.object(serve.market.ENGINE,'call',return_value={'puts':[]}) as call:
+            self.request('GET','/data/bpsx_chain?symbol=META&expiry=20990116&spot=100&count=13&center=85&mode=frozen',self.authed())
+            call.assert_called_once_with('bpsx_chain','META','20990116',100.,None,'frozen',13,85.,timeout=80)
+        self.urlopen.assert_not_called()
+
     def test_research_supplement_auth_origin_body_and_no_broker_proxy(self):
         path='/data/vmi_sp500_supplement?work=research-test'
         headers=self.authed(**{'Content-Type':'application/json','X-Paper-Desk-Research':'1'})

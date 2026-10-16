@@ -20,6 +20,7 @@ bars=[dict(date=(now-dt.timedelta(days=200-i)).date().isoformat(),o=60+i*.2,h=61
 iv=[dict(date=(now-dt.timedelta(days=260-i)).date().isoformat(),value=.2+i*.001) for i in range(260)]
 def chain(ticker,quoted):
     return dict(symbol=ticker,underConid=100,expirations=[expiry],expiry=expiry if quoted else None,served_by='tws',excluded=0,puts=[dict(conid=i,strike=k,expiry=expiry,secType='OPT',right='P',root=ticker,underConid=100,currency='USD',mult=100,symbol=f'{ticker} {expiry} {k} P',exch='SMART',tradingClass=ticker,deliverableStatus='IB_STANDARD_CLASS_NOT_OCC_VERIFIED',quote=dict(brokerConid=i,bid=bid,ask=ask,status='LIVE',at=int(time.time()*1000),bidSize=100,askSize=100,greeks={'delta':delta})) for i,k,bid,ask,delta in [(1,80,.2,.25,-.06),(2,85,.8,.85,-.1)]] if quoted else [])
+control={'puts_ready':False,'calls_ready':False,'expire':False,'polls':0,'chain_loads':0,'queries':[]}
 errors=[]
 with sync_playwright() as p:
     browser=p.chromium.launch(args=['--no-sandbox'])
@@ -36,13 +37,31 @@ with sync_playwright() as p:
         if kind=='bpsx_chain':
             out=chain(ticker,'expiry' in q)
             if 'expiry' in q:
+                if ticker=='DIRECT':
+                    control['chain_loads']+=1
+                    control['queries'].append(q)
+                out['calls']=[dict(row,conid=row['conid']+100,right='C',quoteState='QUEUED') for row in out['puts']]
+                for row in out['calls']:row.pop('quote',None)
                 out.update(streamId='fixture-stream-'+ticker,total=2,readyCount=2 if 'ids' in q else 0)
                 if 'ids' not in q:
                     for row in out['puts']:row.pop('quote',None);row['quoteState']='QUEUED'
             return r.fulfill(json=out)
         if kind=='bpsx_quotes':
             ticker=q['stream'][0].replace('fixture-stream-','')
-            return r.fulfill(json=dict(chain(ticker,True),streamId=q['stream'][0],total=2,readyCount=2,settledCount=2))
+            if ticker=='DIRECT':
+                control['polls']+=1
+                if control['expire']:
+                    control['expire']=False
+                    return r.fulfill(json={'error':'IB Gateway: Chain stream expired; reload the chain'})
+            out=dict(chain(ticker,True),streamId=q['stream'][0],total=2,readyCount=2,settledCount=2)
+            out['calls']=[dict(row,conid=row['conid']+100,right='C') for row in out['puts']]
+            if ticker=='DIRECT' and not control['puts_ready']:
+                # A bid with no ask, even after a timeout, is NOT a completed put.
+                out['puts'][1]['quote'].pop('ask')
+                out['puts'][1]['quoteState']='NO_QUOTE'
+            if ticker=='DIRECT' and not control['calls_ready']:
+                for row in out['calls']:row.pop('quote',None);row['quoteState']='QUEUED'
+            return r.fulfill(json=out)
         if kind=='bpsx_close':return r.fulfill(json={'closed':True})
         if kind=='bpsx_chart':return r.fulfill(json=dict(symbol=ticker,underConid=100,frame=q['frame'][0],bars=bars,served_by='tws',source='IB fixture '+q['frame'][0]))
         if kind=='providers':return r.fulfill(json={'providers':{'tws':{'name':'IB Gateway','local':True,'quotes':True,'chain':True}}})
@@ -70,7 +89,45 @@ with sync_playwright() as p:
     page.locator('#bpsx-root [data-mode="selected"]').click()
     page.locator('#bpsx-search input').fill('DIRECT')
     page.locator('#bpsx-search button').click()
+    page.wait_for_selector('.bpsx-chain-progress')
+    page.wait_for_timeout(1200)
+    assert control['polls']>0
+    assert page.locator('#bpsx-chain-live table').count()==0
+    assert page.locator('#bpsx-short').is_disabled()
+    assert page.locator('[data-action="send"]').is_disabled()
+    control['puts_ready']=True
     page.wait_for_function("document.querySelector('#bpsx-short')?.value==='2'")
+    assert page.locator('#bpsx-chain-live table.chain').count()==1
+    assert 'CALLS' in page.locator('#bpsx-chain-live').inner_text()
+    assert 'Loading…' in page.locator('#bpsx-chain-live tbody tr').first.locator('td').first.inner_text()
+    assert 'Loading' not in page.locator('.bpsx-put-price').all_inner_texts()
+    assert page.locator('tr.bpsx-short[data-chain-row="2"] .bpsx-short-badge').inner_text()=='SELL'
+    assert page.locator('tr.bpsx-long[data-chain-row="1"] .bpsx-long-badge').inner_text()=='BUY'
+    control['calls_ready']=True
+    page.wait_for_function("!document.querySelector('#bpsx-chain-live').textContent.includes('Loading')")
+    # Window controls use the Trade-style bounded backend request, not all 199 strikes.
+    with page.expect_response(lambda r:'/data/bpsx_chain?' in r.url and 'count=13' in r.url):
+        page.locator('#bpsx-chain-count').select_option('13')
+    page.wait_for_function("document.querySelector('#bpsx-short')?.value==='2'")
+    assert control['queries'][-1]['count']==['13']
+    page.locator('#bpsx-chain-center').fill('85')
+    with page.expect_response(lambda r:'/data/bpsx_chain?' in r.url and 'center=85' in r.url):
+        page.locator('#bpsx-chain-center').press('Tab')
+    page.wait_for_function("document.querySelector('#bpsx-short')?.value==='2'")
+    assert control['queries'][-1]['center']==['85']
+    # Idle expiry renews without erasing an edited ticket or exposing partial puts.
+    page.locator('[data-ticket="credit"]').fill('0.56')
+    loads=control['chain_loads'];control['expire']=True;control['puts_ready']=False
+    page.wait_for_function("document.querySelector('.bpsx-chain-progress')!==null")
+    assert control['chain_loads']>loads
+    assert page.locator('#bpsx-chain-live table').count()==0
+    assert page.locator('[data-ticket="credit"]').input_value()=='0.56'
+    control['puts_ready']=True
+    page.wait_for_selector('#bpsx-chain-live table')
+    assert page.locator('#bpsx-short').input_value()=='2'
+    assert page.locator('#bpsx-long').input_value()=='1'
+    assert page.locator('[data-ticket="credit"]').input_value()=='0.56'
+    page.locator('[data-ticket="credit"]').fill('0.55')
     assert page.locator('#bpsx-short').input_value()=='2'
     assert page.locator('#bpsx-root .bpsx-layout > div').bounding_box()['x']<page.locator('#bpsx-root .bpsx-layout > section').bounding_box()['x']
     assert 'Unverified' not in page.locator('#bpsx-chain-live').inner_text()
@@ -111,4 +168,4 @@ with sync_playwright() as p:
     assert page.evaluate('document.querySelector("#bpsx-root").scrollWidth')<=page.evaluate('document.querySelector("#bpsx-root").clientWidth')+2
     assert not errors,errors
     browser.close()
-print('BPSX browser passed: visible navigation, scan, reject-next, qualify, direct lookup, left-chain/right-chart, spread selection, incomplete-ticket block, paper submission, duplicate guard, mobile and no JS errors')
+print('BPSX browser passed: pending/partial puts hidden, calls can load later, Trade-style window controls, distinct selected-leg highlights, expired-session recovery preserves ticket, all chart controls, paper submission, duplicate guard, mobile and no JS errors')

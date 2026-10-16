@@ -425,9 +425,9 @@ class MarketEngine:
         from bpsx_data import stock
         return await stock(self, symbol)
 
-    async def _bpsx_chain(self, symbol, expiry=None, spot=None, ids=None, mode='live'):
+    async def _bpsx_chain(self, symbol, expiry=None, spot=None, ids=None, mode='live', count=25, center=90):
         from bpsx_data import options
-        return await options(self, symbol, expiry, spot, ids, mode)
+        return await options(self, symbol, expiry, spot, ids, mode, count, center)
 
     async def _bpsx_quotes(self, sid):
         import bpsx_stream

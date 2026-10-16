@@ -301,6 +301,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
         # reuse another key's response just because both keys are nonempty.
         credential_id = hashlib.sha256(key.encode('utf-8')).digest() if key else None
         kind = u.path.rsplit('/', 1)[-1]
+        if kind.startswith('bpsx_'):
+            prov = 'tws'  # These routes are IB-only, regardless of the Trade provider.
         # A local streaming source is already live in memory - caching its
         # answers for seconds would throw away the very freshness it provides.
         # Networked providers still get a real cache to stay inside rate limits.
@@ -367,7 +369,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 if len(ids)>4 or any(x<=0 or x>=2**53 for x in ids):
                     raise ValueError('Invalid selected option IDs')
                 out = market.ENGINE.call(kind,ticker,one('expiry') or None,
-                    float(one('spot','0')),ids or None,one('mode','live'),timeout=80)
+                    float(one('spot','0')),ids or None,one('mode','live'),
+                    int(one('count','25')),float(one('center','90')),timeout=80)
             elif kind in ('bpsx_quotes','bpsx_close'):
                 sid=one('stream','')
                 if not re.fullmatch(r'[A-Za-z0-9_-]{16,60}',sid):

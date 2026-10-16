@@ -64,7 +64,32 @@ async def stock(engine, ticker):
         retrievedAt=int(time.time()*1000))
 
 
-async def options(engine,ticker,expiry=None,spot=None,ids=None,mode='live'):
+def strike_window(definitions, spot, count=25, center=90, ids=()):
+    """Contiguous actual put strikes, not the secdef strike/expiry cross product."""
+    if isinstance(count, bool) or count not in (13,25,49):
+        raise ValueError('Choose 13, 25 or 49 listed strikes')
+    if not finite(center) or not 50 <= center <= 120:
+        raise ValueError('Strike center must be 50–120 percent of reference price')
+    out=copy.deepcopy(definitions)
+    puts=sorted(out['puts'],key=lambda r:r['strike'])
+    if not puts:raise ValueError('IB returned no verified standard puts for this expiry')
+    nearest=min(range(len(puts)),key=lambda i:abs(puts[i]['strike']-spot*center/100))
+    start=max(0,min(nearest-count//2,len(puts)-count))
+    # Refresh may reference the user's existing window; never drop either selected leg.
+    positions=[i for i,r in enumerate(puts) if r['conid'] in ids]
+    if positions:
+        lo,hi=min(positions),max(positions)
+        if hi-lo>=count:raise ValueError('Selected legs exceed the requested strike window')
+        start=max(0,min(start,lo))
+        start=max(start,hi-count+1)
+    out['puts']=puts[start:start+count]
+    strikes={r['strike'] for r in out['puts']}
+    out['calls']=[r for r in out.get('calls',[]) if r['strike'] in strikes]
+    out.update(listedPutCount=len(puts),windowCount=count,windowCenter=center)
+    return out
+
+
+async def options(engine,ticker,expiry=None,spot=None,ids=None,mode='live',count=25,center=90):
     import bpsx_stream
     ticker=symbol(ticker)
     if mode not in ('live','frozen'):
@@ -76,7 +101,12 @@ async def options(engine,ticker,expiry=None,spot=None,ids=None,mode='live'):
     if cached and time.monotonic()-cached[0]<900:
         out=copy.deepcopy(cached[1])
     else:
-        out=await chain(engine,ticker,expiry,right='P')
+        if expiry:
+            out,call_chain=await asyncio.gather(chain(engine,ticker,expiry,right='P'),chain(engine,ticker,expiry,right='C'))
+            out['calls']=call_chain['calls']
+            out['excluded']+=call_chain.get('excluded',0)
+        else:
+            out=await chain(engine,ticker,expiry,right='P')
         unchanged(engine,ib,generation)
         engine._bpsx_definitions[key]=(time.monotonic(),copy.deepcopy(out))
         if len(engine._bpsx_definitions)>50:engine._bpsx_definitions.pop(next(iter(engine._bpsx_definitions)))
@@ -85,6 +115,7 @@ async def options(engine,ticker,expiry=None,spot=None,ids=None,mode='live'):
     wanted=set(ids or ())
     if len(wanted)>4 or not wanted.issubset({r['conid'] for r in out['puts']}):
         raise ValueError('Selected put is not in this verified chain')
+    out=strike_window(out,spot,count,center,wanted)
     stream=bpsx_stream.start(engine,out,spot,mode)
     if wanted:
         requested=int(time.time()*1000)
