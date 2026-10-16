@@ -56,6 +56,7 @@ class BpsxTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(out['puts']),25)
         self.assertEqual(len(out['calls']),25)
         self.assertEqual(out['listedPutCount'],199)
+        self.assertEqual(out['listedStrikes'],strikes)  # ATM uses only actual qualified strikes.
         positions=[strikes.index(r['strike']) for r in out['puts']]
         self.assertEqual(positions,list(range(positions[0],positions[0]+25)))
         self.assertEqual({r['strike'] for r in out['calls']},{r['strike'] for r in out['puts']})

@@ -1,4 +1,4 @@
-"""Owned, paced streaming requests for every listed put; no 11-second snapshots.
+"""Owned, paced option streams with separate last-observed display quotes.
 
 IB docs: md_request.html, market_data_type.html, option_computations.html.
 A frozen quote is for inspection only. Missing exchange quotes are never invented.
@@ -105,6 +105,12 @@ class ChainStream:
         # Each side must actually have arrived. IB -1 is confirmed absence, not 0.
         # A timeout/permission error is NOT successful bid/ask acquisition.
         r['bidAskResolved']=finite(raw_bid) and finite(raw_ask)
+        if r['bidAskResolved']:
+            # A new subscription often sends one side before the other. Preserve the
+            # last complete market separately for display; NEVER validate an order
+            # against this cache or give it a new timestamp.
+            r['displayQuote']=copy.deepcopy(q)
+            r['displayBidAbsent']=r['bidAbsent'];r['displayAskAbsent']=r['askAbsent']
         if quote_ready(q,r['right']):r['quoteState']='READY'
         elif r['bidAbsent'] or r['askAbsent']:r['quoteState']='NO_MARKET'
         elif q.get('bid') is not None and q.get('ask') is not None:r['quoteState']='WAIT_GREEKS'
@@ -179,6 +185,8 @@ class ChainStream:
         unchanged(self.engine,self.ib,self.generation)
         for cid,h in self.handles.items():self.capture(cid,h)
         out=copy.deepcopy(self.out)
+        if self.under_handle and getattr(self.under_handle['ticker'],'time',None):
+            out['underlyingQuote']=self.engine._quote(self.under_handle['ticker'])
         underlying_errors=(self.under_handle or {}).get('errors',[])
         underlying_issue=next((e for e in underlying_errors if e['code'] in ERRORS),None)
         issue=self.error or ('Underlying IB '+str(underlying_issue['code'])+': '+underlying_issue['message'] if underlying_issue else None)

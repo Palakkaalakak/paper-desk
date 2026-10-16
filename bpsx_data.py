@@ -85,7 +85,7 @@ def strike_window(definitions, spot, count=25, center=90, ids=()):
     out['puts']=puts[start:start+count]
     strikes={r['strike'] for r in out['puts']}
     out['calls']=[r for r in out.get('calls',[]) if r['strike'] in strikes]
-    out.update(listedPutCount=len(puts),windowCount=count,windowCenter=center)
+    out.update(listedPutCount=len(puts),listedStrikes=sorted({r['strike'] for r in puts}),windowCount=count,windowCenter=center)
     return out
 
 

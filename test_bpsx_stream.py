@@ -135,6 +135,29 @@ class ChainTests(unittest.IsolatedAsyncioTestCase):
         requested=[c.args[1] for c in self.ib.client.reqMktData.call_args_list if c.args[1].secType=='OPT']
         self.assertEqual([c.right for c in requested],['P','C'])
 
+    async def test_reopened_partial_stream_retains_display_market_but_not_executable_quote(self):
+        stream=s.start(self.e,self.definition(1),100)
+        await asyncio.sleep(.12)
+        first=stream.snapshot()['puts'][0]
+        self.assertTrue(first['bidAskResolved'])
+        old_at=first['displayQuote']['at']
+        self.bid_only.add(1000)
+        stream.cancel(stream.handles.pop(1000))
+        c=Option('TEST','20990116',50,'P','SMART',conId=1000)
+        stream.handles[1000]=stream.open(c)
+        out=stream.snapshot();row=out['puts'][0]
+        self.assertFalse(out['putsComplete'])
+        self.assertIsNone(row['quote']['ask'])
+        self.assertEqual(row['displayQuote']['ask'],.6)
+        self.assertEqual(row['displayQuote']['at'],old_at)
+        self.assertFalse(s.quote_ready(row['quote']))
+        self.assertEqual(out['underlyingQuote']['brokerConid'],999)
+        stream.handles[1000]['errors']=[dict(code=354,message='No OPRA')]
+        row=stream.snapshot()['puts'][0]
+        self.assertNotIn('quote',row)
+        self.assertEqual(row['displayQuote']['at'],old_at)
+        self.assertEqual(row['quoteState'],'PERMISSION')
+
     async def test_close_releases_owned_ids_and_underlying(self):
         stream=s.start(self.e,self.definition(3),100)
         await asyncio.sleep(.15)
