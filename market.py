@@ -377,7 +377,7 @@ class MarketEngine:
                 try:
                     result = await getattr(self,'_'+name)(*args)
                     ttl = 0 if name in ('bpsx_chain','bpsx_quotes','bpsx_close') else 30 if name == 'bpsx_chart' else 15 if name == 'vmi_observation' else 21600 if name == 'guns_float' and result.get('status')=='returned' else 30 if name == 'guns_float' else 3600 if name in ('guns_schedule','guns_capabilities') else .25 if name == 'guns_bars' else 0 if name == 'guns_scan' else 10 if name == 'guns_verify' else 30 if name == 'guns_news' else 300 if name in ('search','chain') or name == 'guns_article' and result.get('contentStatus') in ('body_returned','brief','pdf') else 1
-                    self._cache[key] = (time.monotonic()+ttl,result)
+                    self._cache[key] = (time.monotonic()+(ttl if result else 0),result)
                     if len(self._cache)>1000:
                         self._cache.pop(next(iter(self._cache)))
                     return result
@@ -390,10 +390,25 @@ class MarketEngine:
         return await asyncio.shield(self._inflight[key])
 
     async def _search(self,pattern):
-        rows = await self._ib.reqMatchingSymbolsAsync(pattern)
-        return [dict(symbol=r.contract.symbol,name=getattr(r.contract,'description','') or r.contract.symbol,
-                     conid=r.contract.conId,exchange=r.contract.primaryExchange,type=r.contract.secType)
-                for r in rows or [] if r.contract.secType in ('STK','IND')][:30]
+        # reqMatchingSymbols is rate-limited and often answers [] on a cold or paced call;
+        # retry once, then fall back to qualifying the typed text as an exact stock symbol.
+        keep=('STK','IND')
+        rows=await self._ib.reqMatchingSymbolsAsync(pattern)
+        if not rows:
+            await asyncio.sleep(.6)
+            rows=await self._ib.reqMatchingSymbolsAsync(pattern)
+        out=[dict(symbol=r.contract.symbol,name=getattr(r.contract,'description','') or r.contract.symbol,
+                  conid=r.contract.conId,exchange=r.contract.primaryExchange,type=r.contract.secType)
+             for r in rows or [] if r.contract.secType in keep]
+        sym=pattern.strip().upper()
+        if re.fullmatch(r'[A-Z0-9.\-]{1,12}',sym) and not any(r['symbol']==sym for r in out):
+            try:
+                c=await self._stock(sym)
+                out.insert(0,dict(symbol=c.symbol,name=getattr(c,'description','') or c.symbol,
+                                  conid=c.conId,exchange=c.primaryExchange,type=c.secType))
+            except Exception:
+                pass
+        return out[:30]
 
     async def _stock(self,symbol):
         import ib_async as m
@@ -564,7 +579,7 @@ class MarketEngine:
             params = hit[1]
         else:
             params = await self._ib.reqSecDefOptParamsAsync(symbol,'','STK',und.conId)
-            self._cache[key] = (time.monotonic()+300,params)
+            self._cache[key] = (time.monotonic()+(300 if params else 0),params)
         params = [p for p in params or [] if p.exchange=='SMART'] or params
         if not params:
             raise ValueError('No option definitions for '+symbol)
@@ -581,8 +596,10 @@ class MarketEngine:
             contracts = [m.Option(symbol,expiry,r['strike'],r['right'],'SMART',conId=r['conId'],
                          tradingClass=r.get('tradingClass') or '',currency='USD') for r in stored['rows']]
         else:
-            template = m.Option(symbol,expiry,0,'','SMART',tradingClass=p.tradingClass,currency='USD')
-            details = await asyncio.wait_for(self._ib.reqContractDetailsAsync(template),90)
+            # One request per right, in parallel: each reply is half the size and the first
+            # chunk arrives sooner than one blank-right request for the whole expiry.
+            templates = [m.Option(symbol,expiry,0,r,'SMART',tradingClass=p.tradingClass,currency='USD') for r in ('P','C')]
+            details = [d for part in await asyncio.gather(*[asyncio.wait_for(self._ib.reqContractDetailsAsync(t),90) for t in templates]) for d in part or []]
             contracts = [d.contract for d in details if d.contract.conId]
             tws._disk_save((symbol,expiry),[dict(conId=c.conId,strike=c.strike,right=c.right,
                                                 tradingClass=c.tradingClass) for c in contracts])
