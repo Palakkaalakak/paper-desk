@@ -55,6 +55,8 @@ function validate(s,l,credit,qty,spot,under,now=Date.now(),inspection=false){con
  if(!positive(credit)||!Number.isSafeInteger(qty)||qty<=0)out.push('Positive credit / whole spread quantity required');
  const e=economics(s,l,credit,qty);if(!positive(e.maxLoss)||!finite(e.ratio)||e.ratio>10.00000001)out.push('Maximum loss must be positive and ≤10× credit');return [...new Set(out)];}
 function recommend(rows,spot,now=Date.now(),inspection=false){rows=rows.slice().sort((a,b)=>a.strike-b.strike);const results=[];for(let i=0;i<rows.length;i++){const s=rows[i];for(const step of [1,2]){const l=rows[i-step];if(!l)continue;const credit=Math.round(((s.quote?.bid||0)-(l.quote?.ask||0))*10000)/10000;if(validate(s,l,credit,1,spot,s.underConid,now,inspection).length)continue;results.push({short:s,long:l,credit,step,buffer:1-s.strike/spot,score:Math.abs(s.quote.greeks.delta+.1)+(1-s.strike/spot<.15?.1:0)});}}return results.sort((a,b)=>a.score-b.score||a.step-b.step)[0]||null;}
+function explain(rows,spot,now=Date.now(),inspection=false){rows=rows.slice().sort((a,c)=>a.strike-c.strike);const quoted=rows.filter(r=>r.quote&&finite(r.quote.bid)&&finite(r.quote.ask)),band=quoted.filter(r=>finite(r.quote.greeks?.delta)&&r.quote.greeks.delta<=-.09&&r.quote.greeks.delta>=-.15),counts=new Map();for(const s of band){for(const step of [1,2]){const l=rows[rows.indexOf(s)-step];if(!l)continue;const credit=Math.round(((s.quote.bid||0)-(l.quote?.ask||0))*10000)/10000;for(const m of validate(s,l,credit,1,spot,s.underConid,now,inspection))counts.set(m,(counts.get(m)||0)+1);}}
+ const top=[...counts].sort((a,c)=>c[1]-a[1]).slice(0,3).map(([m])=>m);return rows.length+' puts, '+quoted.length+' with bid/ask, '+band.length+' with delta −0.09…−0.15'+(band.length?'; blocked by: '+(top.join(' · ')||'unknown'):(quoted.length?'; no strike has a usable delta in the band yet (Greeks may be missing)':'; waiting for quotes'));}
 function bollinger(xs,n=20,k=2){if(!Number.isInteger(n)||n<2||n>200||!positive(k)||k>5)throw Error('Bollinger settings: period 2–200; deviations >0 to 5');const middle=sma(xs,n),upper=[],lower=[];for(let i=0;i<xs.length;i++){if(i<n-1){upper.push(null);lower.push(null);continue;}const sd=Math.sqrt(xs.slice(i-n+1,i+1).reduce((v,x)=>v+(x-middle[i])**2,0)/n);upper.push(middle[i]+k*sd);lower.push(middle[i]-k*sd);}return {middle,upper,lower};}
 function deltaText(x){if(!finite(x))return '—';return x===0?'0':Number(x.toPrecision(5)).toString();}
 // Browser-local paper bracket. No network or broker order API exists here.
@@ -86,4 +88,4 @@ function createExecution(a){
  }
  return {manage,guard};
 }
-return {sma,ema,metrics,screen,days,expiration,fresh,quoteQuality,size,exposure,economics,validate,recommend,bollinger,deltaText,createExecution};});
+return {sma,ema,metrics,screen,days,expiration,fresh,quoteQuality,size,exposure,economics,validate,recommend,explain,bollinger,deltaText,createExecution};});

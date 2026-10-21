@@ -70,3 +70,10 @@ test('spread cap is 0.4% of the share price, not a flat $0.40',()=>{
  assert.equal(C.quoteQuality(mk(1,1.3),now,false,50).usable,false);   // only $0.20 on $50
  assert.equal(C.quoteQuality(mk(1,1.1),now,false,null).usable,false); // no share price, no pass
 });
+
+test('explain reports why no spread qualifies',()=>{
+ const now=Date.now(),row=(k,bid,ask,delta)=>({secType:'OPT',right:'P',conid:k,strike:k,quote:{bid,ask,status:'LIVE',at:now,brokerConid:k,greeks:{delta}}});
+ const msg=C.explain([row(90,1,5,-.1),row(85,.5,.6,-.05)],100,now);
+ assert.match(msg,/2 puts, 2 with bid\/ask, 1 with delta/);assert.match(msg,/blocked by/);
+ assert.match(C.explain([],100,now),/waiting for quotes/);
+});
