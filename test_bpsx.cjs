@@ -18,9 +18,9 @@ test('LIVE identifies feed, not quote quality; raw 0.10 / 20.00 cannot recommend
  const s=put(21,1440,.1,20,-.096789),l=put(22,1430,.1,20,-.088585),before=JSON.stringify([s,l]);
  assert.equal(C.quoteQuality(null,now).usable,false);assert.equal(C.fresh(undefined,now),false);
  const rejected=structuredClone(short);rejected.quoteError='354: permission';assert.equal(C.quoteQuality(rejected,now).usable,false);
- const quality=C.quoteQuality(s,now);assert.equal(quality.width,19.9);assert.equal(quality.usable,false);assert.match(quality.label,/WIDE/);assert.equal(C.fresh(s,now),true);
- assert.equal(C.recommend([l,s],1659.7,now),null);assert.ok(C.validate(s,l,1,1,1659.7,100,now).includes('Option bid/ask spread exceeds $0.40'));assert.equal(s.quote.bid-l.quote.ask,-19.9);assert.equal(JSON.stringify([s,l]),before);
- for(const mutate of [r=>r.quote.status='FROZEN',r=>r.quote.at=now-61000,r=>r.quote.ask=.1,r=>delete r.quote.bid,r=>r.quote.brokerConid=999]){const r=structuredClone(short);mutate(r);assert.equal(C.quoteQuality(r,now).usable,false);}
+ const quality=C.quoteQuality(s,now,false,1659.7);assert.equal(quality.width,19.9);assert.equal(quality.usable,false);assert.match(quality.label,/WIDE/);assert.equal(C.fresh(s,now),true);
+ assert.equal(C.recommend([l,s],1659.7,now),null);assert.ok(C.validate(s,l,1,1,1659.7,100,now).some(m=>m.startsWith('Option bid/ask spread exceeds 0.4% of share price')));assert.equal(s.quote.bid-l.quote.ask,-19.9);assert.equal(JSON.stringify([s,l]),before);
+ for(const mutate of [r=>r.quote.status='FROZEN',r=>r.quote.at=now-61000,r=>r.quote.ask=.1,r=>delete r.quote.bid,r=>r.quote.brokerConid=999]){const r=structuredClone(short);mutate(r);assert.equal(C.quoteQuality(r,now,false,1659.7).usable,false);}
  assert.ok(Math.abs((1-1440/1661)*100-13.305237808549)<1e-9);
 });
 const noUsage={trades:0,premium:0,risk:0,pendingRisk:0};
@@ -61,3 +61,12 @@ test('existing pre-automation positions and unfilled entries are not silently op
 test('expiry safety close respects verified session end and readonly/changed-book guards',()=>{let f=exitFixture();const ny=new Intl.DateTimeFormat('en-CA',{timeZone:'America/New_York',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date(now)).replaceAll('-','');f.entry.legs.forEach(l=>l.expiry=ny);f.session.end=now+4*60000;f.q[2].ask=.6;f.q[2].bid=.5;f.execution.manage();assert.equal(f.state.orders[0].bpsxExit.reason,'EXPIRY');f=exitFixture();f.q[2].ask=2.5;f.adapter.writable=()=>false;f.execution.manage();assert.equal(f.state.orders.length,1);f.adapter.writable=()=>true;f.noFill=true;f.execution.manage();const exit=f.state.orders[0];f.state={orders:[],positions:[],cash:0};assert.equal(f.execution.guard(exit),false);});
 test('latched stop cannot fill outside session or over another manual closing order',()=>{const f=exitFixture();f.q[2].ask=2.5;f.noFill=true;f.execution.manage();const exit=f.state.orders[0];f.session=null;assert.equal(f.execution.guard(exit),false);f.session={start:now-1000,end:now+1000};f.state.orders.push({id:'other',status:'working',conid:2});assert.equal(f.execution.guard(exit),false);});
 test('expiration prefers 26 days without stretching outside 20–45',()=>{const exp=d=>new Date(now+d*86400000).toISOString().slice(0,10).replaceAll('-','');assert.equal(C.expiration([exp(45),exp(26),exp(20)],now),exp(26));assert.equal(C.expiration([exp(19),exp(46)],now),null);});
+
+test('spread cap is 0.4% of the share price, not a flat $0.40',()=>{
+ const now=Date.now(),mk=(bid,ask)=>({secType:'OPT',right:'P',quote:{bid,ask,status:'LIVE',at:now,brokerConid:1},conid:1});
+ assert.equal(C.quoteQuality(mk(1,1.4),now,false,100).usable,true);   // $0.40 on $100
+ assert.equal(C.quoteQuality(mk(1,1.5),now,false,100).usable,false);
+ assert.equal(C.quoteQuality(mk(1,1.5),now,false,400).usable,true);   // $1.60 allowed on $400
+ assert.equal(C.quoteQuality(mk(1,1.3),now,false,50).usable,false);   // only $0.20 on $50
+ assert.equal(C.quoteQuality(mk(1,1.1),now,false,null).usable,false); // no share price, no pass
+});
