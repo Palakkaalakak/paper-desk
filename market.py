@@ -13,6 +13,49 @@ import time
 
 MAX_INSTRUMENTS = 2000
 CLIENT_TTL = 60
+try:
+    from zoneinfo import ZoneInfo
+    NEW_YORK = ZoneInfo('America/New_York')
+except Exception:  # no tz database (bare Windows Python): UTC is a safe superset
+    NEW_YORK = dt.timezone.utc
+# Fatal per-contract market-data errors (IB error-codes page) -> seconds before
+# retrying. 101: no free market-data line; 200: no such contract; 354/10089/10168/
+# 10186: no (API) market-data subscription for this instrument.
+CONTRACT_ERRORS = {101:20, 200:600, 354:120, 10089:300, 10168:120, 10186:120}
+# Partial: data keeps flowing but something is missing (e.g. greeks need the
+# underlying's subscription too, or IB substituted delayed data).
+CONTRACT_NOTICES = {10090, 10091, 10167}
+# Farm notices: 2103/2105/2157 broken, 2104/2106/2158 OK.
+FARM_CODES = {2103:('market',False), 2104:('market',True), 2105:('history',False),
+              2106:('history',True), 2157:('secdef',False), 2158:('secdef',True)}
+
+
+def standard_classes(params, symbol):
+    """SMART chains of ordinary 100-multiplier classes. Adjusted classes after
+    corporate actions carry digits (e.g. 2AMZN / AMZN1) and non-standard deliverables."""
+    return [p for p in params or [] if p.exchange == 'SMART' and str(p.multiplier) in ('100','100.0','')
+            and re.fullmatch(r'[A-Z]{1,6}', p.tradingClass or '')]
+
+
+def option_greeks(t):
+    """IB's model greeks (what TWS shows) first, then bid/ask/last computations.
+    IB marks missing values with -1 (iv/price) or -2 (greeks); ib_async 2.1 strips
+    -2 for delta/gamma but passes it through for vega and theta."""
+    for name in ('modelGreeks','bidGreeks','askGreeks','lastGreeks'):
+        g = getattr(t,name,None)
+        delta = number(getattr(g,'delta',None)) if g else None
+        if delta is None or not -1 <= delta <= 1:
+            continue
+        def clean(attr, missing):
+            v = number(getattr(g,attr,None))
+            return None if v is None or v == missing else v
+        out = dict(delta=delta, iv=clean('impliedVol',-1), gamma=clean('gamma',-2),
+                   theta=clean('theta',-2), vega=clean('vega',-2),
+                   undPrice=clean('undPrice',-1), optPrice=clean('optPrice',-1), source=name[:-6])
+        if out['iv'] is not None and out['iv'] < 0: out['iv'] = None
+        if out['vega'] is not None and out['vega'] < 0: out['vega'] = None
+        return out
+    return None
 
 
 def number(value, price=False):
@@ -49,7 +92,7 @@ def instruments(rows):
 
 class MarketEngine:
     def __init__(self, capacity=None):
-        self.capacity = max(1, int(capacity or os.environ.get('PAPER_TWS_LINES', '500')))
+        self.capacity = max(1, int(capacity or os.environ.get('PAPER_TWS_LINES', '100')))
         self.changed = threading.Condition()
         self.clients, self.quotes, self.versions = {}, {}, {}
         self.seq = 1
@@ -62,6 +105,7 @@ class MarketEngine:
         self._active, self._loading, self._failed = {}, {}, {}
         self._contracts, self._cache, self._inflight, self._ticker_ids = {}, {}, {}, {}
         self._retry_at, self._last_received = 0, 0
+        self._farms, self._notes, self._symbol_lock, self._symbol_at = {}, {}, None, 0
 
     def start(self):
         with self._start_lock:
@@ -155,10 +199,9 @@ class MarketEngine:
         if q['prevClose'] and q['last'] is not None:
             q['change'] = q['last']-q['prevClose']
             q['changePct'] = q['change']/q['prevClose']*100
-        g = getattr(t,'modelGreeks',None)
-        if g:
-            q['greeks'] = {k:number(getattr(g,n,None)) for k,n in
-                           [('iv','impliedVol'),('delta','delta'),('gamma','gamma'),('theta','theta'),('vega','vega')]}
+        greeks = option_greeks(t)
+        if greeks:
+            q['greeks'] = greeks
         return q
 
     def _ticks(self, tickers):
@@ -169,7 +212,8 @@ class MarketEngine:
             if ids:
                 q = self._quote(t,now)
                 for cid in tuple(ids):
-                    self.publish(cid,q)
+                    note = self._notes.get(cid)
+                    self.publish(cid,dict(q,notice=note) if note else q)
 
     def _error(self, req_id, code, text, contract=None):
         if code in (1100,1101,1102):
@@ -181,8 +225,37 @@ class MarketEngine:
                 if contract is None or entry['contract'].conId==contract.conId:
                     entry['at']=0;entry['revision']+=1
                     entry['ticker'].domBids.clear();entry['ticker'].domAsks.clear()
-        elif code in (100,101,354,10167,10168,10197,200):
+        elif code in FARM_CODES:
+            self._farms[FARM_CODES[code][0]] = FARM_CODES[code][1]
+        elif code in CONTRACT_ERRORS:
+            cid = self._cid_for(req_id, contract)
+            if cid is None:
+                self._status(problem='%s: %s' % (code,text))
+                return
+            # The subscription stays dead after these: free its line and retry later
+            # instead of leaving a permanently empty quote that looks like it is loading.
+            self._remove(cid)
+            self._failed[cid] = time.monotonic()+CONTRACT_ERRORS[code]
+            self.publish(cid,dict(error='%s: %s' % (code,text),errorCode=code,status='ERROR',at=0))
+        elif code in CONTRACT_NOTICES:
+            cid = self._cid_for(req_id, contract)
+            if cid is not None:
+                self._notes[cid] = '%s: %s' % (code,text)
+        elif code in (100,10197):
             self._status(problem='%s: %s' % (code,text))
+
+    def _cid_for(self, req_id, contract=None):
+        # Only this engine's own streaming request: ib_async shares one Ticker per
+        # contract, so a snapshot or BPSX request for the same conId must not be
+        # mistaken for the browser stream (its line/permission errors are its own).
+        wrapper = getattr(self._ib,'wrapper',None)
+        ticker = getattr(wrapper,'reqId2Ticker',{}).get(req_id)
+        if ticker is None or getattr(wrapper,'ticker2ReqId',{}).get('mktData',{}).get(ticker) != req_id:
+            return None
+        return next((cid for cid,row in self._active.items() if row['ticker'] is ticker), None)
+
+    def farm_problem(self, kind):
+        return self._farms.get(kind) is False
 
     def _clear_active(self):
         import bpsx_stream
@@ -296,6 +369,7 @@ class MarketEngine:
             await asyncio.sleep(0.1)
 
     def _remove(self,cid):
+        self._notes.pop(cid,None)
         row = self._active.pop(cid,None)
         if not row:
             return
@@ -344,7 +418,15 @@ class MarketEngine:
             c = await self._contract(row)
             if self._ib is not ib or self.info.get('generation',0)!=generation:
                 return
-            ticker = ib.reqMktData(c,'233' if getattr(c,'secType',None)=='STK' else '',False,False)
+            # Market type 2 still streams live data when it exists, and falls back to
+            # the last recorded quote (labelled FROZEN) when the market is closed, so
+            # after-hours chains show IB's last bid/ask/greeks instead of -1 blanks.
+            # Switched just around this request; no await in between.
+            frozen = os.environ.get('PAPER_TWS_DATA') != 'delayed' and self._data_type(ib,2)
+            try:
+                ticker = ib.reqMktData(c,'233' if getattr(c,'secType',None)=='STK' else '',False,False)
+            finally:
+                if frozen: self._data_type(ib,1)
             self._active[cid] = dict(contract=c,ticker=ticker)
             self._ticker_ids.setdefault(id(ticker),set()).add(cid)
             if any(number(getattr(ticker,k,None),True) is not None for k in ('bid','ask','last')):
@@ -356,6 +438,14 @@ class MarketEngine:
             self.publish(cid,dict(error=str(e),status='ERROR',at=0))
         finally:
             self._loading.pop(cid,None)
+
+    @staticmethod
+    def _data_type(ib, kind):
+        try:
+            ib.client.reqMarketDataType(kind)
+            return True
+        except Exception:
+            return False
 
     def call(self,name,*args,timeout=40):
         self.start()
@@ -389,14 +479,29 @@ class MarketEngine:
             self._inflight[key].add_done_callback(lambda t: None if t.cancelled() else t.exception())
         return await asyncio.shield(self._inflight[key])
 
+    async def _matching_symbols(self,pattern):
+        # IB: "There must be an interval of at least 1 second between successive calls
+        # to reqMatchingSymbols". A call inside that interval is not answered and
+        # ib_async gives up after 4s with None, which is how a debounced search for
+        # A/AM/AMZ/AMZN used to come back as "No tradable match".
+        if self._symbol_lock is None:
+            self._symbol_lock = asyncio.Lock()
+        async with self._symbol_lock:
+            wait = self._symbol_at+1.1-time.monotonic()
+            if wait > 0:
+                await asyncio.sleep(wait)
+            try:
+                return await self._ib.reqMatchingSymbolsAsync(pattern) or []
+            finally:
+                self._symbol_at = time.monotonic()
+
     async def _search(self,pattern):
-        # reqMatchingSymbols is rate-limited and often answers [] on a cold or paced call;
-        # retry once, then fall back to qualifying the typed text as an exact stock symbol.
+        # Retry an empty answer once, then fall back to qualifying the typed text as an
+        # exact stock symbol, which does not depend on the symbol-search service at all.
         keep=('STK','IND')
-        rows=await self._ib.reqMatchingSymbolsAsync(pattern)
+        rows=await self._matching_symbols(pattern)
         if not rows:
-            await asyncio.sleep(.6)
-            rows=await self._ib.reqMatchingSymbolsAsync(pattern)
+            rows=await self._matching_symbols(pattern)
         out=[dict(symbol=r.contract.symbol,name=getattr(r.contract,'description','') or r.contract.symbol,
                   conid=r.contract.conId,exchange=r.contract.primaryExchange,type=r.contract.secType)
              for r in rows or [] if r.contract.secType in keep]
@@ -569,47 +674,74 @@ class MarketEngine:
         q['screeningOnly']=True
         return q
 
+    async def _option_params(self,symbol,und):
+        key = ('params',symbol)
+        hit = self._cache.get(key)
+        if hit and time.monotonic()<hit[0]:
+            return hit[1]
+        params = await asyncio.wait_for(self._ib.reqSecDefOptParamsAsync(symbol,'','STK',und.conId),30) or []
+        # An empty answer is usually a sec-def farm hiccup, never cache it.
+        self._cache[key] = (time.monotonic()+(900 if params else 0),params)
+        return params
+
     async def _chain(self,symbol,expiry=None):
         import ib_async as m
         import tws
         und = await self._stock(symbol)
-        key = ('params',symbol)
-        hit = self._cache.get(key)
-        if hit and time.monotonic()<hit[0]:
-            params = hit[1]
-        else:
-            params = await self._ib.reqSecDefOptParamsAsync(symbol,'','STK',und.conId)
-            self._cache[key] = (time.monotonic()+(300 if params else 0),params)
-        params = [p for p in params or [] if p.exchange=='SMART'] or params
-        if not params:
-            raise ValueError('No option definitions for '+symbol)
-        p = next((x for x in params if x.tradingClass==symbol),params[0])
-        today = dt.datetime.now(dt.timezone.utc).strftime('%Y%m%d')
-        exps = sorted(x for x in p.expirations if x>=today)
+        params = await self._option_params(symbol,und)
+        classes = standard_classes(params,symbol)
+        if not classes:
+            if self.farm_problem('secdef'):
+                raise ValueError('IB\'s security-definition farm is disconnected, so option chains '
+                                 'cannot be listed right now. It usually reconnects within a minute.')
+            raise ValueError('IB lists no standard (100-share) option chain for '+symbol+
+                             '. Check the symbol has listed options and your account has option permissions.')
+        today = dt.datetime.now(NEW_YORK).strftime('%Y%m%d')
+        by_expiry = {}
+        # SPX/SPXW, NDX/NDXP, RUT/RUTW...: weeklies live in a second trading class.
+        for p in classes:
+            for x in p.expirations:
+                if re.fullmatch(r'\d{8}',x) and x>=today and (x not in by_expiry or p.tradingClass==symbol):
+                    by_expiry[x] = p.tradingClass
+        exps = sorted(by_expiry)
         out = dict(expirations=exps,underConid=und.conId,calls=[],puts=[],served_by='tws')
         if not expiry:
             return out
-        if expiry not in exps:
+        if expiry not in by_expiry:
             raise ValueError('Expiry is not listed for '+symbol)
+        klass = by_expiry[expiry]
         stored = tws._disk().get(symbol+'|'+expiry)
+        rows = None
         if isinstance(stored,dict) and time.time()-float(stored.get('ts',0)) < tws.DEF_TTL:
-            contracts = [m.Option(symbol,expiry,r['strike'],r['right'],'SMART',conId=r['conId'],
-                         tradingClass=r.get('tradingClass') or '',currency='USD') for r in stored['rows']]
+            rows = [r for r in stored.get('rows') or [] if r.get('tradingClass') in (klass,'',None)]
+        if rows:
+            contracts = [m.Option(symbol,expiry,r['strike'],r['right'],'SMART',multiplier='100',conId=r['conId'],
+                         tradingClass=r.get('tradingClass') or klass,currency='USD') for r in rows]
         else:
-            # One request per right, in parallel: each reply is half the size and the first
-            # chunk arrives sooner than one blank-right request for the whole expiry.
-            templates = [m.Option(symbol,expiry,0,r,'SMART',tradingClass=p.tradingClass,currency='USD') for r in ('P','C')]
-            details = [d for part in await asyncio.gather(*[asyncio.wait_for(self._ib.reqContractDetailsAsync(t),90) for t in templates]) for d in part or []]
-            contracts = [d.contract for d in details if d.contract.conId]
+            # IB: derivative lookups are internally paced; give every field except
+            # strike/right so this one request returns exactly one expiry of one class.
+            # (Unticking "Expose entire trading schedule to the API" in Gateway makes
+            # this reply several times smaller and faster.)
+            template = m.Option(symbol,expiry,0,'','SMART',multiplier='100',tradingClass=klass,currency='USD')
+            details = await asyncio.wait_for(self._ib.reqContractDetailsAsync(template),90) or []
+            contracts = [d.contract for d in details if d.contract and d.contract.conId and
+                         d.contract.secType=='OPT' and d.contract.right in ('C','P') and
+                         d.contract.lastTradeDateOrContractMonth==expiry and d.contract.tradingClass==klass and
+                         str(d.contract.multiplier) in ('100','100.0')]
+            if not contracts:
+                if self.farm_problem('secdef'):
+                    raise ValueError('IB\'s security-definition farm is disconnected; try this expiry again in a minute.')
+                raise ValueError('IB returned no %s option contracts expiring %s. Try again; if it repeats, '
+                                 'the expiry may have just been delisted.' % (symbol,expiry))
             tws._disk_save((symbol,expiry),[dict(conId=c.conId,strike=c.strike,right=c.right,
                                                 tradingClass=c.tradingClass) for c in contracts])
-        out['expiry'] = expiry
+        out.update(expiry=expiry,tradingClass=klass)
         for c in sorted(contracts,key=lambda x:(x.strike,x.right)):
             if c.right not in ('C','P'):
                 continue
             out['calls' if c.right=='C' else 'puts'].append(dict(conid=c.conId,
                 symbol='%s %s %s %s' % (symbol,expiry,c.strike,c.right),strike=c.strike,right=c.right,
-                expiry=expiry,mult=number(c.multiplier) or 100,bid=None,ask=None,last=None))
+                expiry=expiry,mult=100,bid=None,ask=None,last=None))
         return out
 
     async def _guns_float(self, symbol):

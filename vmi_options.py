@@ -5,6 +5,8 @@ import re
 import time
 from vmi_data import symbol
 
+DETAILS_TTL = 6 * 3600
+
 
 def contract(detail, under, right='C'):
     c = detail.contract
@@ -45,8 +47,12 @@ async def chain(engine, ticker, expiry=None, right='C'):
     if cached and time.monotonic()-cached[0]<900:
         params = cached[1]
     else:
-        params = await asyncio.wait_for(ib.reqSecDefOptParamsAsync(under.symbol, '', 'STK', under.conId), 20)
+        params = await asyncio.wait_for(ib.reqSecDefOptParamsAsync(under.symbol, '', 'STK', under.conId), 20) or []
         unchanged(engine, ib, generation)
+        if not params:
+            # Usually a sec-def farm hiccup: never remember an empty chain.
+            raise ValueError('IB returned no option parameters for %s; the security-definition farm may be '
+                             'reconnecting. Try again in a minute.' % ticker)
         engine._vmi_option_params[key] = (time.monotonic(), params)
         if len(engine._vmi_option_params)>100:
             engine._vmi_option_params.pop(next(iter(engine._vmi_option_params)))
@@ -60,9 +66,25 @@ async def chain(engine, ticker, expiry=None, right='C'):
     if expiry:
         if expiry not in expirations:
             raise ValueError('Expiry is not listed in the matching IB standard class')
-        template = Option(under.symbol, expiry, 0, right, 'SMART', tradingClass=under.symbol, multiplier='100', currency='USD')
         # Never use the legacy disk chain; it loses underlying/multiplier metadata.
-        details = await asyncio.wait_for(ib.reqContractDetailsAsync(template), 60)
+        # IB paces derivative contract-detail lookups and holds repeats, so keep the
+        # verified details (conIds never change) across reconnects for a few hours.
+        if not hasattr(engine, '_vmi_option_details'):
+            engine._vmi_option_details = {}
+        dkey = (under.conId, expiry, right)
+        hit = engine._vmi_option_details.get(dkey)
+        if hit and time.monotonic()-hit[0] < DETAILS_TTL:
+            details = hit[1]
+        else:
+            template = Option(under.symbol, expiry, 0, right, 'SMART', tradingClass=under.symbol, multiplier='100', currency='USD')
+            details = await asyncio.wait_for(ib.reqContractDetailsAsync(template), 60) or []
+            unchanged(engine, ib, generation)
+            if not details:
+                raise ValueError('IB returned no %s %s contracts for %s; try again in a minute.'
+                                 % (expiry, 'put' if right == 'P' else 'call', ticker))
+            engine._vmi_option_details[dkey] = (time.monotonic(), details)
+            if len(engine._vmi_option_details) > 200:
+                engine._vmi_option_details.pop(next(iter(engine._vmi_option_details)))
         for detail in details:
             try:
                 row = contract(detail, under, right)

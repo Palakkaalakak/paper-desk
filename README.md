@@ -1,5 +1,15 @@
 # Paper Desk — IB Gateway paper-trading workstation
 
+## IB symbol search and option chains, per IB API docs — 2026-10-21
+
+Behaviour now follows IBKR's TWS API documentation (option chains, contract details, pacing, market-data types, error codes) and the pinned `ib_async==2.1.0` source:
+
+- **Symbol search:** IB requires ≥1 s between `reqMatchingSymbols` calls; a call inside that gap is not answered and `ib_async` returns `None` after 4 s. Searches are now spaced and serialized, empty answers are retried and never cached, and an exact ticker (e.g. `AMZN`) falls back to direct stock qualification.
+- **Trade chain expirations** merge every standard SMART class (e.g. `SPX` + `SPXW` weeklies). Adjusted classes with digits and non-100 multipliers are excluded. Each expiry is fetched with one fully narrowed `reqContractDetails` (symbol, expiry, class, multiplier 100, SMART, USD) as IB recommends; empty or farm-outage answers are reported and never cached. VMI/BPSX keep verified contract details for 6 h across reconnects.
+- **Quotes:** browser streams request market-data type 2, which streams live data when available and falls back to the last recorded quote (labelled `frozen`, view-only) after the close. Greeks use IB's model computation, then bid/ask/last computations; IB's `-1`/`-2` "missing" markers are removed (`ib_async` passes `-2` through for vega/theta).
+- **Per-contract errors:** 101 (no free line), 200, 354, 10089, 10168 and 10186 now free that contract's line, show the reason in its chain cell, and retry later. 10090/10091/10167 are partial warnings: data continues and the reason appears as a tooltip. The default stream budget is IB's 100-line minimum (`PAPER_TWS_LINES` to raise it).
+- **Recommended Gateway setting:** *Configure → Settings → API → Settings* → untick **"Expose entire trading schedule to the API"**. IB says this greatly shrinks and speeds up option contract-detail replies. Greeks need market data for both the option (OPRA) and its underlying.
+
 ## BPSX nuanced buffer guide, reactive sizing and quote quality — 2026-10-16
 
 The quick guide now distinguishes a **strong ~15% buffer guideline** from the course's conditional closer-strike exceptions. `1661 → 1440` is **13.3%** below shares; the calculation uses the share price, not the listed ATM anchor. The course allows about 10% for lower-volatility names such as Pepsi/McDonald's, but its BABA ~12% example was explicitly not ideal and was continued for demonstration; the NFLX example had about 19%. Closer strikes still require the delta band/ceiling, tested support, event/earnings screening, liquidity and risk/credit rules. The below-15% evidence/reason field remains required. Delta is not a guaranteed success probability. Source rechecked against the uploaded options master, BPSX strike-selection and position-sizing sections, approximately lines 5825–5870 and 6088–6145.

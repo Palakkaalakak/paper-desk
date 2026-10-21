@@ -3617,8 +3617,8 @@ function chainTable(){
         sub = '<div class="dim gk">'+bits.join(' &middot; ')+(info.modelled?' <span title="computed, not quoted">*</span>':'')+'</div>';
       }
       var col = right==='C' ? 'callcol' : 'putcol';
-      return '<td class="'+col+' '+(right==="C"?(itmC?"itm":""):(itmP?"itm":""))+'">'
-       +(has?px(q2.bid)+' / '+px(q2.ask):'<span class="dim">--</span>')+sub+'</td>'
+      return '<td class="'+col+' '+(right==="C"?(itmC?"itm":""):(itmP?"itm":""))+'"'+(q2.notice?' title="'+esc(q2.notice)+'"':'')+'>'
+       +chainPrice(q2,has)+sub+'</td>'
        +'<td class="l '+col+'"><button class="mini lgb" data-add="'+cid+'|'+right+'|BUY|'+k+'|'+esc(desc||'')+'">+</button> '
        +'<button class="mini lgs" data-add="'+cid+'|'+right+'|SELL|'+k+'|'+esc(desc||'')+'">&minus;</button></td>';
     }
@@ -3645,6 +3645,18 @@ function emLine(){
    +px(em.abs)+'</b> ('+em.pct.toFixed(1)+'%) by this expiry &mdash; roughly '+px(em.lo)+' to '+px(em.hi)
    +'. <span class="dim">From the '+px(em.strike)+' straddle.</span></div>';
 }
+function chainPrice(q2,has){
+  if(q2.error){
+    /* IB refused this contract's data: say why instead of an endless "--" */
+    var why={101:'no free data line',200:'not found',354:'not subscribed',10089:'API data not subscribed',10168:'not subscribed',10186:'not subscribed'}[q2.errorCode]||'no data';
+    return '<span class="dim" title="'+esc(q2.error)+'">'+why+'</span>';
+  }
+  if(!has) return '<span class="dim">--</span>';
+  var out=px(q2.bid)+' / '+px(q2.ask);
+  if(q2.status && q2.status!=='LIVE')
+    out+=' <span class="dim gk" title="IB market-data type '+esc(q2.status)+': display only, orders need LIVE quotes.">'+esc(q2.status.toLowerCase())+'</span>';
+  return out;
+}
 function chainRows(){
   var b2=S.builder, d=CH[b2.expId];
   if(!d) return '<div class="dim note">No strikes loaded.</div>';
@@ -3665,8 +3677,8 @@ function chainRows(){
         sub = '<div class="dim gk">'+bits.join(' &middot; ')+(info.modelled?' <span title="computed, not quoted">*</span>':'')+'</div>';
       }
       var col = right==='C' ? 'callcol' : 'putcol';
-      return '<td class="'+col+' '+(right==="C"?(itmC?"itm":""):(itmP?"itm":""))+'">'
-       +(has?px(q2.bid)+' / '+px(q2.ask):'<span class="dim">--</span>')+sub+'</td>'
+      return '<td class="'+col+' '+(right==="C"?(itmC?"itm":""):(itmP?"itm":""))+'"'+(q2.notice?' title="'+esc(q2.notice)+'"':'')+'>'
+       +chainPrice(q2,has)+sub+'</td>'
        +'<td class="l '+col+'"><button class="mini lgb" data-add="'+cid+'|'+right+'|BUY|'+k+'|'+esc(desc||'')+'">+</button> '
        +'<button class="mini lgs" data-add="'+cid+'|'+right+'|SELL|'+k+'|'+esc(desc||'')+'">&minus;</button></td>';
     }
@@ -3680,7 +3692,8 @@ function chainRows(){
       +cell(pq,r.put_contract_id,'P',r.put_description)+'</tr>';
   }).join('');
   return '<div class="tblwrap"><table class="chain"><thead><tr><th class="callcol">Call bid / ask</th><th class="l callcol"></th><th class="k">Strike</th><th class="putcol">Put bid / ask</th><th class="l putcol"></th></tr></thead><tbody>'+rows+'</tbody></table></div>'
-   +'<div class="note">+ buys the contract into your spread, &minus; sells it. Up to four legs.</div>';
+   +'<div class="note">+ buys the contract into your spread, &minus; sells it. Up to four legs.'
+   +(usingTws()?' Outside market hours IB sends each contract&rsquo;s last recorded quote, marked <i>frozen</i>: view only.':'')+'</div>';
 }
 function builderPanel(){
   var legs=S.builder.legs;
