@@ -1045,6 +1045,52 @@ function explain(rows,spot,now=Date.now(),inspection=false){rows=rows.slice().so
 function bollinger(xs,n=20,k=2){if(!Number.isInteger(n)||n<2||n>200||!positive(k)||k>5)throw Error('Bollinger settings: period 2–200; deviations >0 to 5');const middle=sma(xs,n),upper=[],lower=[];for(let i=0;i<xs.length;i++){if(i<n-1){upper.push(null);lower.push(null);continue;}const sd=Math.sqrt(xs.slice(i-n+1,i+1).reduce((v,x)=>v+(x-middle[i])**2,0)/n);upper.push(middle[i]+k*sd);lower.push(middle[i]-k*sd);}return {middle,upper,lower};}
 function deltaText(x){if(!finite(x))return '—';return x===0?'0':Number(x.toPrecision(5)).toString();}
 // Browser-local paper bracket. No network or broker order API exists here.
+// ---------------------------------------------------------------------------------------------
+// Realistic combo fill model, shared by the paper simulator and the profitability estimate.
+// Sources (see README "Fill model"):
+//  * SEC DERA, "Hope at a Reasonable Price: Customer Use of Limit Orders in the 0DTE Market" (2025):
+//    customer limit orders resting INSIDE the spread fill within one second at rates set by their
+//    position in the spread, not by its width: half a half-spread better than mid 13-33%, at mid
+//    45-70%, a third to a half of a half-spread past mid 84-90% (2-4 tick spreads).
+//  * Hendershott, Khan & Riordan, "Option Auctions" (RFS 2026): marketable option orders in continuous
+//    trading pay 74% of the half-spread on average (EQ 0.74; 0.38 in price-improvement auctions).
+//  * Lo, MacKinlay & Zhang (JFE 2002): fills need the market to trade THROUGH a resting price, not touch it.
+//  * Course (OPTIONS_MASTER_DOCUMENT.md): BPSX is worked as a limit near mid and walked a cent at a time
+//    (TAL: mid 0.45, 20 of 23 contracts at 0.45, the rest at 0.44) -> minutes, not seconds, at mid.
+// phi = give-up from mid in units of the natural-to-mid distance H (0 = mid, 1 = natural, <0 better than mid).
+const FILL={a:.40,b:3.5,        // logistic fit to the SEC one-second fill rates by phi
+ scale:.0063,                   // single-stock combos vs 0DTE SPX: median ~2 min at mid (course anecdotes)
+ refTicks:4,                    // SEC data cover spreads up to 4 ticks; wider legs = thinner market (assumption)
+ marketable:.74,                // marketable orders pay 74% of the half-spread (continuous trading)
+ maxStep:2};                    // seconds credited per evaluation; a sleeping tab earns no fills
+const legTick=p=>p<3?.05:.10;   // conservative non-penny ticks; penny classes trade finer
+function comboQuote(legs,quotes){let mid=0,half=0,ticks=0;for(const l of legs){const q=quotes[l.conid];if(!q||!finite(q.bid)||!finite(q.ask)||q.bid<0||q.ask<q.bid)return null;const m=(q.bid+q.ask)/2,h=(q.ask-q.bid)/2,s=l.side==='BUY'?1:-1,r=l.ratio||1;mid+=s*m*r;half+=h*r;ticks=Math.max(ticks,(q.ask-q.bid)/legTick(m));}
+ return {mid,half,natural:mid+half,ticks};}   // net debit convention: + pay, - receive
+const oneSecond=phi=>1/(1+Math.exp(-(FILL.a+FILL.b*phi)));
+function hazard(phi,ticks){if(phi>=1)return Infinity;const thin=ticks>FILL.refTicks?FILL.refTicks/ticks:1;return -Math.log(1-oneSecond(phi))*FILL.scale*thin;}
+const giveUp=(limit,cq)=>cq.half>0?(limit-cq.mid)/cq.half:(limit>=cq.mid?1:-Infinity);
+const fillWithin=(phi,ticks,seconds)=>phi>=1?1:1-Math.exp(-hazard(phi,ticks)*seconds);
+// Per-leg prices that sum exactly to the combo price, each leg moved from its own mid by phi of its half-width.
+function legPrices(legs,quotes,phi){return legs.map(l=>{const q=quotes[l.conid],m=(q.bid+q.ask)/2,h=(q.ask-q.bid)/2;return Math.round((m+(l.side==='BUY'?1:-1)*phi*h)*10000)/10000;});}
+// One paper evaluation: returns {phi,prices,net} when this order fills now, else null.
+function tryComboFill(order,quotes,now,rng=Math.random){const cq=comboQuote(order.legs,quotes);if(!cq)return null;
+ const last=finite(order.fillCheckAt)?order.fillCheckAt:now;order.fillCheckAt=now;
+ let phi;if(order.limit==null||order.limit>=cq.natural-1e-9)phi=Math.min(FILL.marketable,order.limit==null?FILL.marketable:giveUp(order.limit,cq));
+ else{phi=giveUp(order.limit,cq);const dt=Math.min(FILL.maxStep,Math.max(0,(now-last)/1000));if(!(rng()<1-Math.exp(-hazard(phi,cq.ticks)*dt)))return null;}
+ const prices=legPrices(order.legs,quotes,phi);let net=0;order.legs.forEach((l,i)=>{net+=(l.side==='BUY'?1:-1)*prices[i]*(l.ratio||1);});
+ return {phi,prices,net:Math.round(net*10000)/10000};}
+// The course's way of working an entry: start at mid, give up one tick every `stepSec` until `maxTicks`.
+function workEntry(cq,{stepSec=120,maxTicks=3,tick=.01}={}){let alive=1,ePhi=0,pFill=0;const out=[];
+ for(let k=0;k<=maxTicks;k++){const phi=cq.half>0?Math.min(1,k*tick/cq.half):0,p=fillWithin(phi,cq.ticks,stepSec);ePhi+=alive*p*phi;pFill+=alive*p;out.push({ticks:k,phi,pStep:p,pCum:pFill});alive*=1-p;}
+ return {pFill,avgPhiIfFilled:pFill>0?ePhi/pFill:null,steps:out};}
+// Expected profit per trade for a BPSX credit spread with the course's exits and this fill model.
+// credit-based course baselines: TP closes at 10% of credit, managed loss = 3x credit, win rate 85%.
+function expectedTrade(cq,{win=.85,lossMult=3,stepSec=120,maxTicks=3}={}){if(!cq)return {pFill:0,ev:null};const midCredit=-cq.mid,w=workEntry(cq,{stepSec,maxTicks});if(!(midCredit>0)||!w.pFill)return {pFill:w.pFill,ev:null};
+ const credit=midCredit-w.avgPhiIfFilled*cq.half;
+ const stopExit=FILL.marketable*cq.half;   // stop is a marketable buy-back; the TP rests at its limit (0.1x credit), so it costs nothing extra
+ const gain=.9*credit,loss=lossMult*credit+stopExit;
+ return {pFill:w.pFill,credit,gain,loss,ev:win*gain-(1-win)*loss,evPerAttempt:w.pFill*(win*gain-(1-win)*loss),steps:w.steps};}
+const fillModel={params:FILL,comboQuote,giveUp,hazard,fillWithin,legPrices,tryComboFill,workEntry,expectedTrade,oneSecond};
 function createExecution(a){
  const position=cid=>a.state().positions.find(p=>p.conid===cid),note=(e,text)=>{if(e.status===text)return false;e.status=text;return true;};
  function owned(entry){const legs=entry.legs||[],s=legs.find(l=>l.side==='SELL'),l=legs.find(l=>l.side==='BUY');if(legs.length!==2||!s||!l||s.right!=='P'||l.right!=='P'||s.ratio!==1||l.ratio!==1||s.expiry!==l.expiry||s.underConid!==l.underConid||s.strike<=l.strike)return null;const sp=position(s.conid),lp=position(l.conid),sq=-(sp?.qty||0),lq=lp?.qty||0;if(sq===0&&lq===0)return {closed:true};if(!Number.isSafeInteger(sq)||sq<=0||sq!==lq||sq>entry.filledQty)return null;return {s,l,qty:sq};}
@@ -1058,7 +1104,8 @@ function createExecution(a){
    if(e.exitOrderId){if(!existing){changed=note(e,'RECONCILE_EXIT')||changed;continue;}if(existing.status==='working'&&guard(existing)){a.fill(existing);changed=true;}changed=note(e,existing.status==='filled'?'CLOSED':existing.status==='working'?'EXIT_WORKING':existing.status==='cancelled'?'EXIT_CANCELLED_MANUALLY':'EXIT_REJECTED')||changed;continue;}
    if(S.orders.some(o=>o.status==='working'&&(o.legs||[o]).some(l=>[pair.s.conid,pair.l.conid].includes(l.conid)))){changed=note(e,'OTHER_ORDER_REQUIRES_REVIEW')||changed;continue;}
    const session=a.session(now);if(!session){changed=note(e,'WAITING_REGULAR_SESSION')||changed;continue;}if(!live(pair,now)){changed=note(e,'WAITING_FRESH_LIVE_QUOTES')||changed;continue;}
-   const credit=-entry.avgFill,qs=a.quotes()[pair.s.conid],ql=a.quotes()[pair.l.conid],debit=qs.ask-ql.bid;
+   // Mark at mid, as the course does (thinkorswim P&L); the exit order itself then meets the fill model.
+   const credit=-entry.avgFill,qs=a.quotes()[pair.s.conid],ql=a.quotes()[pair.l.conid],debit=(qs.bid+qs.ask)/2-(ql.bid+ql.ask)/2;
    if(!finite(debit)||debit<0){changed=note(e,'INVALID_SPREAD_MARKET')||changed;continue;}
    e.entryCredit=credit;e.tpDebit=credit*.1;e.slDebit=credit*4;e.lastDebit=debit;
    const today=new Intl.DateTimeFormat('en-CA',{timeZone:'America/New_York',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date(now)).replaceAll('-','');
@@ -1073,7 +1120,7 @@ function createExecution(a){
  }
  return {manage,guard};
 }
-return {sma,ema,metrics,screen,days,expiration,fresh,quoteQuality,size,exposure,economics,validate,recommend,explain,limits,bollinger,deltaText,createExecution};});
+return {sma,ema,metrics,screen,days,expiration,fresh,quoteQuality,size,exposure,economics,validate,recommend,explain,limits,fillModel,bollinger,deltaText,createExecution};});
 </script>
 <script id="bpsx-ui">/* BPSX chart review and explicit paper-combo workflow. Never calls broker order APIs. */
 (function(root){'use strict';const C=root.BPSX;
@@ -1127,10 +1174,14 @@ root.BPSXUI={create(a){
   if(errors.length)return {...result,qty:0,maxQty:0,reason:errors.join(' · ')};
   return result;
  }
- function autoCredit(){if(!ticket.autoCredit||!selection?.chain)return;const s=selection,short=s.chain.puts.find(r=>r.conid===s.short),long=s.chain.puts.find(r=>r.conid===s.long),bid=short?.quote?.bid,ask=long?.quote?.ask;if(!Number.isFinite(bid)||!Number.isFinite(ask))return;const credit=Math.round((bid-ask)*100)/100;if(ticket.credit!==credit){ticket.credit=credit;revision++;}}
+ function autoCredit(){if(!ticket.autoCredit||!selection?.chain)return;const s=selection,short=s.chain.puts.find(r=>r.conid===s.short),long=s.chain.puts.find(r=>r.conid===s.long),qs=short?.quote,ql=long?.quote;if(![qs?.bid,qs?.ask,ql?.bid,ql?.ask].every(Number.isFinite))return;const credit=Math.floor(((qs.bid+qs.ask)/2-(ql.bid+ql.ask)/2)*100+1e-9)/100;if(ticket.credit!==credit){ticket.credit=credit;revision++;}}
  function recalculate(){autoCredit();const result=sizing();if(ticket.autoSize&&Number(ticket.qty)!==result.qty){ticket.qty=result.qty;revision++;}return result;}
  function sizingView(){const r=sizing();return '<section id="bpsx-sizing" aria-label="Position sizing"><p><b>'+(ticket.autoSize?'Automatic sizing':'Manual quantity override')+'</b> · Target premium $'+fmt(r.target)+' (allocation ÷10 ÷10 trades). Suggested '+r.qty+' spreads; current capacity estimate '+r.maxQty+'. '+esc(r.reason)+'.</p><p>Per spread: premium $'+fmt(r.perCredit)+' · structural max loss $'+fmt(r.perRisk)+'. Whole-spread quantities are rounded DOWN (conservative app policy); zero means do not force a trade. Account available funds, pending BPSX risk, open premium and total defined risk constrain sizing. Other working strategies must be reconciled first. The existing paper account projection and estimated entry fees also cap quantity. Estimates are before slippage; final paper risk/fee checks still apply.</p></section>';}
- function patchTicket(){recalculate();const qty=el?.querySelector('[data-ticket="qty"]');if(qty&&document.activeElement!==qty)qty.value=ticket.qty;const node=el?.querySelector('#bpsx-sizing');if(node)node.outerHTML=sizingView();const automatic=el?.querySelector('[data-ticket="autoSize"]');if(automatic)automatic.checked=ticket.autoSize;patchPayoff();const out=el?.querySelector('#bpsx-blockers');if(out)out.textContent=blockers().join(' · ')||'Ready for paper-order confirmation';}
+ function fillView(){const s=selection,ch=s?.chain,short=ch?.puts.find(r=>r.conid===s.short),long=ch?.puts.find(r=>r.conid===s.long);if(!short?.quote||!long?.quote)return '<section id="bpsx-fill" class="note">Fill model: select both legs.</section>';
+  const F=C.fillModel,legs=[{conid:short.conid,side:'SELL'},{conid:long.conid,side:'BUY'}],quotes={[short.conid]:short.quote,[long.conid]:long.quote},cq=F.comboQuote(legs,quotes);if(!cq)return '<section id="bpsx-fill" class="note">Fill model: waiting for both bids and asks.</section>';
+  const lim=-Math.abs(Number(ticket.credit)),phi=Number.isFinite(lim)&&lim?F.giveUp(lim,cq):null,t=x=>phi===null?'—':(F.fillWithin(phi,cq.ticks,x)*100).toFixed(0)+'%',e=F.expectedTrade(cq);
+  return '<section id="bpsx-fill" class="note"><b>Realistic fill estimate</b> · mid credit $'+fmt(-cq.mid)+', natural $'+fmt(-cq.natural)+' · your limit $'+fmt(Math.abs(lim))+(phi===null?'':' is '+(phi<=0?'at/better than mid':(phi*100).toFixed(0)+'% of the way to natural'))+'. Chance of a fill within 1 min '+t(60)+', 5 min '+t(300)+', 30 min '+t(1800)+'.'+(e.ev==null?'':' Working it like the course (mid, then −1¢ every 2 min, max 3¢): fill '+(e.pFill*100).toFixed(0)+'% at about $'+fmt(e.credit)+'; expected profit $'+fmt(e.ev*100)+' per contract (85% wins at +90% of credit, losses −3× credit plus a marketable stop exit).')+' Paper fills use this same model.</section>';}
+ function patchTicket(){recalculate();const qty=el?.querySelector('[data-ticket="qty"]');if(qty&&document.activeElement!==qty)qty.value=ticket.qty;const node=el?.querySelector('#bpsx-sizing');if(node)node.outerHTML=sizingView();const fnode=el?.querySelector('#bpsx-fill');if(fnode)fnode.outerHTML=fillView();const automatic=el?.querySelector('[data-ticket="autoSize"]');if(automatic)automatic.checked=ticket.autoSize;patchPayoff();const out=el?.querySelector('#bpsx-blockers');if(out)out.textContent=blockers().join(' · ')||'Ready for paper-order confirmation';}
  const resolved=r=>!!r&&!r.quoteError&&(r.bidAskResolved===true||((Number.isFinite(r.quote?.bid)||r.bidAbsent===true)&&(Number.isFinite(r.quote?.ask)||r.askAbsent===true)));
  const putsComplete=ch=>!!ch?.puts?.length&&ch.coverageDone!==false&&ch.puts.every(resolved);
  function acceptChain(ch){const s=selection,previous=s.chain,same=previous?.symbol===ch.symbol&&previous?.expiry===ch.expiry&&previous.puts.length===ch.puts.length&&previous.puts.every((r,i)=>r.conid===ch.puts[i].conid);
@@ -1182,7 +1233,7 @@ root.BPSXUI={create(a){
   const ch=s.chain;if(!ch)return '<section class="panel"><h3>Preparing BPSX options chain…</h3><p>'+esc(message)+'</p><button data-action="chain"'+(busy?' disabled':'')+'>Retry chain</button></section>';
   const options=id=>'<option value="">Choose listed put</option>'+ch.puts.map(r=>'<option value="'+r.conid+'"'+(r.conid===id?' selected':'')+'>'+esc(r.strike+' · δ '+C.deltaText(r.quote?.greeks?.delta)+' · '+(r.quote?.status||r.quoteState||'Loading'))+'</option>').join('');
   const short=ch.puts.find(r=>r.conid===s.short),long=ch.puts.find(r=>r.conid===s.long),e=C.economics(short,long,Number(ticket.credit),Number(ticket.qty));
-  return '<section class="panel"><h3>Options chain · '+esc(s.symbol)+'</h3>'+guide()+'<label>Quote mode<select id="bpsx-data-mode"'+(busy?' disabled':'')+'><option value="frozen"'+(dataMode==='frozen'?' selected':'')+'>Live / last close (frozen inspection)</option><option value="live"'+(dataMode==='live'?' selected':'')+'>Live only</option></select></label><label>Expiration<select id="bpsx-expiry"'+(busy?' disabled':'')+'>'+ch.expirations.filter(x=>C.days(x)>=20&&C.days(x)<=45).map(x=>'<option value="'+x+'"'+(x===ch.expiry?' selected':'')+'>'+x+' · '+C.days(x)+' days</option>').join('')+'</select></label><div class="bpsx-fields"><label>Initial ATM-down batch (auto-extends to delta)<select id="bpsx-chain-count"'+(busy?' disabled':'')+'>'+[13,25,49].map(n=>'<option'+(n===chainCount?' selected':'')+'>'+n+'</option>').join('')+'</select></label><p class="note">ATM first, then only lower OTM strikes. Automatically extends through observed 9–15 delta and protective strikes; no ITM put requests.</p></div><div class="bpsx-fields"><label>SELL higher put<select id="bpsx-short"'+(busy||!chainVisible(ch)?' disabled':'')+'>'+options(s.short)+'</select></label><label>BUY lower put<select id="bpsx-long"'+(busy||!chainVisible(ch)?' disabled':'')+'>'+options(s.long)+'</select></label></div><div class="bpsx-actions"><button data-action="refresh"'+(busy?' disabled':'')+'>Refresh selected quotes</button><button data-action="chain">Reload chain</button><button data-action="auto"'+(busy?' disabled':'')+'>Auto-select strikes</button></div><div id="bpsx-chain-live">'+chainTable()+'</div><div class="bpsx-fields"><label>Spreads<input data-ticket="qty" type="number" min="1" step="1" value="'+esc(ticket.qty)+'"></label>'+check('autoSize','Automatic position sizing',ticket.autoSize)+'<label>Minimum credit / share<input data-ticket="credit" type="number" min="0.01" step="0.01" value="'+esc(ticket.credit)+'"></label><label>Max option bid/ask spread (% of share price)<input id="bpsx-spread-pct" type="number" min="0.05" max="5" step="0.05" value="'+esc(C.limits.spreadPct)+'"></label><label><input id="bpsx-ignore-spread" type="checkbox"'+(C.limits.ignore?' checked':'')+'> Ignore spread cap</label><label>Strategy allocation $<input id="bpsx-allocation" type="number" min="1" value="'+esc(allocation)+'"></label><label>Verified next earnings date<input data-ticket="earnings" type="date" value="'+esc(ticket.earnings)+'"></label></div>'+sizingView()+payoff()+''+check('cap','Market cap verified ≥$30bn',ticket.cap||s.marketCapScreen)+check('support','Wave down near previously tested MA / horizontal support; not after a wave up',ticket.support)+check('sector','Not biotech/pharma and no known binary event',ticket.sector)+check('weekly','Weekly options and liquidity reviewed',ticket.weekly)+check('deliverable','Both OCC deliverables are 100 ordinary shares, no adjustments',ticket.deliverable)+'<label>Exception reason if short strike is less than 15% below stock<input data-ticket="bufferReason" value="'+esc(ticket.bufferReason)+'"></label><p id="bpsx-blockers" role="status">'+esc(blockers().join(' · ')||'Ready for paper-order confirmation')+'</p><button id="bpsx-send" data-action="send"'+(busy||!putsComplete(ch)?' disabled':'')+'>Review & send PAPER spread</button><p class="note">No broker submission. Monitor daily. Close before earnings/expiry; review trend/support breaks, 90% profit and 3× credit loss. TP/SL are automatic PAPER conditions after entry fills, not broker protection or guaranteed fill levels. Gaps can cause the structural maximum loss.</p></section>';
+  return '<section class="panel"><h3>Options chain · '+esc(s.symbol)+'</h3>'+guide()+'<label>Quote mode<select id="bpsx-data-mode"'+(busy?' disabled':'')+'><option value="frozen"'+(dataMode==='frozen'?' selected':'')+'>Live / last close (frozen inspection)</option><option value="live"'+(dataMode==='live'?' selected':'')+'>Live only</option></select></label><label>Expiration<select id="bpsx-expiry"'+(busy?' disabled':'')+'>'+ch.expirations.filter(x=>C.days(x)>=20&&C.days(x)<=45).map(x=>'<option value="'+x+'"'+(x===ch.expiry?' selected':'')+'>'+x+' · '+C.days(x)+' days</option>').join('')+'</select></label><div class="bpsx-fields"><label>Initial ATM-down batch (auto-extends to delta)<select id="bpsx-chain-count"'+(busy?' disabled':'')+'>'+[13,25,49].map(n=>'<option'+(n===chainCount?' selected':'')+'>'+n+'</option>').join('')+'</select></label><p class="note">ATM first, then only lower OTM strikes. Automatically extends through observed 9–15 delta and protective strikes; no ITM put requests.</p></div><div class="bpsx-fields"><label>SELL higher put<select id="bpsx-short"'+(busy||!chainVisible(ch)?' disabled':'')+'>'+options(s.short)+'</select></label><label>BUY lower put<select id="bpsx-long"'+(busy||!chainVisible(ch)?' disabled':'')+'>'+options(s.long)+'</select></label></div><div class="bpsx-actions"><button data-action="refresh"'+(busy?' disabled':'')+'>Refresh selected quotes</button><button data-action="chain">Reload chain</button><button data-action="auto"'+(busy?' disabled':'')+'>Auto-select strikes</button></div><div id="bpsx-chain-live">'+chainTable()+'</div><div class="bpsx-fields"><label>Spreads<input data-ticket="qty" type="number" min="1" step="1" value="'+esc(ticket.qty)+'"></label>'+check('autoSize','Automatic position sizing',ticket.autoSize)+'<label>Minimum credit / share<input data-ticket="credit" type="number" min="0.01" step="0.01" value="'+esc(ticket.credit)+'"></label><label>Max option bid/ask spread (% of share price)<input id="bpsx-spread-pct" type="number" min="0.05" max="5" step="0.05" value="'+esc(C.limits.spreadPct)+'"></label><label><input id="bpsx-ignore-spread" type="checkbox"'+(C.limits.ignore?' checked':'')+'> Ignore spread cap</label><label>Strategy allocation $<input id="bpsx-allocation" type="number" min="1" value="'+esc(allocation)+'"></label><label>Verified next earnings date<input data-ticket="earnings" type="date" value="'+esc(ticket.earnings)+'"></label></div>'+sizingView()+fillView()+payoff()+''+check('cap','Market cap verified ≥$30bn',ticket.cap||s.marketCapScreen)+check('support','Wave down near previously tested MA / horizontal support; not after a wave up',ticket.support)+check('sector','Not biotech/pharma and no known binary event',ticket.sector)+check('weekly','Weekly options and liquidity reviewed',ticket.weekly)+check('deliverable','Both OCC deliverables are 100 ordinary shares, no adjustments',ticket.deliverable)+'<label>Exception reason if short strike is less than 15% below stock<input data-ticket="bufferReason" value="'+esc(ticket.bufferReason)+'"></label><p id="bpsx-blockers" role="status">'+esc(blockers().join(' · ')||'Ready for paper-order confirmation')+'</p><button id="bpsx-send" data-action="send"'+(busy||!putsComplete(ch)?' disabled':'')+'>Review & send PAPER spread</button><p class="note">No broker submission. Monitor daily. Close before earnings/expiry; review trend/support breaks, 90% profit and 3× credit loss. TP/SL are automatic PAPER conditions after entry fills, not broker protection or guaranteed fill levels. Gaps can cause the structural maximum loss.</p></section>';
  }
  function draw(){if(!active())return;const oldBox=el.querySelector('.bpsx-chain-table'),oldTop=oldBox?.scrollTop||0,oldLeft=oldBox?.scrollLeft||0;
   if(selection&&selection.bookId!==book()){epoch++;selection=null;ticket=empty();busy=false;message='Paper account changed; select a stock again.';}
@@ -1195,7 +1246,7 @@ root.BPSXUI={create(a){
   const d=r?.data||await request('bpsx_stock?symbol='+encodeURIComponent(symbol));if(!current(s,id))return;s.data=d;message='Daily chart ready; inspect support and event risk.';draw();loadChart(true);if(qualified)await loadChain();
  }
  function selectLeg(leg,conid){const s=selection;if(busy)throw Error('Wait for quote refresh to finish');if(!chainVisible(s?.chain)||!['short','long'].includes(leg)||!s.chain.puts.some(r=>r.conid===conid&&r.right==='P'))throw Error('Choose a listed put in this chain');const box=el.querySelector('.bpsx-chain-table'),top=box?.scrollTop||0,left=box?.scrollLeft||0;const deselect=s[leg]===conid;s[leg]=deselect?null:conid;if(s.short===s.long)s[leg==='short'?'long':'short']=null;s.manualLegs=true;ticket.deliverable=false;revision++;message=(leg==='short'?'SELL short':'BUY protective')+' put '+(deselect?'deselected':'selected')+'. Use the other + / − button to choose the second leg. Credit is unchanged; automatic sizing updates to the edited pair. Refresh selected quotes before sending.';draw();const next=el.querySelector('.bpsx-chain-table');if(next){next.scrollTop=top;next.scrollLeft=left;}}
- function auto(keep=false){const s=selection;if(!s?.chain?.puts?.length){message='Load the put chain first.';draw();return;}const focused=document.activeElement?.id,caret=document.activeElement?.selectionStart,p=C.recommend(s.chain.puts,sharePrice(s.chain).value,Date.now(),dataMode==='frozen');s.manualLegs=false;s.short=p?.short.conid||null;s.long=p?.long.conid||null;if(!keep)ticket=empty();revision++;if(p){if(!keep||ticket.credit===''){ticket.credit=Number(p.credit.toFixed(2));}message='Pre-selected observed delta '+fmt(p.short.quote.greeks.delta)+' · '+fmt(p.buffer*100)+'% buffer. Review all entry checks.';}else message='No qualifying spread yet — '+C.explain(s.chain.puts,sharePrice(s.chain).value,Date.now(),dataMode==='frozen')+'. No invented prices or Greeks.';draw();revealLegs();if(focused){const input=el.querySelector('#'+CSS.escape(focused));input?.focus({preventScroll:true});if(Number.isInteger(caret)&&input?.setSelectionRange)try{input.setSelectionRange(caret,caret);}catch(_){}}}
+ function auto(keep=false){const s=selection;if(!s?.chain?.puts?.length){message='Load the put chain first.';draw();return;}const focused=document.activeElement?.id,caret=document.activeElement?.selectionStart,p=C.recommend(s.chain.puts,sharePrice(s.chain).value,Date.now(),dataMode==='frozen');s.manualLegs=false;s.short=p?.short.conid||null;s.long=p?.long.conid||null;if(!keep)ticket=empty();revision++;if(p){if(!keep||ticket.credit===''){ticket.autoCredit=true;ticket.credit='';} /* limit = mid credit, as the course works it */message='Pre-selected observed delta '+fmt(p.short.quote.greeks.delta)+' · '+fmt(p.buffer*100)+'% buffer. Review all entry checks.';}else message='No qualifying spread yet — '+C.explain(s.chain.puts,sharePrice(s.chain).value,Date.now(),dataMode==='frozen')+'. No invented prices or Greeks.';draw();revealLegs();if(focused){const input=el.querySelector('#'+CSS.escape(focused));input?.focus({preventScroll:true});if(Number.isInteger(caret)&&input?.setSelectionRange)try{input.setSelectionRange(caret,caret);}catch(_){}}}
  function chainPath(s,expiry,ids=[]){return 'bpsx_chain?symbol='+encodeURIComponent(s.symbol)+'&expiry='+expiry+'&spot='+C.metrics(s.data).price+'&mode='+dataMode+'&count='+chainCount+'&center='+chainCenter+(ids.length?'&ids='+ids.join(','):'');}
  async function loadChain(expiry){if(!selection?.data||busy)return;const s=selection,id=epoch;busy=true;await releaseChain();if(!current(s,id)){busy=false;return;}s.qualified=true;s.manualLegs=false;s.retryAt=0;s.chain=null;s.short=null;s.long=null;ticket=empty();revision++;message='Loading verified option contracts; put bids and asks first…';draw();try{
   if(!expiry){const meta=await request('bpsx_chain?symbol='+encodeURIComponent(s.symbol));if(!current(s,id))return;expiry=C.expiration(meta.expirations);}
@@ -2794,22 +2845,29 @@ function comboMid(legs){
 }
 function tryFillCombo(o){
   var rem = o.qty - o.filledQty; if(rem<=0){ o.status='filled'; return true; }
-  var touch = comboNet(o.legs, false, rem);
-  if(!touch) return false;
-  if(o.type==='COMBO' && o.limit!=null && touch.net > o.limit + 1e-9) return false;
-  var use = o.limit!=null ? comboNet(o.legs,false,rem) : comboNet(o.legs,true,rem);
-  if(!use) return false;
-  var proposed=o.legs.map(function(l,i){return Object.assign({},l,{qty:(l.side==='BUY'?1:-1)*rem*l.ratio,price:use.prices[i],commission:commission(l,rem*l.ratio,use.prices[i],l.side)});});
+  /* Shared realistic fill model (bpsx.js fillModel): marketable spreads pay 74% of the half-spread,
+     resting spreads fill with a probability set by where the limit sits between mid and natural. */
+  var model = window.BPSX && window.BPSX.fillModel;
+  var hit = model ? model.tryComboFill(o, Q, Date.now()) : null;
+  if(!model){
+    var touch = comboNet(o.legs, false, rem);
+    if(!touch || (o.limit!=null && touch.net > o.limit + 1e-9)) return false;
+    hit = {prices:touch.prices, net:touch.net, phi:1};
+  }
+  if(!hit) return false;
+  var proposed=o.legs.map(function(l,i){return Object.assign({},l,{qty:(l.side==='BUY'?1:-1)*rem*l.ratio,price:hit.prices[i],commission:commission(l,rem*l.ratio,hit.prices[i],l.side)});});
   if(!fillRiskAllowed(proposed,o))return true;
   for(var i=0;i<o.legs.length;i++){
     var leg=o.legs[i];
-    applyFill(o, rem*leg.ratio, use.prices[i], leg);
+    applyFill(o, rem*leg.ratio, hit.prices[i], leg);
   }
-  o.filledQty = o.qty; o.avgFill = use.net; o.status='filled'; o.filledAt=Date.now();
-  say((use.net>=0?'Bought':'Sold')+' '+qty(rem)+'x '+o.symbol+' for '+(use.net>=0?'a debit of ':'a credit of ')+money(Math.abs(use.net))+' per spread');
+  o.filledQty = o.qty; o.avgFill = hit.net; o.fillGiveUp = Math.round(hit.phi*1000)/1000; o.status='filled'; o.filledAt=Date.now();
+  say((hit.net>=0?'Bought':'Sold')+' '+qty(rem)+'x '+o.symbol+' for '+(hit.net>=0?'a debit of ':'a credit of ')+money(Math.abs(hit.net))+' per spread');
   snapshotEquity(true);
   return true;
 }
+/* resting spreads are evaluated every second, not only when a leg ticks */
+setInterval(function(){var any=false;(S.orders||[]).forEach(function(o){if(o.status==='working'&&o.type==='COMBO'&&o.limit!=null&&tryFill(o))any=true;});if(any)save();},1000);
 function settleExpired(){
   // Never invent settlement from a current or missing underlying quote.
   return false;

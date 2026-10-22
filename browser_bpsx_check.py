@@ -166,7 +166,7 @@ with sync_playwright() as p:
     assert page.locator('#bpsx-short').input_value()=='2'
     assert page.locator('#bpsx-long').input_value()=='1'
     assert page.evaluate("window.__qualityRow===document.querySelector('[data-chain-row=\"2\"]')")
-    assert 'exceeds $0.40' in page.locator('#bpsx-blockers').inner_text()
+    assert 'spread exceeds' in page.locator('#bpsx-blockers').inner_text()
     control['wide']=False
     page.wait_for_function("!document.querySelector('.bpsx-selected-summary').textContent.includes('NOT currently eligible')")
     assert page.locator('[data-ticket="qty"]').input_value()=='3'
@@ -295,7 +295,8 @@ with sync_playwright() as p:
     page.wait_for_function("window.__paper.S.orders.some(o=>o.bpsxExit?.reason==='TP'&&o.status==='filled')")
     exits=page.evaluate('window.__paper.S.orders.filter(o=>o.bpsxExit)')
     assert len(exits)==1
-    assert abs(exits[0]['avgFill']-.05)<1e-9
+    # Marketable TP (natural 0.05 <= limit): fill model pays 74% of the half-spread from mid 0.035.
+    assert abs(exits[0]['avgFill']-(.035+.74*.015))<1e-6,exits[0]['avgFill']
     assert page.evaluate('window.__paper.S.positions.every(p=>p.qty===0)')
     assert page.evaluate('window.__paper.S.cash')<cash_before  # buyback debit + actual fees
     page.wait_for_timeout(1200)

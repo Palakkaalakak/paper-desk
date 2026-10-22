@@ -65,6 +65,52 @@ function explain(rows,spot,now=Date.now(),inspection=false){rows=rows.slice().so
 function bollinger(xs,n=20,k=2){if(!Number.isInteger(n)||n<2||n>200||!positive(k)||k>5)throw Error('Bollinger settings: period 2–200; deviations >0 to 5');const middle=sma(xs,n),upper=[],lower=[];for(let i=0;i<xs.length;i++){if(i<n-1){upper.push(null);lower.push(null);continue;}const sd=Math.sqrt(xs.slice(i-n+1,i+1).reduce((v,x)=>v+(x-middle[i])**2,0)/n);upper.push(middle[i]+k*sd);lower.push(middle[i]-k*sd);}return {middle,upper,lower};}
 function deltaText(x){if(!finite(x))return '—';return x===0?'0':Number(x.toPrecision(5)).toString();}
 // Browser-local paper bracket. No network or broker order API exists here.
+// ---------------------------------------------------------------------------------------------
+// Realistic combo fill model, shared by the paper simulator and the profitability estimate.
+// Sources (see README "Fill model"):
+//  * SEC DERA, "Hope at a Reasonable Price: Customer Use of Limit Orders in the 0DTE Market" (2025):
+//    customer limit orders resting INSIDE the spread fill within one second at rates set by their
+//    position in the spread, not by its width: half a half-spread better than mid 13-33%, at mid
+//    45-70%, a third to a half of a half-spread past mid 84-90% (2-4 tick spreads).
+//  * Hendershott, Khan & Riordan, "Option Auctions" (RFS 2026): marketable option orders in continuous
+//    trading pay 74% of the half-spread on average (EQ 0.74; 0.38 in price-improvement auctions).
+//  * Lo, MacKinlay & Zhang (JFE 2002): fills need the market to trade THROUGH a resting price, not touch it.
+//  * Course (OPTIONS_MASTER_DOCUMENT.md): BPSX is worked as a limit near mid and walked a cent at a time
+//    (TAL: mid 0.45, 20 of 23 contracts at 0.45, the rest at 0.44) -> minutes, not seconds, at mid.
+// phi = give-up from mid in units of the natural-to-mid distance H (0 = mid, 1 = natural, <0 better than mid).
+const FILL={a:.40,b:3.5,        // logistic fit to the SEC one-second fill rates by phi
+ scale:.0063,                   // single-stock combos vs 0DTE SPX: median ~2 min at mid (course anecdotes)
+ refTicks:4,                    // SEC data cover spreads up to 4 ticks; wider legs = thinner market (assumption)
+ marketable:.74,                // marketable orders pay 74% of the half-spread (continuous trading)
+ maxStep:2};                    // seconds credited per evaluation; a sleeping tab earns no fills
+const legTick=p=>p<3?.05:.10;   // conservative non-penny ticks; penny classes trade finer
+function comboQuote(legs,quotes){let mid=0,half=0,ticks=0;for(const l of legs){const q=quotes[l.conid];if(!q||!finite(q.bid)||!finite(q.ask)||q.bid<0||q.ask<q.bid)return null;const m=(q.bid+q.ask)/2,h=(q.ask-q.bid)/2,s=l.side==='BUY'?1:-1,r=l.ratio||1;mid+=s*m*r;half+=h*r;ticks=Math.max(ticks,(q.ask-q.bid)/legTick(m));}
+ return {mid,half,natural:mid+half,ticks};}   // net debit convention: + pay, - receive
+const oneSecond=phi=>1/(1+Math.exp(-(FILL.a+FILL.b*phi)));
+function hazard(phi,ticks){if(phi>=1)return Infinity;const thin=ticks>FILL.refTicks?FILL.refTicks/ticks:1;return -Math.log(1-oneSecond(phi))*FILL.scale*thin;}
+const giveUp=(limit,cq)=>cq.half>0?(limit-cq.mid)/cq.half:(limit>=cq.mid?1:-Infinity);
+const fillWithin=(phi,ticks,seconds)=>phi>=1?1:1-Math.exp(-hazard(phi,ticks)*seconds);
+// Per-leg prices that sum exactly to the combo price, each leg moved from its own mid by phi of its half-width.
+function legPrices(legs,quotes,phi){return legs.map(l=>{const q=quotes[l.conid],m=(q.bid+q.ask)/2,h=(q.ask-q.bid)/2;return Math.round((m+(l.side==='BUY'?1:-1)*phi*h)*10000)/10000;});}
+// One paper evaluation: returns {phi,prices,net} when this order fills now, else null.
+function tryComboFill(order,quotes,now,rng=Math.random){const cq=comboQuote(order.legs,quotes);if(!cq)return null;
+ const last=finite(order.fillCheckAt)?order.fillCheckAt:now;order.fillCheckAt=now;
+ let phi;if(order.limit==null||order.limit>=cq.natural-1e-9)phi=Math.min(FILL.marketable,order.limit==null?FILL.marketable:giveUp(order.limit,cq));
+ else{phi=giveUp(order.limit,cq);const dt=Math.min(FILL.maxStep,Math.max(0,(now-last)/1000));if(!(rng()<1-Math.exp(-hazard(phi,cq.ticks)*dt)))return null;}
+ const prices=legPrices(order.legs,quotes,phi);let net=0;order.legs.forEach((l,i)=>{net+=(l.side==='BUY'?1:-1)*prices[i]*(l.ratio||1);});
+ return {phi,prices,net:Math.round(net*10000)/10000};}
+// The course's way of working an entry: start at mid, give up one tick every `stepSec` until `maxTicks`.
+function workEntry(cq,{stepSec=120,maxTicks=3,tick=.01}={}){let alive=1,ePhi=0,pFill=0;const out=[];
+ for(let k=0;k<=maxTicks;k++){const phi=cq.half>0?Math.min(1,k*tick/cq.half):0,p=fillWithin(phi,cq.ticks,stepSec);ePhi+=alive*p*phi;pFill+=alive*p;out.push({ticks:k,phi,pStep:p,pCum:pFill});alive*=1-p;}
+ return {pFill,avgPhiIfFilled:pFill>0?ePhi/pFill:null,steps:out};}
+// Expected profit per trade for a BPSX credit spread with the course's exits and this fill model.
+// credit-based course baselines: TP closes at 10% of credit, managed loss = 3x credit, win rate 85%.
+function expectedTrade(cq,{win=.85,lossMult=3,stepSec=120,maxTicks=3}={}){if(!cq)return {pFill:0,ev:null};const midCredit=-cq.mid,w=workEntry(cq,{stepSec,maxTicks});if(!(midCredit>0)||!w.pFill)return {pFill:w.pFill,ev:null};
+ const credit=midCredit-w.avgPhiIfFilled*cq.half;
+ const stopExit=FILL.marketable*cq.half;   // stop is a marketable buy-back; the TP rests at its limit (0.1x credit), so it costs nothing extra
+ const gain=.9*credit,loss=lossMult*credit+stopExit;
+ return {pFill:w.pFill,credit,gain,loss,ev:win*gain-(1-win)*loss,evPerAttempt:w.pFill*(win*gain-(1-win)*loss),steps:w.steps};}
+const fillModel={params:FILL,comboQuote,giveUp,hazard,fillWithin,legPrices,tryComboFill,workEntry,expectedTrade,oneSecond};
 function createExecution(a){
  const position=cid=>a.state().positions.find(p=>p.conid===cid),note=(e,text)=>{if(e.status===text)return false;e.status=text;return true;};
  function owned(entry){const legs=entry.legs||[],s=legs.find(l=>l.side==='SELL'),l=legs.find(l=>l.side==='BUY');if(legs.length!==2||!s||!l||s.right!=='P'||l.right!=='P'||s.ratio!==1||l.ratio!==1||s.expiry!==l.expiry||s.underConid!==l.underConid||s.strike<=l.strike)return null;const sp=position(s.conid),lp=position(l.conid),sq=-(sp?.qty||0),lq=lp?.qty||0;if(sq===0&&lq===0)return {closed:true};if(!Number.isSafeInteger(sq)||sq<=0||sq!==lq||sq>entry.filledQty)return null;return {s,l,qty:sq};}
@@ -78,7 +124,8 @@ function createExecution(a){
    if(e.exitOrderId){if(!existing){changed=note(e,'RECONCILE_EXIT')||changed;continue;}if(existing.status==='working'&&guard(existing)){a.fill(existing);changed=true;}changed=note(e,existing.status==='filled'?'CLOSED':existing.status==='working'?'EXIT_WORKING':existing.status==='cancelled'?'EXIT_CANCELLED_MANUALLY':'EXIT_REJECTED')||changed;continue;}
    if(S.orders.some(o=>o.status==='working'&&(o.legs||[o]).some(l=>[pair.s.conid,pair.l.conid].includes(l.conid)))){changed=note(e,'OTHER_ORDER_REQUIRES_REVIEW')||changed;continue;}
    const session=a.session(now);if(!session){changed=note(e,'WAITING_REGULAR_SESSION')||changed;continue;}if(!live(pair,now)){changed=note(e,'WAITING_FRESH_LIVE_QUOTES')||changed;continue;}
-   const credit=-entry.avgFill,qs=a.quotes()[pair.s.conid],ql=a.quotes()[pair.l.conid],debit=qs.ask-ql.bid;
+   // Mark at mid, as the course does (thinkorswim P&L); the exit order itself then meets the fill model.
+   const credit=-entry.avgFill,qs=a.quotes()[pair.s.conid],ql=a.quotes()[pair.l.conid],debit=(qs.bid+qs.ask)/2-(ql.bid+ql.ask)/2;
    if(!finite(debit)||debit<0){changed=note(e,'INVALID_SPREAD_MARKET')||changed;continue;}
    e.entryCredit=credit;e.tpDebit=credit*.1;e.slDebit=credit*4;e.lastDebit=debit;
    const today=new Intl.DateTimeFormat('en-CA',{timeZone:'America/New_York',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date(now)).replaceAll('-','');
@@ -93,4 +140,4 @@ function createExecution(a){
  }
  return {manage,guard};
 }
-return {sma,ema,metrics,screen,days,expiration,fresh,quoteQuality,size,exposure,economics,validate,recommend,explain,limits,bollinger,deltaText,createExecution};});
+return {sma,ema,metrics,screen,days,expiration,fresh,quoteQuality,size,exposure,economics,validate,recommend,explain,limits,fillModel,bollinger,deltaText,createExecution};});

@@ -1,5 +1,17 @@
 # Paper Desk — IB Gateway paper-trading workstation
 
+## Realistic fill model for paper spreads — 2026-10-22
+
+Paper spreads (BPSX and Trade-tab combos) now fill the way the research says real ones do, and the same code produces the profitability estimate (`bpsx.js` → `fillModel`; chart: `docs/spread_vs_profit.py`).
+
+- **Position in the spread drives fill odds, not width.** SEC DERA, *Hope at a Reasonable Price* (2025): resting customer option limit orders fill within one second at ~13–33% when half a half-spread better than mid, 45–70% at mid, 84–90% a third to a half past mid, for 2–4 tick spreads. A logistic in φ (give-up from mid in half-spreads) fits these points.
+- **Single-stock spreads are slower than 0DTE SPX.** The rate is scaled so a mid-priced spread has a median fill of about 2 minutes, matching the course (TAL: mid 0.45, 20 of 23 contracts at 0.45, the rest at 0.44). Legs wider than 4 ticks (beyond the SEC data) are treated as proportionally thinner markets; this part is an assumption.
+- **Fills require time and live data.** Each evaluation credits at most 2 seconds; a hidden/sleeping tab earns no fills. Resting combos are checked every second.
+- **Marketable spreads pay 74% of the half-spread** (Hendershott, Khan & Riordan, *Option Auctions*, RFS 2026, continuous-trading EQ 0.74), so a limit at the natural price gets realistic improvement rather than the natural itself.
+- **Exits mark at mid, as the course does.** The TP rests at 10% of credit and fills by the same model; stops and the expiry close are marketable.
+- **Ticket estimate:** the BPSX ticket shows the chance your limit fills within 1, 5 and 30 minutes. It also shows the expected result of working the order like the course (mid, then −1¢ every 2 minutes, up to 3¢). The default limit is the mid credit, rounded down to a cent.
+- Lo, MacKinlay & Zhang (JFE 2002) found touch-based hypothetical fills too optimistic. That is why fills are hazard-based and need elapsed time, not a quote touch.
+
 ## IB symbol search and option chains, per IB API docs — 2026-10-21
 
 Behaviour now follows IBKR's TWS API documentation (option chains, contract details, pacing, market-data types, error codes) and the pinned `ib_async==2.1.0` source:
