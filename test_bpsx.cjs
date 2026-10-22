@@ -19,7 +19,7 @@ test('LIVE identifies feed, not quote quality; raw 0.10 / 20.00 cannot recommend
  assert.equal(C.quoteQuality(null,now).usable,false);assert.equal(C.fresh(undefined,now),false);
  const rejected=structuredClone(short);rejected.quoteError='354: permission';assert.equal(C.quoteQuality(rejected,now).usable,false);
  const quality=C.quoteQuality(s,now);assert.equal(quality.width,19.9);assert.equal(quality.usable,false);assert.match(quality.label,/WIDE/);assert.equal(C.fresh(s,now),true);
- assert.equal(C.recommend([l,s],1659.7,now),null);assert.ok(C.validate(s,l,1,1,1659.7,100,now).some(m=>/Entry spread cost/.test(m)));assert.equal(s.quote.bid-l.quote.ask,-19.9);assert.equal(JSON.stringify([s,l]),before);
+ assert.equal(C.recommend([l,s],1659.7,now),null);assert.ok(C.validate(s,l,1,1,1659.7,100,now).some(m=>/Quoted spread/.test(m)));assert.equal(s.quote.bid-l.quote.ask,-19.9);assert.equal(JSON.stringify([s,l]),before);
  for(const mutate of [r=>r.quote.status='FROZEN',r=>r.quote.at=now-61000,r=>r.quote.ask=.1,r=>delete r.quote.bid,r=>r.quote.brokerConid=999]){const r=structuredClone(short);mutate(r);assert.equal(C.quoteQuality(r,now).usable,false);}
  assert.ok(Math.abs((1-1440/1661)*100-13.305237808549)<1e-9);
 });
@@ -62,17 +62,16 @@ test('expiry safety close respects verified session end and readonly/changed-boo
 test('latched stop cannot fill outside session or over another manual closing order',()=>{const f=exitFixture();f.q[2].ask=2.5;f.noFill=true;f.execution.manage();const exit=f.state.orders[0];f.session=null;assert.equal(f.execution.guard(exit),false);f.session={start:now-1000,end:now+1000};f.state.orders.push({id:'other',status:'working',conid:2});assert.equal(f.execution.guard(exit),false);});
 test('expiration prefers 26 days without stretching outside 20–45',()=>{const exp=d=>new Date(now+d*86400000).toISOString().slice(0,10).replaceAll('-','');assert.equal(C.expiration([exp(45),exp(26),exp(20)],now),exp(26));assert.equal(C.expiration([exp(19),exp(46)],now),null);});
 
-test('allowed spread cost is derived from the payoff arithmetic at the short delta',()=>{
- C.limits.edgeShare=25;C.limits.ignore=false;
- const near=(a,b)=>assert.ok(Math.abs(a-b)<.0005,a+' vs '+b);
- near(C.allowedFriction(-.09),.126);near(C.allowedFriction(-.10),.116);near(C.allowedFriction(-.12),.096);near(C.allowedFriction(-.15),.068);
+test('spread cap is anchored to the course (80% at 10 delta) and scales with the trade edge',()=>{
+ C.limits.anchor=80;C.limits.ignore=false;
+ const near=(a,b)=>assert.ok(Math.abs(a-b)<.01,a+' vs '+b);
+ near(C.allowedFriction(-.10),.80);near(C.allowedFriction(-.09),.857);near(C.allowedFriction(-.12),.689);near(C.allowedFriction(-.15),.528);
  assert.equal(C.allowedFriction(-.3),0);assert.equal(C.allowedFriction(null),0);
  const now=Date.now(),leg=(k,bid,ask,delta)=>({secType:'OPT',right:'P',conid:k,strike:k,currency:'USD',mult:100,root:'T',expiry:'x',quote:{bid,ask,status:'LIVE',at:now,brokerConid:k,greeks:{delta}}});
- assert.ok(Math.abs(C.spreadFriction(leg(2,1.00,1.10),leg(1,.20,.30)).ratio-.125)<1e-9);
- const run=(s,l)=>C.validate(s,l,.5,1,100,1,now).filter(m=>/Entry spread cost/.test(m));
- assert.equal(run(leg(2,1.00,1.10,-.10),leg(1,.20,.30)).length,1);   // 12.5% > 11.6%
- assert.equal(run(leg(2,1.00,1.05,-.10),leg(1,.20,.25)).length,0);   // 6.3%
- assert.equal(run(leg(2,1.00,1.07,-.15),leg(1,.20,.27)).length,1);   // 8.75% > 6.8% at 15 delta
- assert.equal(run(leg(2,1.00,1.07,-.10),leg(1,.20,.27)).length,0);   // same market fine at 10 delta
- C.limits.ignore=true;assert.equal(run(leg(2,1.00,1.10,-.10),leg(1,.20,.30)).length,0);C.limits.ignore=false;
+ // the course's "marginal" example: both legs 0.40 wide on a 0.50 mid credit -> r = 0.80
+ const f=C.spreadFriction(leg(2,1.80,2.20),leg(1,1.30,1.70));assert.ok(Math.abs(f.ratio-.8)<1e-9);
+ const run=(s,l)=>C.validate(s,l,.5,1,100,1,now).filter(m=>/Quoted spread/.test(m));
+ assert.equal(run(leg(2,1.80,2.19,-.10),leg(1,1.30,1.69)).length,0);   // just inside at 10 delta
+ assert.equal(run(leg(2,1.80,2.20,-.15),leg(1,1.30,1.70)).length,1);   // same market too wide at 15 delta
+ C.limits.ignore=true;assert.equal(run(leg(2,1.80,2.20,-.15),leg(1,1.30,1.70)).length,0);C.limits.ignore=false;
 });

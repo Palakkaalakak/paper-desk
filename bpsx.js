@@ -23,20 +23,20 @@ function days(expiry,now=Date.now()){if(!/^\d{8}$/.test(expiry||''))return NaN;r
 function expiration(xs,now=Date.now()){return xs.filter(x=>days(x,now)>=20&&days(x,now)<=45).sort((a,b)=>Math.abs(days(a,now)-26)-Math.abs(days(b,now)-26))[0]||null;}
 function fresh(r,now=Date.now(),inspection=false){const q=r?.quote;return !!q&&!!r&&q.brokerConid===r.conid&&(q.status==='LIVE'||inspection&&q.status==='FROZEN')&&!q.halted&&!q.error&&finite(q.bid)&&q.bid>=0&&positive(q.ask)&&q.ask>=q.bid&&finite(q.at)&&now-q.at>=-1000&&now-q.at<60000;}
 // Feed type is independent of liquidity. Never rewrite raw bid/ask prices.
-// Spread rule, derived from the strategy's own payoff arithmetic (no flat $ or %-of-price figure:
-// quoted option widths are set by tick size and barely move with stock price or strike).
-// Per share, with credit C and short-put delta d taken as the loss probability (win rate 1-d):
-//   take-profit closes at 90% of C  -> win  = +0.9C
-//   stop closes at a 4C debit       -> loss = -3C
-//   gross expected value            EV = 0.9C(1-d) - 3C*d       (break-even win rate is 3/3.9 = 76.9%)
-// Entering at the natural price concedes (short width + long width)/2 versus mid; the stop exit
-// (probability ~d) crosses a similar market again, the take-profit exit is near-worthless and ~free:
-//   round-trip friction  F ~ concession * (1 + d)
-// Friction is certain while the edge is only estimated, so by default it may use at most a quarter of EV:
-//   allowed concession / midCredit = edgeShare * (0.9(1-d) - 3d) / (1 + d)
-// -> about 12.6% at 9 delta, 11.6% at 10, 9.6% at 12, 6.8% at 15, and none once EV is not positive.
-const limits={edgeShare:25,ignore:false};
-const allowedFriction=d=>{d=Math.abs(d);if(!finite(d)||d<=0||d>=1)return 0;return Math.max(0,limits.edgeShare/100*(.9*(1-d)-3*d)/(1+d));};
+// Spread rule, calibrated on the course (OPTIONS_MASTER_DOCUMENT.md, BPSX chapter) and scaled by delta.
+// Metric: H = (short width + long width)/2 = distance from the natural price to the mid credit; r = H / mid credit.
+// Course anchors: credits run $0.45-0.96; the bid/ask guide is under $0.30-0.40 and "40 cents against a 50 cent
+// credit is already marginal" (both legs 0.40 wide -> H 0.40, r = 0.80 at the ~10 delta the examples use);
+// fills are worked to near mid (IB default 0.30 vs mid 0.45, filled 0.44-0.45; closing debits are 1-3 cents).
+// What the cap must scale with is the edge left to pay friction, from the course's payoff arithmetic:
+//   realistic win rate = 1 - delta - 0.05   (80-90% band, 85% midpoint at 10 delta)
+//   win  = +0.9 credit (take-profit);  loss = about -2 credit (Rule 5 exits typically cost 1-2x, Rule 4 caps at 3x)
+//   EV = 0.9(1-q) - 2q  with q = delta + 0.05;  friction ~ H*(1+q) (entry, plus the stop exit with probability q)
+// so the affordable H/credit scales as EV/(1+q), pinned to the course's 0.80 at 10 delta:
+//   cap(d) = anchor * g(d)/g(0.10),  g = EV/(1+q)   -> ~86% at 9 delta, 80% at 10, 69% at 12, 53% at 15, 0 once EV <= 0.
+const limits={anchor:80,ignore:false};
+const edgeFactor=d=>{const q=d+.05,ev=.9*(1-q)-2*q;return ev>0?ev/(1+q):0;};
+const allowedFriction=d=>{d=Math.abs(d);if(!finite(d)||d<=0||d>=1)return 0;return limits.anchor/100*edgeFactor(d)/edgeFactor(.10);};
 const legMid=r=>finite(r?.quote?.bid)&&finite(r?.quote?.ask)?(r.quote.bid+r.quote.ask)/2:null;
 function spreadFriction(s,l){const ms=legMid(s),ml=legMid(l);if(ms===null||ml===null)return null;const concession=((s.quote.ask-s.quote.bid)+(l.quote.ask-l.quote.bid))/2,midCredit=ms-ml;return {concession,midCredit,ratio:midCredit>0?concession/midCredit:Infinity};}
 function quoteQuality(r,now=Date.now(),inspection=false){const q=r?.quote,width=finite(q?.bid)&&finite(q?.ask)?q.ask-q.bid:null,mid=legMid(r);let label=!q?'No current market':q.error||r.quoteError?'Quote error':!finite(q.bid)||!positive(q.ask)?'Missing market':width<0?'Crossed market':width>mid?'WIDE — spread exceeds the option\u2019s own mid; not a real market':!fresh(r,now,inspection)?'Not fresh LIVE market':'Width OK — not execution assurance';return {width,label,usable:!r?.quoteError&&fresh(r,now,inspection)&&finite(width)&&width>=0&&width<=mid,max:null};}
@@ -64,7 +64,7 @@ function exposure(state){
 function economics(s,l,credit,qty=1){const width=s?.strike-l?.strike;return {credit:credit*100*qty,maxProfit:credit*100*qty,maxLoss:(width-credit)*100*qty,ratio:(width-credit)/credit,breakeven:s?.strike-credit,width,takeProfitDebit:credit*.1,lossAlertDebit:credit*4,takeProfitProfit:credit*90*qty,stopLossLoss:credit*300*qty,takeProfitCost:credit*10*qty,stopLossCost:credit*400*qty};}
 function validate(s,l,credit,qty,spot,under,now=Date.now(),inspection=false){const out=[];if(!s||!l)return ['Select both put legs'];
  for(const r of [s,l]){if(r.secType!=='OPT'||r.right!=='P'||r.currency!=='USD'||r.mult!==100||r.underConid!==under||!Number.isSafeInteger(r.conid)||r.conid<=0||r.deliverableStatus!=='IB_STANDARD_CLASS_NOT_OCC_VERIFIED')out.push('Verified standard USD 100-share put contracts required');if(!fresh(r,now,inspection))out.push('Fresh LIVE two-sided IB quotes required');}
- {const f=spreadFriction(s,l),allow=allowedFriction(s.quote?.greeks?.delta);if(f&&!limits.ignore&&!(f.ratio<=allow*1.0000001))out.push('Entry spread cost $'+f.concession.toFixed(2)+' is '+(Number.isFinite(f.ratio)?(f.ratio*100).toFixed(1)+'% of the mid credit':'more than the whole credit')+'; at this delta the trade can afford '+(allow*100).toFixed(1)+'% ('+limits.edgeShare+'% of its expected edge)');}
+ {const f=spreadFriction(s,l),allow=allowedFriction(s.quote?.greeks?.delta);if(f&&!limits.ignore&&!(f.ratio<=allow*1.0000001))out.push('Quoted spread (natural-to-mid distance $'+f.concession.toFixed(2)+') is '+(Number.isFinite(f.ratio)?(f.ratio*100).toFixed(1)+'% of the mid credit':'more than the whole credit')+'; at this delta the cap at this delta is '+(allow*100).toFixed(0)+'% ('+limits.anchor+'% at 10 delta, tighter as delta rises)');}
  if(s.conid===l.conid||s.root!==l.root||s.expiry!==l.expiry||!positive(l.strike)||s.strike<=l.strike||!positive(spot)||s.strike>=spot)out.push('Sell higher OTM put / buy lower put, same underlying and expiry');
  if(!(days(s.expiry,now)>=20&&days(s.expiry,now)<=45))out.push('Select 20–45 DTE');
  const delta=s.quote?.greeks?.delta;if(!finite(delta)||delta>-.09||delta<-.15)out.push('Observed short put delta must be −0.09 to −0.15');
