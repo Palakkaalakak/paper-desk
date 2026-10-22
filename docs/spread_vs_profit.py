@@ -1,33 +1,35 @@
-"""BPSX spread vs profit using the COURSE baselines (OPTIONS_MASTER_DOCUMENT.md, BPSX chapter).
-Credit $0.50/share (Netflix, Alibaba, TAL examples: 0.45-0.96); win +0.9*credit (Rule 1); managed loss -3*credit
-(Rule 4: "you lose three times your money"; Rule 5 exits usually cost 1-2x); win rate 80/85/90% (85% realistic);
-bid/ask guide under $0.30-0.40 per option; fills near mid (TAL: IB default 0.30, mid 0.45, filled 0.44-0.45;
-Netflix quote 4.50 filled 4.40); closing debits 1-3 cents.  Both legs assumed equally wide: H = width (natural-to-mid)."""
+"""BPSX: one chart - bid/ask spread vs profit ($) AND win rate, course baselines (OPTIONS_MASTER_DOCUMENT.md).
+$100 stock, credit $0.50/share ($50/contract), win +0.9x credit, loss 3x credit (managed), realistic win rate 85%,
+spread rule 0.4% of share price per option, fills near mid (course-observed: gives up ~7% of the natural-to-mid distance)."""
 import numpy as np, matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
-C=0.50; TP=0.9; EXIT_TP=0.25
-def ev(width, phi, win, loss=3.0):
-    H=width                         # (short width + long width)/2 with equal legs
-    entry=phi*H; gain=TP*C-entry-EXIT_TP*phi*H; lose=loss*C+entry+phi*H
-    return win*gain-(1-win)*lose    # $ per share
-w=np.linspace(0,0.8,161)
-fig,ax=plt.subplots(1,2,figsize=(13,5.3))
-fills=[(0.0,'fill at mid','#2a9d8f'),(0.07,'course-observed fill (TAL: 1c of 15c)','#4c78a8'),(0.25,'give up 25%','#e9c46a'),(1.0,'fill at natural price','#e76f51')]
-for phi,lab,c in fills: ax[0].plot(w,[ev(x,phi,.85)*100 for x in w],color=c,lw=2.2,label=lab)
-ax[1].set_title('Win-rate sensitivity, course-observed fill (loss = 3× credit)')
-for win,c in [(.80,'#e76f51'),(.85,'#4c78a8'),(.90,'#2a9d8f')]: ax[1].plot(w,[ev(x,.07,win)*100 for x in w],color=c,lw=2.2,label=f'{int(win*100)}% win rate')
-for loss,ls in [(2.0,'--'),(1.0,':')]: ax[1].plot(w,[ev(x,.07,.85,loss)*100 for x in w],color='#4c78a8',ls=ls,lw=1.4,label=f'85%, avg loss {loss:.0f}× (Rule 5 exits)')
-for a in ax:
-    a.axhline(0,color='k',lw=1);a.axvspan(.30,.40,color='grey',alpha=.18);pass
-    a.set_xlabel('Quoted bid/ask width per option ($), both legs equal');a.set_ylabel('Expected profit per trade (¢ per share, $0.50 credit)');a.grid(alpha=.25)
-ax[0].set_title('Fill behaviour (85% win rate, loss = 3× credit)')
-ax[0].legend(fontsize=8.5,loc='lower left');ax[1].legend(fontsize=8.5,loc='upper right')
-for a in ax: a.annotate('course guide\n$0.30–0.40',xy=(.35,a.get_ylim()[0]+(a.get_ylim()[1]-a.get_ylim()[0])*.04),ha='center',va='bottom',fontsize=8.5)
-fig.suptitle('BPSX: bid/ask width vs expected profit — course baselines (credit $0.50, TP 90%, loss 3×, win 85%)',fontsize=12)
+plt.rcParams['text.usetex']=False
+plt.rcParams['text.parse_math']=False
+PRICE,C,TP,LOSS,EXIT_TP,WIN=100.0,0.50,0.9,3.0,0.25,0.85
+def parts(width,phi):
+    entry=phi*width; gain=TP*C-entry-EXIT_TP*phi*width; lose=LOSS*C+entry+phi*width
+    return gain,lose
+def ev(width,phi,win=WIN): g,l=parts(width,phi); return (win*g-(1-win)*l)*100          # $ per contract
+def breakeven(width,phi): g,l=parts(width,phi); return l/(g+l)*100
+x=np.linspace(0,1.2,241)                      # spread as % of share price
+w=x/100*PRICE
+fig,ax=plt.subplots(figsize=(11.5,6.2)); ax2=ax.twinx()
+cols={0.07:'#2a6fdb',0.25:'#e08a00'}
+for phi,lab in [(0.07,'fill near mid (course-observed)'),(0.25,'give up 25% of distance to natural')]:
+    ax.plot(x,[ev(v,phi) for v in w],color=cols[phi],lw=2.8,label=f'Profit per trade — {lab}')
+    ax2.plot(x,[breakeven(v,phi) for v in w],color=cols[phi],lw=2,ls='--',label=f'Win rate needed to break even — {lab}')
+ax2.axhline(85,color='#555',ls=':',lw=1.6);ax2.text(1.19,85.4,'course realistic win rate 85%',ha='right',fontsize=9,color='#333')
+ax.axhline(0,color='k',lw=1);ax.axvline(0.4,color='#2a9d8f',lw=2);ax.axvspan(0,0.4,color='#2a9d8f',alpha=.08)
+ax.text(0.405,ax.get_ylim()[1]*0.93 if False else 17.5,'course limit\n0.4% of price\n($0.40 on $100)',color='#1e7a6f',fontsize=9.5,va='top')
+ax.set_xlabel('Bid/ask spread per option, % of share price   (on a $100 stock: 0.4% = $0.40)')
+ax.set_ylabel('Expected profit per trade, $ per contract (credit $50)')
+ax2.set_ylabel('Win rate needed to break even (%)');ax2.set_ylim(70,100)
+ax.set_ylim(-30,22)
+ax.set_title('BPSX — how the spread moves profit ($) and the win rate you need, together\n(85% realistic win rate · win +0.9× credit · managed loss −3× credit · $0.50 credit)',fontsize=11.5)
+h1,l1=ax.get_legend_handles_labels();h2,l2=ax2.get_legend_handles_labels()
+ax.legend(h1+h2,l1+l2,fontsize=8.8,loc='lower left');ax.grid(alpha=.25)
 fig.tight_layout();fig.savefig('docs/spread_vs_profit.png',dpi=130)
-print('width$ | mid | observed | 25% | natural   (cents/share, 85% win, 3x loss)')
-for x in (0,.1,.2,.3,.4,.5,.6,.8): print(x,[round(ev(x,p,.85)*100,1) for p,_,_ in fills])
-print('zero-EV width:',{l:next((round(x,2) for x in np.linspace(0,3,3001) if ev(x,p,.85)<=0),None) for p,l,_ in fills})
-print('win rate needed at 0.40 width:',{l:(round(next((wr for wr in np.linspace(.5,1,5001) if ev(.4,p,wr)>=0),float('nan'))*100,1)) for p,l,_ in fills})
-print('win rate needed at 0 width:',round(next(wr for wr in np.linspace(.5,1,5001) if ev(0,0,wr)>=0)*100,1))
+print('spread%  $/opt  profit$ (near-mid)  breakeven win%   | profit$ (25%)  breakeven win%')
+for p in (0,.2,.4,.6,.8,1.0,1.2):
+    v=p/100*PRICE;print(p,round(v,2),round(ev(v,.07),1),round(breakeven(v,.07),1),'|',round(ev(v,.25),1),round(breakeven(v,.25),1))
