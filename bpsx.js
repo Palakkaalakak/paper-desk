@@ -23,9 +23,16 @@ function days(expiry,now=Date.now()){if(!/^\d{8}$/.test(expiry||''))return NaN;r
 function expiration(xs,now=Date.now()){return xs.filter(x=>days(x,now)>=20&&days(x,now)<=45).sort((a,b)=>Math.abs(days(a,now)-26)-Math.abs(days(b,now)-26))[0]||null;}
 function fresh(r,now=Date.now(),inspection=false){const q=r?.quote;return !!q&&!!r&&q.brokerConid===r.conid&&(q.status==='LIVE'||inspection&&q.status==='FROZEN')&&!q.halted&&!q.error&&finite(q.bid)&&q.bid>=0&&positive(q.ask)&&q.ask>=q.bid&&finite(q.at)&&now-q.at>=-1000&&now-q.at<60000;}
 // Feed type is independent of liquidity. Never rewrite raw bid/ask prices.
-const limits={spreadPct:1}; // per-leg bid/ask width cap, % of share price (user-adjustable)
-const maxWidth=spot=>finite(spot)&&spot>0?spot*limits.spreadPct/100:null;
-function quoteQuality(r,now=Date.now(),inspection=false,spot=null){const cap=maxWidth(spot);const q=r?.quote,width=finite(q?.bid)&&finite(q?.ask)?q.ask-q.bid:null;let label=!q?'No current market':q.error||r.quoteError?'Quote error':!finite(q.bid)||!positive(q.ask)?'Missing market':width<0?'Crossed market':cap===null?'Share price needed for spread rule':width>cap*1.0000001?'WIDE — fails '+limits.spreadPct+'% of share price ($'+cap.toFixed(2)+')':!fresh(r,now,inspection)?'Not fresh LIVE market':'Width OK — not execution assurance';return {width,label,usable:!r?.quoteError&&fresh(r,now,inspection)&&finite(width)&&cap!==null&&width<=cap*1.0000001,max:cap};}
+// Spread rule, derived from the strategy's own arithmetic rather than a flat dollar/price figure.
+// Quoted option widths are set by tick size and barely move with stock price or strike (so a % of
+// share price has no structural basis); what matters is how much of the credit is lost crossing
+// the market. A credit-spread fill between mid and natural concedes half of each leg's width:
+//   concession = (short width + long width) / 2,  midCredit = short mid - long mid.
+// The take-profit closes at 90% of credit, so the entry concession is capped at the same 10% by default.
+const limits={frictionPct:10,ignore:false};
+const legMid=r=>finite(r?.quote?.bid)&&finite(r?.quote?.ask)?(r.quote.bid+r.quote.ask)/2:null;
+function spreadFriction(s,l){const ms=legMid(s),ml=legMid(l);if(ms===null||ml===null)return null;const concession=((s.quote.ask-s.quote.bid)+(l.quote.ask-l.quote.bid))/2,midCredit=ms-ml;return {concession,midCredit,ratio:midCredit>0?concession/midCredit:Infinity};}
+function quoteQuality(r,now=Date.now(),inspection=false){const q=r?.quote,width=finite(q?.bid)&&finite(q?.ask)?q.ask-q.bid:null,mid=legMid(r);let label=!q?'No current market':q.error||r.quoteError?'Quote error':!finite(q.bid)||!positive(q.ask)?'Missing market':width<0?'Crossed market':width>mid?'WIDE — spread exceeds the option\u2019s own mid; not a real market':!fresh(r,now,inspection)?'Not fresh LIVE market':'Width OK — not execution assurance';return {width,label,usable:!r?.quoteError&&fresh(r,now,inspection)&&finite(width)&&width>=0&&width<=mid,max:null};}
 // Course premium target with conservative floor rounding (app policy).
 function size({allocation,credit,width,usage,available,feePerSpread=0,accountQty=Number.MAX_SAFE_INTEGER}){
  const target=allocation/100,perCredit=credit*100,perRisk=(width-credit)*100;
@@ -49,7 +56,8 @@ function exposure(state){
 }
 function economics(s,l,credit,qty=1){const width=s?.strike-l?.strike;return {credit:credit*100*qty,maxProfit:credit*100*qty,maxLoss:(width-credit)*100*qty,ratio:(width-credit)/credit,breakeven:s?.strike-credit,width,takeProfitDebit:credit*.1,lossAlertDebit:credit*4,takeProfitProfit:credit*90*qty,stopLossLoss:credit*300*qty,takeProfitCost:credit*10*qty,stopLossCost:credit*400*qty};}
 function validate(s,l,credit,qty,spot,under,now=Date.now(),inspection=false){const out=[];if(!s||!l)return ['Select both put legs'];
- for(const r of [s,l]){if(r.secType!=='OPT'||r.right!=='P'||r.currency!=='USD'||r.mult!==100||r.underConid!==under||!Number.isSafeInteger(r.conid)||r.conid<=0||r.deliverableStatus!=='IB_STANDARD_CLASS_NOT_OCC_VERIFIED')out.push('Verified standard USD 100-share put contracts required');if(!fresh(r,now,inspection))out.push('Fresh LIVE two-sided IB quotes required');if(r.quote&&(maxWidth(spot)===null||r.quote.ask-r.quote.bid>maxWidth(spot)*1.0000001))out.push('Option bid/ask spread exceeds '+limits.spreadPct+'% of share price'+(maxWidth(spot)===null?'':' ($'+maxWidth(spot).toFixed(2)+')'));}
+ for(const r of [s,l]){if(r.secType!=='OPT'||r.right!=='P'||r.currency!=='USD'||r.mult!==100||r.underConid!==under||!Number.isSafeInteger(r.conid)||r.conid<=0||r.deliverableStatus!=='IB_STANDARD_CLASS_NOT_OCC_VERIFIED')out.push('Verified standard USD 100-share put contracts required');if(!fresh(r,now,inspection))out.push('Fresh LIVE two-sided IB quotes required');}
+ {const f=spreadFriction(s,l);if(f&&!limits.ignore&&!(f.ratio<=limits.frictionPct/100*1.0000001))out.push('Entry spread cost $'+f.concession.toFixed(2)+' is '+(Number.isFinite(f.ratio)?(f.ratio*100).toFixed(0)+'% of the mid credit':'more than the whole credit')+', above the '+limits.frictionPct+'% cap');}
  if(s.conid===l.conid||s.root!==l.root||s.expiry!==l.expiry||!positive(l.strike)||s.strike<=l.strike||!positive(spot)||s.strike>=spot)out.push('Sell higher OTM put / buy lower put, same underlying and expiry');
  if(!(days(s.expiry,now)>=20&&days(s.expiry,now)<=45))out.push('Select 20–45 DTE');
  const delta=s.quote?.greeks?.delta;if(!finite(delta)||delta>-.09||delta<-.15)out.push('Observed short put delta must be −0.09 to −0.15');
@@ -89,4 +97,4 @@ function createExecution(a){
  }
  return {manage,guard};
 }
-return {sma,ema,metrics,screen,days,expiration,fresh,quoteQuality,size,exposure,economics,validate,recommend,explain,limits,bollinger,deltaText,createExecution};});
+return {sma,ema,metrics,screen,days,expiration,fresh,quoteQuality,size,exposure,economics,validate,recommend,explain,limits,spreadFriction,bollinger,deltaText,createExecution};});

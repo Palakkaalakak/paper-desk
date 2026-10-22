@@ -18,9 +18,9 @@ test('LIVE identifies feed, not quote quality; raw 0.10 / 20.00 cannot recommend
  const s=put(21,1440,.1,20,-.096789),l=put(22,1430,.1,20,-.088585),before=JSON.stringify([s,l]);
  assert.equal(C.quoteQuality(null,now).usable,false);assert.equal(C.fresh(undefined,now),false);
  const rejected=structuredClone(short);rejected.quoteError='354: permission';assert.equal(C.quoteQuality(rejected,now).usable,false);
- const quality=C.quoteQuality(s,now,false,1659.7);assert.equal(quality.width,19.9);assert.equal(quality.usable,false);assert.match(quality.label,/WIDE/);assert.equal(C.fresh(s,now),true);
- assert.equal(C.recommend([l,s],1659.7,now),null);assert.ok(C.validate(s,l,1,1,1659.7,100,now).some(m=>m.startsWith('Option bid/ask spread exceeds')));assert.equal(s.quote.bid-l.quote.ask,-19.9);assert.equal(JSON.stringify([s,l]),before);
- for(const mutate of [r=>r.quote.status='FROZEN',r=>r.quote.at=now-61000,r=>r.quote.ask=.1,r=>delete r.quote.bid,r=>r.quote.brokerConid=999]){const r=structuredClone(short);mutate(r);assert.equal(C.quoteQuality(r,now,false,1659.7).usable,false);}
+ const quality=C.quoteQuality(s,now);assert.equal(quality.width,19.9);assert.equal(quality.usable,false);assert.match(quality.label,/WIDE/);assert.equal(C.fresh(s,now),true);
+ assert.equal(C.recommend([l,s],1659.7,now),null);assert.ok(C.validate(s,l,1,1,1659.7,100,now).some(m=>/Entry spread cost/.test(m)));assert.equal(s.quote.bid-l.quote.ask,-19.9);assert.equal(JSON.stringify([s,l]),before);
+ for(const mutate of [r=>r.quote.status='FROZEN',r=>r.quote.at=now-61000,r=>r.quote.ask=.1,r=>delete r.quote.bid,r=>r.quote.brokerConid=999]){const r=structuredClone(short);mutate(r);assert.equal(C.quoteQuality(r,now).usable,false);}
  assert.ok(Math.abs((1-1440/1661)*100-13.305237808549)<1e-9);
 });
 const noUsage={trades:0,premium:0,risk:0,pendingRisk:0};
@@ -62,19 +62,13 @@ test('expiry safety close respects verified session end and readonly/changed-boo
 test('latched stop cannot fill outside session or over another manual closing order',()=>{const f=exitFixture();f.q[2].ask=2.5;f.noFill=true;f.execution.manage();const exit=f.state.orders[0];f.session=null;assert.equal(f.execution.guard(exit),false);f.session={start:now-1000,end:now+1000};f.state.orders.push({id:'other',status:'working',conid:2});assert.equal(f.execution.guard(exit),false);});
 test('expiration prefers 26 days without stretching outside 20–45',()=>{const exp=d=>new Date(now+d*86400000).toISOString().slice(0,10).replaceAll('-','');assert.equal(C.expiration([exp(45),exp(26),exp(20)],now),exp(26));assert.equal(C.expiration([exp(19),exp(46)],now),null);});
 
-test('spread cap scales with share price and is adjustable',()=>{C.limits.spreadPct=.4;
- const now=Date.now(),mk=(bid,ask)=>({secType:'OPT',right:'P',quote:{bid,ask,status:'LIVE',at:now,brokerConid:1},conid:1});
- assert.equal(C.quoteQuality(mk(1,1.4),now,false,100).usable,true);   // $0.40 on $100
- assert.equal(C.quoteQuality(mk(1,1.5),now,false,100).usable,false);
- assert.equal(C.quoteQuality(mk(1,1.5),now,false,400).usable,true);   // $1.60 allowed on $400
- assert.equal(C.quoteQuality(mk(1,1.3),now,false,50).usable,false);   // only $0.20 on $50
- assert.equal(C.quoteQuality(mk(1,1.1),now,false,null).usable,false); // no share price, no pass
- C.limits.spreadPct=1;assert.equal(C.quoteQuality(mk(1,1.9),now,false,100).usable,true); // default 1% = $1.00
-});
-
-test('explain reports why no spread qualifies',()=>{
- const now=Date.now(),row=(k,bid,ask,delta)=>({secType:'OPT',right:'P',conid:k,strike:k,quote:{bid,ask,status:'LIVE',at:now,brokerConid:k,greeks:{delta}}});
- const msg=C.explain([row(90,1,5,-.1),row(85,.5,.6,-.05)],100,now);
- assert.match(msg,/2 puts, 2 with bid\/ask, 1 with delta/);assert.match(msg,/blocked by/);
- assert.match(C.explain([],100,now),/waiting for quotes/);
+test('spread rule is entry cost relative to credit, with an ignore switch',()=>{
+ const now=Date.now(),leg=(k,bid,ask)=>({secType:'OPT',right:'P',conid:k,strike:k,currency:'USD',mult:100,quote:{bid,ask,status:'LIVE',at:now,brokerConid:k}});
+ assert.ok(Math.abs(C.spreadFriction(leg(2,1.00,1.10),leg(1,.20,.30)).ratio-.125)<1e-9);
+ assert.ok(Math.abs(C.spreadFriction(leg(2,1.00,1.05),leg(1,.20,.25)).ratio-.05/.80)<1e-9);
+ C.limits.frictionPct=10;C.limits.ignore=false;
+ const run=(s,l)=>C.validate(Object.assign(s,{root:'T',expiry:'x'}),Object.assign(l,{root:'T',expiry:'x'}),.5,1,100,1,now).filter(m=>/Entry spread cost/.test(m));
+ assert.equal(run(leg(2,1.00,1.10),leg(1,.20,.30)).length,1);
+ assert.equal(run(leg(2,1.00,1.05),leg(1,.20,.25)).length,0);
+ C.limits.ignore=true;assert.equal(run(leg(2,1.00,1.10),leg(1,.20,.30)).length,0);C.limits.ignore=false;
 });
