@@ -62,13 +62,17 @@ test('expiry safety close respects verified session end and readonly/changed-boo
 test('latched stop cannot fill outside session or over another manual closing order',()=>{const f=exitFixture();f.q[2].ask=2.5;f.noFill=true;f.execution.manage();const exit=f.state.orders[0];f.session=null;assert.equal(f.execution.guard(exit),false);f.session={start:now-1000,end:now+1000};f.state.orders.push({id:'other',status:'working',conid:2});assert.equal(f.execution.guard(exit),false);});
 test('expiration prefers 26 days without stretching outside 20–45',()=>{const exp=d=>new Date(now+d*86400000).toISOString().slice(0,10).replaceAll('-','');assert.equal(C.expiration([exp(45),exp(26),exp(20)],now),exp(26));assert.equal(C.expiration([exp(19),exp(46)],now),null);});
 
-test('spread rule is entry cost relative to credit, with an ignore switch',()=>{
- const now=Date.now(),leg=(k,bid,ask)=>({secType:'OPT',right:'P',conid:k,strike:k,currency:'USD',mult:100,quote:{bid,ask,status:'LIVE',at:now,brokerConid:k}});
+test('allowed spread cost is derived from the payoff arithmetic at the short delta',()=>{
+ C.limits.edgeShare=25;C.limits.ignore=false;
+ const near=(a,b)=>assert.ok(Math.abs(a-b)<.0005,a+' vs '+b);
+ near(C.allowedFriction(-.09),.126);near(C.allowedFriction(-.10),.116);near(C.allowedFriction(-.12),.096);near(C.allowedFriction(-.15),.068);
+ assert.equal(C.allowedFriction(-.3),0);assert.equal(C.allowedFriction(null),0);
+ const now=Date.now(),leg=(k,bid,ask,delta)=>({secType:'OPT',right:'P',conid:k,strike:k,currency:'USD',mult:100,root:'T',expiry:'x',quote:{bid,ask,status:'LIVE',at:now,brokerConid:k,greeks:{delta}}});
  assert.ok(Math.abs(C.spreadFriction(leg(2,1.00,1.10),leg(1,.20,.30)).ratio-.125)<1e-9);
- assert.ok(Math.abs(C.spreadFriction(leg(2,1.00,1.05),leg(1,.20,.25)).ratio-.05/.80)<1e-9);
- C.limits.frictionPct=10;C.limits.ignore=false;
- const run=(s,l)=>C.validate(Object.assign(s,{root:'T',expiry:'x'}),Object.assign(l,{root:'T',expiry:'x'}),.5,1,100,1,now).filter(m=>/Entry spread cost/.test(m));
- assert.equal(run(leg(2,1.00,1.10),leg(1,.20,.30)).length,1);
- assert.equal(run(leg(2,1.00,1.05),leg(1,.20,.25)).length,0);
- C.limits.ignore=true;assert.equal(run(leg(2,1.00,1.10),leg(1,.20,.30)).length,0);C.limits.ignore=false;
+ const run=(s,l)=>C.validate(s,l,.5,1,100,1,now).filter(m=>/Entry spread cost/.test(m));
+ assert.equal(run(leg(2,1.00,1.10,-.10),leg(1,.20,.30)).length,1);   // 12.5% > 11.6%
+ assert.equal(run(leg(2,1.00,1.05,-.10),leg(1,.20,.25)).length,0);   // 6.3%
+ assert.equal(run(leg(2,1.00,1.07,-.15),leg(1,.20,.27)).length,1);   // 8.75% > 6.8% at 15 delta
+ assert.equal(run(leg(2,1.00,1.07,-.10),leg(1,.20,.27)).length,0);   // same market fine at 10 delta
+ C.limits.ignore=true;assert.equal(run(leg(2,1.00,1.10,-.10),leg(1,.20,.30)).length,0);C.limits.ignore=false;
 });
