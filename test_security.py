@@ -456,7 +456,7 @@ class GunsSourceAndStreamTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(out['rows']),1);self.assertEqual(out['rows'][0]['contentStatus'],'body_returned');self.assertNotIn('fixture-secret',repr(out))
         with patch.dict(guns_data.os.environ,{},clear=True),patch.object(guns_data,'source_fetch',return_value=b'{}'):self.assertIsNone(guns_data.float_reference('TEST')['floatShares'])
         for field,expected in [('outstandingShares',None),('floatShares',15000000)]:
-            with patch.dict(guns_data.os.environ,{'PAPER_FMP_KEY':'fixture-secret'},clear=True),patch.object(guns_data,'source_fetch',return_value=json.dumps([dict(symbol='TEST',date='2026-09-10',**{field:15000000})]).encode()):self.assertEqual(guns_data.float_reference('TEST')['floatShares'],expected)
+            with patch.dict(guns_data.os.environ,{'PAPER_FMP_KEY':'fixture-secret'},clear=True),patch.object(guns_data,'source_fetch',return_value=json.dumps([dict(symbol='TEST',date=(dt.date.today()-dt.timedelta(days=3)).isoformat(),**{field:15000000})]).encode()):self.assertEqual(guns_data.float_reference('TEST')['floatShares'],expected)
 
     def test_provider_errors_redact_keys_and_redirects_are_refused(self):
         with patch.object(guns_data.urllib.request,'build_opener') as opener:
