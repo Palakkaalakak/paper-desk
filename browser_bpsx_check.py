@@ -295,8 +295,8 @@ with sync_playwright() as p:
     page.wait_for_function("window.__paper.S.orders.some(o=>o.bpsxExit?.reason==='TP'&&o.status==='filled')")
     exits=page.evaluate('window.__paper.S.orders.filter(o=>o.bpsxExit)')
     assert len(exits)==1
-    # Marketable TP (natural 0.05 <= limit): fill model pays 74% of the half-spread from mid 0.035.
-    assert abs(exits[0]['avgFill']-(.035+.74*.015))<1e-6,exits[0]['avgFill']
+    # Marketable TP (natural 0.05 <= limit) is auctioned: mid 0.035 plus 38% of the 0.015 mid-to-natural distance.
+    assert abs(exits[0]['avgFill']-(.035+.38*.015))<1e-6,exits[0]['avgFill']
     assert page.evaluate('window.__paper.S.positions.every(p=>p.qty===0)')
     assert page.evaluate('window.__paper.S.cash')<cash_before  # buyback debit + actual fees
     page.wait_for_timeout(1200)

@@ -66,51 +66,47 @@ function bollinger(xs,n=20,k=2){if(!Number.isInteger(n)||n<2||n>200||!positive(k
 function deltaText(x){if(!finite(x))return '—';return x===0?'0':Number(x.toPrecision(5)).toString();}
 // Browser-local paper bracket. No network or broker order API exists here.
 // ---------------------------------------------------------------------------------------------
-// Realistic combo fill model, shared by the paper simulator and the profitability estimate.
-// Sources (see README "Fill model"):
-//  * SEC DERA, "Hope at a Reasonable Price: Customer Use of Limit Orders in the 0DTE Market" (2025):
-//    customer limit orders resting INSIDE the spread fill within one second at rates set by their
-//    position in the spread, not by its width: half a half-spread better than mid 13-33%, at mid
-//    45-70%, a third to a half of a half-spread past mid 84-90% (2-4 tick spreads).
-//  * Hendershott, Khan & Riordan, "Option Auctions" (RFS 2026): marketable option orders in continuous
-//    trading pay 74% of the half-spread on average (EQ 0.74; 0.38 in price-improvement auctions).
-//  * Lo, MacKinlay & Zhang (JFE 2002): fills need the market to trade THROUGH a resting price, not touch it.
-//  * Course (OPTIONS_MASTER_DOCUMENT.md): BPSX is worked as a limit near mid and walked a cent at a time
-//    (TAL: mid 0.45, 20 of 23 contracts at 0.45, the rest at 0.44) -> minutes, not seconds, at mid.
-// phi = give-up from mid in units of the natural-to-mid distance H (0 = mid, 1 = natural, <0 better than mid).
-const FILL={a:.40,b:3.5,        // logistic fit to the SEC one-second fill rates by phi
- scale:.0063,                   // single-stock combos vs 0DTE SPX: median ~2 min at mid (course anecdotes)
- refTicks:4,                    // SEC data cover spreads up to 4 ticks; wider legs = thinner market (assumption)
- marketable:.74,                // marketable orders pay 74% of the half-spread (continuous trading)
- maxStep:2};                    // seconds credited per evaluation; a sleeping tab earns no fills
-const legTick=p=>p<3?.05:.10;   // conservative non-penny ticks; penny classes trade finer
-function comboQuote(legs,quotes){let mid=0,half=0,ticks=0;for(const l of legs){const q=quotes[l.conid];if(!q||!finite(q.bid)||!finite(q.ask)||q.bid<0||q.ask<q.bid)return null;const m=(q.bid+q.ask)/2,h=(q.ask-q.bid)/2,s=l.side==='BUY'?1:-1,r=l.ratio||1;mid+=s*m*r;half+=h*r;ticks=Math.max(ticks,(q.ask-q.bid)/legTick(m));}
- return {mid,half,natural:mid+half,ticks};}   // net debit convention: + pay, - receive
-const oneSecond=phi=>1/(1+Math.exp(-(FILL.a+FILL.b*phi)));
-function hazard(phi,ticks){if(phi>=1)return Infinity;const thin=ticks>FILL.refTicks?FILL.refTicks/ticks:1;return -Math.log(1-oneSecond(phi))*FILL.scale*thin;}
-const giveUp=(limit,cq)=>cq.half>0?(limit-cq.mid)/cq.half:(limit>=cq.mid?1:-Infinity);
-const fillWithin=(phi,ticks,seconds)=>phi>=1?1:1-Math.exp(-hazard(phi,ticks)*seconds);
-// Per-leg prices that sum exactly to the combo price, each leg moved from its own mid by phi of its half-width.
-function legPrices(legs,quotes,phi){return legs.map(l=>{const q=quotes[l.conid],m=(q.bid+q.ask)/2,h=(q.ask-q.bid)/2;return Math.round((m+(l.side==='BUY'?1:-1)*phi*h)*10000)/10000;});}
-// One paper evaluation: returns {phi,prices,net} when this order fills now, else null.
-function tryComboFill(order,quotes,now,rng=Math.random){const cq=comboQuote(order.legs,quotes);if(!cq)return null;
- const last=finite(order.fillCheckAt)?order.fillCheckAt:now;order.fillCheckAt=now;
- let phi;if(order.limit==null||order.limit>=cq.natural-1e-9)phi=Math.min(FILL.marketable,order.limit==null?FILL.marketable:giveUp(order.limit,cq));
- else{phi=giveUp(order.limit,cq);const dt=Math.min(FILL.maxStep,Math.max(0,(now-last)/1000));if(!(rng()<1-Math.exp(-hazard(phi,cq.ticks)*dt)))return null;}
- const prices=legPrices(order.legs,quotes,phi);let net=0;order.legs.forEach((l,i)=>{net+=(l.side==='BUY'?1:-1)*prices[i]*(l.ratio||1);});
- return {phi,prices,net:Math.round(net*10000)/10000};}
-// The course's way of working an entry: start at mid, give up one tick every `stepSec` until `maxTicks`.
-function workEntry(cq,{stepSec=120,maxTicks=3,tick=.01}={}){let alive=1,ePhi=0,pFill=0;const out=[];
- for(let k=0;k<=maxTicks;k++){const phi=cq.half>0?Math.min(1,k*tick/cq.half):0,p=fillWithin(phi,cq.ticks,stepSec);ePhi+=alive*p*phi;pFill+=alive*p;out.push({ticks:k,phi,pStep:p,pCum:pFill});alive*=1-p;}
- return {pFill,avgPhiIfFilled:pFill>0?ePhi/pFill:null,steps:out};}
-// Expected profit per trade for a BPSX credit spread with the course's exits and this fill model.
-// credit-based course baselines: TP closes at 10% of credit, managed loss = 3x credit, win rate 85%.
-function expectedTrade(cq,{win=.85,lossMult=3,stepSec=120,maxTicks=3}={}){if(!cq)return {pFill:0,ev:null};const midCredit=-cq.mid,w=workEntry(cq,{stepSec,maxTicks});if(!(midCredit>0)||!w.pFill)return {pFill:w.pFill,ev:null};
- const credit=midCredit-w.avgPhiIfFilled*cq.half;
- const stopExit=FILL.marketable*cq.half;   // stop is a marketable buy-back; the TP rests at its limit (0.1x credit), so it costs nothing extra
- const gain=.9*credit,loss=lossMult*credit+stopExit;
- return {pFill:w.pFill,credit,gain,loss,ev:win*gain-(1-win)*loss,evPerAttempt:w.pFill*(win*gain-(1-win)*loss),steps:w.steps};}
-const fillModel={params:FILL,comboQuote,giveUp,hazard,fillWithin,legPrices,tryComboFill,workEntry,expectedTrade,oneSecond};
+// Paper fill rule for spreads (BPSX and Trade-tab combos), built from market-structure principles:
+// 1. Who fills you: market makers do not quote complex books; they trade against a resting spread
+//    order when it pays them (SEC DERA, "A Simple Role for Complex Options", 2025). A fill happens when
+//    your price gives them their required edge over fair value (taken as the mid).
+// 2. Their required edge is their marginal cost (adverse selection, hedging, processing). Competition
+//    pushes the price to that cost, and auctions are where they compete for one order: option auctions
+//    fill at 0.38 of the half-spread from mid (0.39-0.48 by auction type), with the fraction stable across
+//    quoted spreads from 2.5c to 13.4c (Hendershott, Khan & Riordan, "Option Auctions", RFS 2026).
+//    So the cost is a flat share of the half-spread: CONCESSION = 0.38. Patient algorithmic traders pay
+//    about 0.30 (Muravyev & Pearson, RFS 2020); continuous-book marketable orders pay 0.74.
+// 3. Tight markets fill at mid when worked patiently: near the tick floor the quote is wider than the market
+//    maker's cost. Mid orders in 2-tick markets fill 45-70% within one second, and counterparties keep under
+//    a penny a minute later (SEC DERA, "Hope at a Reasonable Price", 2025); the course fills at mid inside its
+//    allowance (each option's spread <= 0.4% of the share price).
+// 4. Immediate orders (stops, expiry closes, market orders) at or through the natural price are auctioned on
+//    Cboe (COA, up to 3 s, Rule 5.33), so they pay the competitive CONCESSION even in tight markets.
+// H = sum of each leg's half-spread x ratio = distance from the combo mid to the natural price.
+const FILL={concession:.38};
+function comboQuote(legs,quotes,spot){let mid=0,half=0,within=true;
+ for(const l of legs){const q=quotes[l.conid];if(!q||!finite(q.bid)||!finite(q.ask)||q.bid<0||q.ask<q.bid)return null;
+  const m=(q.bid+q.ask)/2,h=(q.ask-q.bid)/2,r=l.ratio||1;mid+=(l.side==='BUY'?1:-1)*m*r;half+=h*r;
+  const s=finite(spot)?spot:legSpot(l,quotes);if(!(s>0)||q.ask-q.bid>s*limits.spreadPct/100+1e-9)within=false;}
+ return {mid,half,natural:mid+half,within};}   // net debit convention: + pay, - receive
+function legSpot(l,quotes){const u=quotes[l.underConid];if(!u)return null;if(finite(u.last)&&u.last>0)return u.last;return finite(u.bid)&&finite(u.ask)&&u.bid>0?(u.bid+u.ask)/2:null;}
+// Price at which the market would fill you now: mid for patient orders inside the allowance, otherwise
+// the competitive concession towards the natural price.
+const achievable=(cq,immediate)=>cq.mid+(immediate||!cq.within?FILL.concession:0)*cq.half;
+function legPrices(legs,quotes,net,cq){const phi=cq.half>0?(net-cq.mid)/cq.half:0;return legs.map(l=>{const q=quotes[l.conid],m=(q.bid+q.ask)/2,h=(q.ask-q.bid)/2;return Math.round((m+(l.side==='BUY'?1:-1)*phi*h)*10000)/10000;});}
+// One paper evaluation: {net,prices,immediate} if the order fills now, else null.
+function tryComboFill(order,quotes){const cq=comboQuote(order.legs,quotes);if(!cq)return null;
+ const immediate=order.limit==null||order.limit>=cq.natural-1e-9,fair=achievable(cq,immediate);
+ if(!immediate&&order.limit<fair-1e-9)return null;              // asks for more than the market will give
+ const net=immediate?fair:order.limit;                           // resting orders are taken at their own price
+ const prices=legPrices(order.legs,quotes,net,cq);let sum=0;order.legs.forEach((l,i)=>{sum+=(l.side==='BUY'?1:-1)*prices[i]*(l.ratio||1);});
+ return {net:Math.round(sum*10000)/10000,prices,immediate,within:cq.within};}
+// Expected profit per trade for a BPSX credit spread under this rule and the course's exits:
+// entry worked as a limit, TP rests at 10% of credit (fills at its limit), stop is immediate, 85% wins, loss 3x.
+function expectedTrade(cq,{win=.85,lossMult=3}={}){if(!cq)return {ev:null};const credit=-achievable(cq,false);if(!(credit>0))return {credit,ev:null};
+ const stopCost=FILL.concession*cq.half,gain=.9*credit,loss=lossMult*credit+stopCost;
+ return {credit,gain,loss,stopCost,within:cq.within,ev:win*gain-(1-win)*loss,breakeven:loss/(gain+loss)};}
+const fillModel={params:FILL,comboQuote,achievable,legPrices,tryComboFill,expectedTrade};
 function createExecution(a){
  const position=cid=>a.state().positions.find(p=>p.conid===cid),note=(e,text)=>{if(e.status===text)return false;e.status=text;return true;};
  function owned(entry){const legs=entry.legs||[],s=legs.find(l=>l.side==='SELL'),l=legs.find(l=>l.side==='BUY');if(legs.length!==2||!s||!l||s.right!=='P'||l.right!=='P'||s.ratio!==1||l.ratio!==1||s.expiry!==l.expiry||s.underConid!==l.underConid||s.strike<=l.strike)return null;const sp=position(s.conid),lp=position(l.conid),sq=-(sp?.qty||0),lq=lp?.qty||0;if(sq===0&&lq===0)return {closed:true};if(!Number.isSafeInteger(sq)||sq<=0||sq!==lq||sq>entry.filledQty)return null;return {s,l,qty:sq};}

@@ -1,16 +1,19 @@
 # Paper Desk — IB Gateway paper-trading workstation
 
-## Realistic fill model for paper spreads — 2026-10-22
+## Paper spread fill rule, from market-structure principles — 2026-10-26
 
-Paper spreads (BPSX and Trade-tab combos) now fill the way the research says real ones do, and the same code produces the profitability estimate (`bpsx.js` → `fillModel`; chart: `docs/spread_vs_profit.py`).
+Replaces the earlier fitted fill-probability model. Code: `bpsx.js` → `fillModel`; chart: `docs/spread_vs_profit.py`.
 
-- **Position in the spread drives fill odds, not width.** SEC DERA, *Hope at a Reasonable Price* (2025): resting customer option limit orders fill within one second at ~13–33% when half a half-spread better than mid, 45–70% at mid, 84–90% a third to a half past mid, for 2–4 tick spreads. A logistic in φ (give-up from mid in half-spreads) fits these points.
-- **Single-stock spreads are slower than 0DTE SPX.** The rate is scaled so a mid-priced spread has a median fill of about 2 minutes, matching the course (TAL: mid 0.45, 20 of 23 contracts at 0.45, the rest at 0.44). Legs wider than 4 ticks (beyond the SEC data) are treated as proportionally thinner markets; this part is an assumption.
-- **Fills require time and live data.** Each evaluation credits at most 2 seconds; a hidden/sleeping tab earns no fills. Resting combos are checked every second.
-- **Marketable spreads pay 74% of the half-spread** (Hendershott, Khan & Riordan, *Option Auctions*, RFS 2026, continuous-trading EQ 0.74), so a limit at the natural price gets realistic improvement rather than the natural itself.
-- **Exits mark at mid, as the course does.** The TP rests at 10% of credit and fills by the same model; stops and the expiry close are marketable.
-- **Ticket estimate:** the BPSX ticket shows the chance your limit fills within 1, 5 and 30 minutes. It also shows the expected result of working the order like the course (mid, then −1¢ every 2 minutes, up to 3¢). The default limit is the mid credit, rounded down to a cent.
-- Lo, MacKinlay & Zhang (JFE 2002) found touch-based hypothetical fills too optimistic. That is why fills are hazard-based and need elapsed time, not a quote touch.
+1. **Who fills you.** Market makers do not quote complex books; they trade against a resting spread order only when it pays them (SEC DERA, *A Simple Role for Complex Options*, 2025). A fill therefore needs your price to give them their required edge over fair value (the mid).
+2. **Their required edge is a flat share of the half-spread.** Competition for one order is the auction. US option auctions fill at 0.38 of the half-spread from mid (0.39–0.48 by auction type) and that fraction holds from 2.5¢ to 13.4¢ quoted spreads (Hendershott, Khan & Riordan, *Option Auctions*, RFS 2026). Patient algorithmic traders pay about 0.30 (Muravyev & Pearson, RFS 2020); continuous-book marketable orders pay 0.74. The rule uses **0.38**.
+3. **Tight markets fill at mid.** Inside the course allowance (each option's bid/ask ≤ 0.4% of the share price) a patient mid limit fills at mid: mid orders in 2-tick markets fill 45–70% in a second and counterparties keep under a penny after a minute (SEC DERA, *Hope at a Reasonable Price*, 2025), and the course fills at mid there.
+4. **Beyond the allowance** the achievable price is mid minus 0.38 × (mid-to-natural distance). A limit asking for more waits; a limit at or beyond it fills at its own price.
+5. **Immediate orders** (market, marketable limits, stops, expiry closes) are auctioned on Cboe (COA, up to 3 s) and pay the same 0.38 concession even in tight markets. The take-profit rests at its limit.
+6. **No allowance, no mid fill:** without a share price the rule cannot confirm the allowance and treats the market as wide.
+
+Ticket: the BPSX ticket shows mid and natural credit, the achievable credit, whether your limit should fill, and the expected profit. Auto credit uses the achievable credit, rounded down to a cent. The chart is generated from this same code.
+
+Not modelled: queue priority, partial fills, fill-time delay (everything above is instantaneous), and legging of non-guaranteed combos. The 0.38 is measured on retail-style single-leg auctions; complex-order auctions are cheaper per the same DERA authors (Li, Musto & Pearson, *Costs of Executing Complex Options Trades*, 2023), so 0.38 is, if anything, slightly conservative for spreads.
 
 ## IB symbol search and option chains, per IB API docs — 2026-10-21
 
