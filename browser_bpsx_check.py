@@ -85,6 +85,11 @@ with sync_playwright() as p:
     assert page.locator('#bpsx-next-bar button[data-action="next"]').count()==1  # Next stock is reachable at the top
     page.locator('#bpsx-disqualify').click()
     page.wait_for_function("document.querySelector('#bpsx-root').textContent.includes('NEXT · daily chart')")
+    # Undo an accidental disqualify: the first stock comes back and the queue holds it again.
+    page.locator('#bpsx-next-bar [data-restore]').click()
+    page.wait_for_function("document.querySelector('#bpsx-root').textContent.includes('TEST · daily chart')")
+    page.locator('#bpsx-disqualify').click()
+    page.wait_for_function("document.querySelector('#bpsx-root').textContent.includes('NEXT · daily chart')")
     page.locator('#bpsx-root [data-action="qualify"]').click()
     page.wait_for_function("document.querySelector('#bpsx-short')?.value==='2'")
     assert page.locator('#bpsx-short').input_value()=='2'
