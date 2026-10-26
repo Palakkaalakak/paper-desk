@@ -466,7 +466,7 @@ class MarketEngine:
             async def work():
                 try:
                     result = await getattr(self,'_'+name)(*args)
-                    ttl = 0 if name in ('bpsx_chain','bpsx_quotes','bpsx_close') else 30 if name == 'bpsx_chart' else 15 if name == 'vmi_observation' else 21600 if name == 'guns_float' and result.get('status')=='returned' else 30 if name == 'guns_float' else 3600 if name in ('guns_schedule','guns_capabilities') else .25 if name == 'guns_bars' else 0 if name == 'guns_scan' else 10 if name == 'guns_verify' else 30 if name == 'guns_news' else 300 if name in ('search','chain') or name == 'guns_article' and result.get('contentStatus') in ('body_returned','brief','pdf') else 1
+                    ttl = 0 if name in ('bpsx_chain','bcs_chain','bpsx_quotes','bpsx_close') else 30 if name == 'bpsx_chart' else 15 if name == 'vmi_observation' else 21600 if name == 'guns_float' and result.get('status')=='returned' else 30 if name == 'guns_float' else 3600 if name in ('guns_schedule','guns_capabilities') else .25 if name == 'guns_bars' else 0 if name == 'guns_scan' else 10 if name == 'guns_verify' else 30 if name == 'guns_news' else 300 if name in ('search','chain') or name == 'guns_article' and result.get('contentStatus') in ('body_returned','brief','pdf') else 1
                     self._cache[key] = (time.monotonic()+(ttl if result else 0),result)
                     if len(self._cache)>1000:
                         self._cache.pop(next(iter(self._cache)))
@@ -548,6 +548,10 @@ class MarketEngine:
     async def _bpsx_chain(self, symbol, expiry=None, spot=None, ids=None, mode='live', count=25, center=90):
         from bpsx_data import options
         return await options(self, symbol, expiry, spot, ids, mode, count, center)
+
+    async def _bcs_chain(self, symbol, expiry=None, spot=None, ids=None, mode='live', count=25):
+        from bpsx_data import call_options
+        return await call_options(self, symbol, expiry, spot, ids, mode, count)
 
     async def _bpsx_quotes(self, sid):
         import bpsx_stream

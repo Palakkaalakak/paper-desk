@@ -278,3 +278,62 @@ async def chart(engine,ticker,frame='d'):
         bars.append(dict(date=label,o=b.open,h=b.high,l=b.low,c=b.close,v=float(b.volume) if finite(b.volume) else None))
     return dict(symbol=ticker,underConid=under.conId,frame=frame,bars=bars,served_by='tws',
         source='IBKR historical TRADES · regular session · last candle may be forming',retrievedAt=int(time.time()*1000))
+
+
+def call_window(definitions, spot, count=25, wanted=()):
+    """Bull call spread window: three strikes in the money, the at-the-money strike, then upward to `count` strikes.
+    The course buys at/one strike in the money and sells about one standard deviation higher."""
+    calls = sorted(definitions['calls'], key=lambda r: r['strike'])
+    if not calls:
+        raise ValueError('No verified calls in this expiry')
+    below = [r for r in calls if r['strike'] <= spot]
+    start = max(0, len(below) - 4)
+    if wanted:
+        positions = [i for i, r in enumerate(calls) if r['conid'] in wanted]
+        if len(positions) != len(set(wanted)):
+            raise ValueError('Selected call is not in this verified chain')
+        start = min(start, min(positions))
+    chosen = calls[start:start + max(count, 13)]
+    if wanted:
+        chosen = calls[start:max(start + count, max(positions) + 1)]
+    out = copy.deepcopy(definitions)
+    out['puts'] = []
+    out['calls'] = copy.deepcopy(chosen)
+    out.update(listedCallCount=len(calls), listedStrikes=sorted({r['strike'] for r in calls}), referenceSpot=spot,
+               atmStrike=(below[-1]['strike'] if below else calls[0]['strike']), atmAnchored=False)
+    return out
+
+
+async def call_options(engine, ticker, expiry=None, spot=None, ids=None, mode='live', count=25):
+    """Verified call definitions plus one bounded owned quote stream (same stream machinery as the BPSX put chain)."""
+    import bpsx_stream
+    ticker = symbol(ticker)
+    if mode not in ('live', 'frozen'):
+        raise ValueError('Invalid chain data mode')
+    ib, generation = engine._ib, engine.info.get('generation', 0)
+    if not hasattr(engine, '_bcs_definitions'):
+        engine._bcs_definitions = {}
+    key = (ticker, expiry, generation)
+    cached = engine._bcs_definitions.get(key)
+    if cached and time.monotonic() - cached[0] < 900:
+        out = copy.deepcopy(cached[1])
+    else:
+        out = await chain(engine, ticker, expiry, right='C')
+        out.setdefault('puts', [])
+        unchanged(engine, ib, generation)
+        engine._bcs_definitions[key] = (time.monotonic(), copy.deepcopy(out))
+        if len(engine._bcs_definitions) > 50:
+            engine._bcs_definitions.pop(next(iter(engine._bcs_definitions)))
+    if not expiry:
+        return out
+    wanted = set(ids or ())
+    if len(wanted) > 4 or not wanted.issubset({r['conid'] for r in out['calls']}):
+        raise ValueError('Selected call is not in this verified chain')
+    stream = next((s for s in bpsx_stream.sessions(engine).values() if s.out['symbol'] == ticker and s.out['expiry'] == expiry
+                   and s.mode == mode and not s.out['puts'] and s.out['calls'] and wanted.issubset(s.rows)), None)
+    if stream is None:
+        spot, share = await reference_quote(engine, ticker, mode)
+        out = call_window(out, spot, count, wanted)
+        out['underlyingQuote'] = share
+        stream = bpsx_stream.start(engine, out, spot, mode)
+    return stream.snapshot()

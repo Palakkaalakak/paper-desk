@@ -374,6 +374,14 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 out = market.ENGINE.call(kind,ticker,one('expiry') or None,
                     float(one('spot','0')),ids or None,one('mode','live'),
                     int(one('count','25')),float(one('center','90')),timeout=80)
+            elif kind == 'bcs_chain':
+                import vmi_data
+                ticker = vmi_data.symbol(one('symbol', ''))
+                ids = tuple(int(x) for x in one('ids','').split(',') if x)
+                if len(ids)>4 or any(x<=0 or x>=2**53 for x in ids):
+                    raise ValueError('Invalid selected option IDs')
+                out = market.ENGINE.call(kind,ticker,one('expiry') or None,float(one('spot','0')),ids or None,one('mode','live'),
+                    int(one('count','25')),timeout=80)
             elif kind in ('bpsx_quotes','bpsx_close'):
                 sid=one('stream','')
                 if not re.fullmatch(r'[A-Za-z0-9_-]{16,60}',sid):

@@ -222,12 +222,15 @@ class ChainStream:
         underlying_errors=(self.under_handle or {}).get('errors',[])
         underlying_issue=next((e for e in underlying_errors if e['code'] in ERRORS),None)
         issue=self.error or ('Underlying IB '+str(underlying_issue['code'])+': '+underlying_issue['message'] if underlying_issue else None)
+        call_states=[r.get('quoteState') for r in self.out.get('calls',[])]
+        call_resolved=sum(bool(r.get('bidAskResolved')) and not r.get('quoteError') for r in self.out.get('calls',[]))
         states=[r.get('quoteState') for r in self.out['puts']]
         resolved=sum(bool(r.get('bidAskResolved')) and not r.get('quoteError') for r in self.out['puts'])
         out.update(streamId=self.id,streaming=not self.closed,cycle=self.cycle,
             total=len(states),readyCount=states.count('READY'),
             putResolvedCount=resolved,putsComplete=bool(states) and resolved==len(states),
             callsResolvedCount=sum(bool(r.get('bidAskResolved')) for r in self.out.get('calls',[])),
+            callsReadyCount=call_states.count('READY'),callsComplete=bool(call_states) and call_resolved==len(call_states),
             settledCount=sum(s not in ('QUEUED','LOADING','WAIT_GREEKS') for s in states),
             streamError=issue,dataMode=self.mode,served_by='tws',retrievedAt=int(time.time()*1000),
             note='Contiguous verified strikes in the selected window; puts first, calls second. LIVE/FROZEN status is explicit; frozen/delayed quotes cannot submit orders. No exchange bid/ask is not a numeric zero. No paid regulatory snapshots.')

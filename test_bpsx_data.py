@@ -145,6 +145,24 @@ class BpsxTests(unittest.IsolatedAsyncioTestCase):
         h=b.scanner_filters('');self.assertEqual((h['volume'],h['ivrank']),('avgVolumeAbove','ivRank52wAbove'))   # unreadable list -> documented tags
         k=b.scanner_filters('<a><code>ivRank13wAbove</code><code>ivRank52wAbove</code><code>ivRank26wAbove</code><code>ivPercntl52wAbove</code></a>');self.assertEqual(k['ivrank'],'ivRank52wAbove')
 
+    def test_call_window_starts_three_strikes_in_the_money_and_keeps_selected_legs(self):
+        defs=dict(symbol='META',expiry='20990116',puts=[],calls=[dict(conid=200+k,strike=float(k),right='C') for k in range(80,140,5)])
+        w=b.call_window(defs,101.0,6)
+        self.assertEqual([r['strike'] for r in w['calls']][:6],[85.0,90.0,95.0,100.0,105.0,110.0]);self.assertEqual(len(w['calls']),11)   # at least 13 strikes requested, 11 listed
+        self.assertEqual(w['calls'][3]['strike'],100.0);self.assertEqual(w['puts'],[]);self.assertEqual(w['atmStrike'],100.0);self.assertFalse(w['atmAnchored'])
+        far=b.call_window(defs,101.0,6,{200+135})
+        self.assertIn(335,[r['conid'] for r in far['calls']])
+        with self.assertRaises(ValueError):b.call_window(defs,101.0,6,{999})
+
+    async def test_call_options_lists_expirations_then_streams_one_window(self):
+        e,u,d=self.fixture()
+        with patch('bpsx_data.reference_quote',new=AsyncMock(return_value=(160.0,dict(last=160.0)))),patch('bpsx_stream.start',side_effect=lambda eng,out,spot,mode:SimpleNamespace(snapshot=lambda:dict(out,streamId='s1'))) as start:
+            meta=await b.call_options(e,'META')
+            self.assertIn('20990116',meta['expirations'])
+            out=await b.call_options(e,'META','20990116',160.0)
+        self.assertEqual(out['streamId'],'s1');self.assertEqual(out['puts'],[]);self.assertTrue(out['calls'])
+        self.assertTrue(all(r['right']=='C' for r in out['calls']));self.assertEqual(start.call_count,1)
+
     async def test_incomplete_current_bar_removed_and_missing_iv_explicit(self):
         e,u,d=self.fixture();today=dt.datetime.now(dt.timezone.utc).date()
         def bar(date):return SimpleNamespace(date=date,open=100.,high=101.,low=99.,close=100.,volume=2000000.)
