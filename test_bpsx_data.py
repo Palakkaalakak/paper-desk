@@ -3,10 +3,15 @@ import datetime as dt
 import time
 import unittest
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 from market import MarketEngine
 import bpsx_data as b
 import vmi_options as v
+
+class Ev(list):
+    def __iadd__(self,f):self.append(f);return self
+    def __isub__(self,f):self.remove(f);return self
+
 
 class BpsxTests(unittest.IsolatedAsyncioTestCase):
     def fixture(self):
@@ -15,7 +20,7 @@ class BpsxTests(unittest.IsolatedAsyncioTestCase):
         details=[ContractDetails(contract=Option('META','20990116',strike,'P','SMART',conId=i,multiplier='100',currency='USD',tradingClass='META',localSymbol=f'META  990116P{strike*1000:08d}'),underConId=100,underSecType='STK') for i,strike in [(1,80),(2,85)]]
         e._stock=AsyncMock(return_value=under)
         calls=[ContractDetails(contract=Option('META','20990116',strike,'C','SMART',conId=i+100,multiplier='100',currency='USD',tradingClass='META',localSymbol=f'META  990116C{strike*1000:08d}'),underConId=100,underSecType='STK') for i,strike in [(1,80),(2,85)]]
-        e._ib=SimpleNamespace(reqContractDetailsAsync=AsyncMock(side_effect=lambda c:details if c.right=='P' else calls),reqSecDefOptParamsAsync=AsyncMock(return_value=[SimpleNamespace(exchange='SMART',tradingClass='META',multiplier='100',expirations={'20990116'})]))
+        e._ib=SimpleNamespace(errorEvent=Ev(),reqContractDetailsAsync=AsyncMock(side_effect=lambda c:details if c.right=='P' else calls),reqSecDefOptParamsAsync=AsyncMock(return_value=[SimpleNamespace(exchange='SMART',tradingClass='META',multiplier='100',expirations={'20990116'})]))
         async def snapshot(c,require_greeks=False):
             return dict(brokerConid=c.conId,bid=.5,ask=.6,status='LIVE',at=int(time.time()*1000),greeks={'delta':-.1})
         e._snapshot_quote=AsyncMock(side_effect=snapshot)
@@ -82,6 +87,19 @@ class BpsxTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(sub.scanCode,'HIGH_OPT_IMP_VOLAT')
         self.assertEqual(sub.aboveVolume,ScannerSubscription().aboveVolume)
         self.assertTrue(out['rows'][0]['marketCapScreen'])
+
+    async def test_empty_scanner_retries_once_then_explains(self):
+        e,u,d=self.fixture()
+        calls=[]
+        async def empty(sub):
+            calls.append(1)
+            for f in list(e._ib.errorEvent):f(7,10337,'Scanner not available')
+            return []
+        e._ib.reqScannerDataAsync=empty
+        with patch('bpsx_data.asyncio.sleep',new=AsyncMock()):
+            with self.assertRaises(ValueError) as cm:await b.scan(e)
+        self.assertEqual(len(calls),2);self.assertIn('10337: Scanner not available',str(cm.exception));self.assertIn('regular US hours',str(cm.exception))
+        self.assertEqual(len(e._ib.errorEvent),0)
 
     async def test_incomplete_current_bar_removed_and_missing_iv_explicit(self):
         e,u,d=self.fixture();today=dt.datetime.now(dt.timezone.utc).date()
