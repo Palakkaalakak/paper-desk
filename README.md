@@ -1,5 +1,9 @@
 # Paper Desk — IB Gateway paper-trading workstation
 
+## BPSX quick scan follows Adam's scanner — 2026-10-26
+
+IB now applies Adam's four filters across the US stock universe (price $50–5,000, market cap ≥$30bn, average volume ≥1M, 52-week IV rank 35–100; OPTIONS_MASTER_DOCUMENT.md, BPSX scanner), instead of taking the top 50 by option implied volatility and filtering afterwards. IB's scanner returns at most 50 rows, so a full result is split into market-cap and price bands and merged. The volume and IV-rank filter names are discovered at run time from `reqScannerParameters`; any filter IB does not offer, or that empties the result, is dropped step by step, named in the scan note, and checked per stock afterwards. The note also lists which IB-side filters the account offered, so a wrong IV-rank tag can be fixed from one run.
+
 ## Paper spread fill rule — 2026-10-26
 
 Code: `bpsx.js` → `fillModel`; chart: `docs/spread_vs_profit.py`. Applies to BPSX and Trade-tab combos.

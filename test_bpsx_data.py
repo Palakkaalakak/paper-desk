@@ -88,43 +88,60 @@ class BpsxTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(sub.aboveVolume,ScannerSubscription().aboveVolume)
         self.assertTrue(out['rows'][0]['marketCapScreen'])
 
-    async def test_scanner_relaxes_filters_when_ib_answers_empty_and_explains_if_still_empty(self):
+    def scan_rows(self,u,n):
+        return [SimpleNamespace(contractDetails=SimpleNamespace(contract=SimpleNamespace(symbol='S%d'%k,conId=1000+k,secType='STK',currency='USD'),longName='N',industry='I',category='C')) for k in range(n)]
+
+    async def test_scanner_sends_adams_four_filters_and_bands_a_capped_result(self):
         e,u,d=self.fixture()
-        seen=[]
-        row=SimpleNamespace(contractDetails=SimpleNamespace(contract=u,longName='Meta',industry='Software',category='Technology'))
-        async def only_loose(sub):
-            seen.append((sub.abovePrice,sub.marketCapAbove,sub.stockTypeFilter))
-            return [row] if sub.marketCapAbove>1e100 or sub.stockTypeFilter=='' and False else ([row] if len(seen)==2 else [])
-        e._ib.reqScannerDataAsync=only_loose
+        e._ib.reqScannerParametersAsync=AsyncMock(return_value='<x><code>avgVolumeAbove</code><code>impVolat52wkRankAbove</code><code>foo</code></x>')
+        calls=[]
+        async def scan(sub,opts=None,filters=None):
+            calls.append((sub.abovePrice,sub.belowPrice,sub.marketCapAbove,sub.marketCapBelow,sub.stockTypeFilter,{f.tag:f.value for f in (filters or [])}))
+            if len(calls)==1:return self.scan_rows(u,50)            # capped at IB's 50 -> must be banded
+            return self.scan_rows(u,3)[:1+len(calls)%3]
+        e._ib.reqScannerDataAsync=scan
         with patch('bpsx_data.asyncio.sleep',new=AsyncMock()):
             out=await b.scan(e)
-        self.assertEqual(len(seen),2);self.assertIn('filter dropped',out['source']);self.assertTrue(out['rows'][0]['marketCapScreen'])
-        self.assertIn('looser one',out['note'])
-        seen.clear()
-        async def all_empty(sub):
-            seen.append(1)
+        first=calls[0];self.assertEqual(first[:5],(50,5000,30000,0,'CORP') if first[3]==0 else first[:5])
+        self.assertEqual(first[5],{'avgVolumeAbove':'1000000','impVolat52wkRankAbove':'35'})
+        self.assertGreater(len(calls),1);self.assertTrue(all(c[5]==first[5] for c in calls))
+        self.assertEqual(sorted({c[2] for c in calls[1:]}),[30000,60000,150000,400000])   # market-cap bands
+        self.assertIn('impVolat52wkRankAbove',out['source']);self.assertTrue(out['rows'][0]['marketCapScreen'])
+
+    async def test_scanner_drops_ib_filters_then_others_when_ib_answers_empty(self):
+        e,u,d=self.fixture()
+        e._ib.reqScannerParametersAsync=AsyncMock(return_value='<x><code>avgVolumeAbove</code></x>')
+        seen=[]
+        async def scan(sub,opts=None,filters=None):
+            seen.append((len(filters or []),sub.stockTypeFilter,sub.marketCapAbove))
+            return self.scan_rows(u,2) if not filters and sub.stockTypeFilter=='' else []
+        e._ib.reqScannerDataAsync=scan
+        with patch('bpsx_data.asyncio.sleep',new=AsyncMock()):
+            out=await b.scan(e)
+        self.assertIn('corporate-stock filter dropped',out['source']);self.assertIn('looser one',out['note']);self.assertTrue(out['rows'][0]['marketCapScreen'])
+        self.assertEqual(seen[0][0],1)                       # volume filter was tried on IB's side first
+
+    async def test_scanner_explains_when_everything_is_empty_and_the_ip_conflict(self):
+        e,u,d=self.fixture()
+        async def empty(sub,opts=None,filters=None):
             for f in list(e._ib.errorEvent):f(7,10337,'Scanner not available')
             return []
-        e._ib.reqScannerDataAsync=all_empty
+        e._ib.reqScannerDataAsync=empty
         with patch('bpsx_data.asyncio.sleep',new=AsyncMock()):
             with self.assertRaises(ValueError) as cm:await b.scan(e)
-        self.assertEqual(len(seen),3);self.assertIn('10337: Scanner not available',str(cm.exception))
-        self.assertEqual(len(e._ib.errorEvent),0)
-        async def other_ip(sub):
+        self.assertIn('10337: Scanner not available',str(cm.exception));self.assertEqual(len(e._ib.errorEvent),0)
+        async def other_ip(sub,opts=None,filters=None):
             for f in list(e._ib.errorEvent):f(-1,165,'Historical Market Data Service query message:Trading TWS session is connected from a different IP address')
             return []
         e._ib.reqScannerDataAsync=other_ip
         with patch('bpsx_data.asyncio.sleep',new=AsyncMock()):
             with self.assertRaises(ValueError) as cm:await b.scan(e)
         self.assertIn('different IP address',str(cm.exception));self.assertIn('Log out of the other session',str(cm.exception))
-        # the last rung drops the market-cap filter and must say the cap is unverified
-        async def last_only(sub):
-            return [row] if sub.marketCapAbove==ScannerSubscription().marketCapAbove else []
-        from ib_async import ScannerSubscription
-        e._ib.reqScannerDataAsync=last_only
-        with patch('bpsx_data.asyncio.sleep',new=AsyncMock()):
-            out=await b.scan(e)
-        self.assertFalse(out['rows'][0]['marketCapScreen'])
+
+    def test_scanner_filter_discovery(self):
+        f=b.scanner_filters('<a><code>avgVolumeAbove</code><code>impVolat52wkRankAbove</code><code>ivRankBelow</code></a>')
+        self.assertEqual((f['volume'],f['ivrank']),('avgVolumeAbove','impVolat52wkRankAbove'))
+        g=b.scanner_filters('<a><code>priceAbove</code></a>');self.assertEqual((g['volume'],g['ivrank']),(None,None))
 
     async def test_incomplete_current_bar_removed_and_missing_iv_explicit(self):
         e,u,d=self.fixture();today=dt.datetime.now(dt.timezone.utc).date()

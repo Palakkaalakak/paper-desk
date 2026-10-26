@@ -1,5 +1,6 @@
 """BPSX read-only IBKR acquisitions on MarketEngine's owner loop."""
 import asyncio
+import re
 import copy
 import datetime as dt
 import math
@@ -12,35 +13,83 @@ def finite(x):
     return isinstance(x, (int, float)) and not isinstance(x, bool) and math.isfinite(x)
 
 
+IV_RANK_CODE = re.compile(r'^(?=.*(ivrank|impvolatrank|impvolat.*(rank|percentile)|ivpercentile))(?=.*above$).*$', re.I)
+
+
+def scanner_filters(xml):
+    """Filter codes IB's scanner offers (from reqScannerParameters): the volume and 52-week IV-rank 'Above' tags."""
+    codes = set(re.findall(r'<code>([^<]+)</code>', xml or ''))
+    ivs = sorted((c for c in codes if IV_RANK_CODE.match(c)), key=lambda c: ('52' not in c, len(c)))
+    return dict(volume='avgVolumeAbove' if 'avgVolumeAbove' in codes else None,
+                ivrank=ivs[0] if ivs else None, ivrank_candidates=ivs, count=len(codes))
+
+
 async def scan(engine):
-    """IB scan ladder: the full filter first, then fewer server-side filters when IB answers with nothing.
-    Dropped filters are named in the note; a dropped market-cap filter means the cap must be confirmed by hand."""
-    from ib_async import ScannerSubscription
+    """Adam's scan, run by IB over the whole US stock universe with his four filters together:
+    price $50-5000, market cap >= $30bn, average volume >= 1M, 52-week IV rank 35-100
+    (OPTIONS_MASTER_DOCUMENT.md, BPSX scanner). IB returns at most 50 rows per scan, so a full result is split into
+    market-cap and price bands and merged. A filter IB does not offer, or that empties the result, is dropped step by
+    step and named in the note; anything not applied by IB is verified per stock afterwards."""
+    from ib_async import ScannerSubscription, TagValue
     ib, generation = engine._ib, engine.info.get('generation', 0)
-    ladder = [
-        ('price ≥$50 · market cap ≥$30bn · corporate stocks', dict(abovePrice=50, marketCapAbove=30000, stockTypeFilter='CORP'), True),
-        ('price ≥$50 · market cap ≥$30bn (corporate-stock filter dropped)', dict(abovePrice=50, marketCapAbove=30000), True),
-        ('price ≥$50 (market-cap filter dropped: confirm ≥$30bn yourself)', dict(abovePrice=50), False)]
     notes = []
     def collect(req_id, code, text, *args):
         if not 2100 <= code < 2200 and code not in (1100, 1101, 1102):   # farm/connectivity notices are not scan failures
             notes.append('%s: %s' % (code, text))
     ib.errorEvent += collect
     try:
-        rows, used = None, None
-        for label, extra, cap_ok in ladder:
+        cached = getattr(engine, '_scanner_filters', None)
+        if not cached or time.monotonic() - cached[0] > 6 * 3600:
+            try:
+                xml = await asyncio.wait_for(ib.reqScannerParametersAsync(), 20)
+            except Exception:
+                xml = ''
+            engine._scanner_filters = cached = (time.monotonic(), scanner_filters(xml))
+        found = cached[1]
+        async def run(price=(50, 5000), cap=(30000, None), tags=(), corp=True):
             sub = ScannerSubscription(numberOfRows=50, instrument='STK', locationCode='STK.US.MAJOR',
-                scanCode='HIGH_OPT_IMP_VOLAT', **extra)
-            rows = await asyncio.wait_for(ib.reqScannerDataAsync(sub), 12)
+                scanCode='HIGH_OPT_IMP_VOLAT', abovePrice=price[0], belowPrice=price[1], marketCapAbove=cap[0])
+            if cap[1]: sub.marketCapBelow = cap[1]
+            if corp: sub.stockTypeFilter = 'CORP'
+            rows = await asyncio.wait_for(ib.reqScannerDataAsync(sub, [], [TagValue(k, str(v)) for k, v in tags]), 15)
             unchanged(engine, ib, generation)
+            return rows or []
+        async def banded(tags, corp):
+            rows = await run(tags=tags, corp=corp)
+            if len(rows) < 50:
+                return rows
+            merged = {}
+            for lo, hi in [(30000, 60000), (60000, 150000), (150000, 400000), (400000, None)]:
+                part = await run(cap=(lo, hi), tags=tags, corp=corp)
+                if len(part) >= 50:           # still capped: split this band by price too
+                    part = []
+                    for plo, phi in [(50, 150), (150, 400), (400, 5000)]:
+                        part += await run(price=(plo, phi), cap=(lo, hi), tags=tags, corp=corp)
+                for r in part:
+                    merged.setdefault(r.contractDetails.contract.conId, r)
+                if len(merged) >= 300: break
+            return list(merged.values())
+        want = []
+        if found['volume']: want.append((found['volume'], 1000000))
+        if found['ivrank']: want.append((found['ivrank'], 35))
+        ladder = [('price $50–5,000 · cap ≥$30bn · corporate stocks' + ''.join(' · %s ≥ %s' % t for t in want), want, True, True)]
+        if want: ladder.append(('same without IB-side volume / IV-rank filters (verified per stock instead)', [], True, True))
+        ladder += [('price ≥$50 · cap ≥$30bn (corporate-stock filter dropped)', [], True, False),
+                   ('price ≥$50 only (market-cap filter dropped: confirm ≥$30bn yourself)', [], False, False)]
+        rows, used = [], None
+        for label, tags, cap_ok, corp in ladder:
+            if cap_ok:
+                rows = await banded(tuple(tags), corp)
+            else:
+                sub = ScannerSubscription(numberOfRows=50, instrument='STK', locationCode='STK.US.MAJOR',
+                    scanCode='HIGH_OPT_IMP_VOLAT', abovePrice=50)
+                rows = await asyncio.wait_for(ib.reqScannerDataAsync(sub), 15) or []
             if rows:
-                used = (label, cap_ok)
+                used = (label, cap_ok, bool(tags))
                 break
             await asyncio.sleep(.5)
     finally:
         ib.errorEvent -= collect
-    if rows is None:
-        raise ValueError('IB scanner response pending')
     if not rows and any('different IP address' in n for n in notes):
         raise ValueError('IB is refusing this connection\'s historical-data and scanner requests: your account is logged in to another TWS / '
             'Client Portal / mobile session from a different IP address than this Gateway (IB: "Trading TWS session is connected from a different IP address"). '
@@ -50,16 +99,18 @@ async def scan(engine):
         raise ValueError('IB returned no HIGH_OPT_IMP_VOLAT scanner results, even with the filters relaxed.'
             + (' IB said: ' + ' | '.join(dict.fromkeys(notes)) + '.' if notes else ' IB sent no error message.')
             + ' Use Pre-selected stock to enter a ticker meanwhile.')
-    label, cap_ok = used
-    dropped = label != ladder[0][0]
-    return dict(rows=[dict(symbol=r.contractDetails.contract.symbol,
-        conid=r.contractDetails.contract.conId, name=r.contractDetails.longName,
-        industry=r.contractDetails.industry, category=r.contractDetails.category, marketCapScreen=cap_ok)
-        for r in rows[:50] if r.contractDetails.contract.secType=='STK' and r.contractDetails.contract.currency=='USD'],
-        source='IBKR HIGH_OPT_IMP_VOLAT · ' + label,
-        note=('IB returned nothing with the full filter, so a looser one was used. ' if dropped else '') +
-             'Up to 50 ranked US optionable stocks, not an exhaustive market scan. Historical IV percentile and average volume are verified separately. Run during regular market hours.',
-        retrievedAt=int(time.time()*1000))
+    label, cap_ok, ib_tags = used
+    out = [dict(symbol=r.contractDetails.contract.symbol, conid=r.contractDetails.contract.conId,
+        name=r.contractDetails.longName, industry=r.contractDetails.industry, category=r.contractDetails.category,
+        marketCapScreen=cap_ok)
+        for r in rows if r.contractDetails.contract.secType == 'STK' and r.contractDetails.contract.currency == 'USD']
+    first = label.startswith('price $50')
+    return dict(rows=out[:300], source='IBKR HIGH_OPT_IMP_VOLAT · ' + label,
+        note=('' if first else 'IB returned nothing with Adam\'s full filter, so a looser one was used. ')
+             + ('IB-side filters offered by this account: volume %s, IV rank %s. ' % (found['volume'] or 'not offered', found['ivrank'] or ('not found among %d codes' % found['count'])))
+             + '%d stocks; average volume and IV percentile are verified per stock%s. Run during regular market hours.' % (
+                 len(out), '' if ib_tags else ' (not filtered by IB)'),
+        filters=found, retrievedAt=int(time.time()*1000))
 
 
 async def stock(engine, ticker):
