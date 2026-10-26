@@ -41,6 +41,11 @@ async def scan(engine):
         ib.errorEvent -= collect
     if rows is None:
         raise ValueError('IB scanner response pending')
+    if not rows and any('different IP address' in n for n in notes):
+        raise ValueError('IB is refusing this connection\'s historical-data and scanner requests: your account is logged in to another TWS / '
+            'Client Portal / mobile session from a different IP address than this Gateway (IB: "Trading TWS session is connected from a different IP address"). '
+            'Log out of the other session, or run TWS/Gateway and this app on the same network/IP (turn VPNs off), then reload. '
+            'The scan is not at fault. Pre-selected stock needs the same data and will fail until this is resolved.')
     if not rows:
         raise ValueError('IB returned no HIGH_OPT_IMP_VOLAT scanner results, even with the filters relaxed.'
             + (' IB said: ' + ' | '.join(dict.fromkeys(notes)) + '.' if notes else ' IB sent no error message.')

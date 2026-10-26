@@ -110,6 +110,13 @@ class BpsxTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaises(ValueError) as cm:await b.scan(e)
         self.assertEqual(len(seen),3);self.assertIn('10337: Scanner not available',str(cm.exception))
         self.assertEqual(len(e._ib.errorEvent),0)
+        async def other_ip(sub):
+            for f in list(e._ib.errorEvent):f(-1,165,'Historical Market Data Service query message:Trading TWS session is connected from a different IP address')
+            return []
+        e._ib.reqScannerDataAsync=other_ip
+        with patch('bpsx_data.asyncio.sleep',new=AsyncMock()):
+            with self.assertRaises(ValueError) as cm:await b.scan(e)
+        self.assertIn('different IP address',str(cm.exception));self.assertIn('Log out of the other session',str(cm.exception))
         # the last rung drops the market-cap filter and must say the cap is unverified
         async def last_only(sub):
             return [row] if sub.marketCapAbove==ScannerSubscription().marketCapAbove else []
