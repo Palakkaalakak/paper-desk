@@ -74,26 +74,22 @@ test('spread rule: each option within 0.4% of the share price, adjustable, ignor
  C.limits.ignore=false;C.limits.spreadPct=1;assert.equal(C.quoteQuality(mk(1,1.9),now,false,100).usable,true);C.limits.spreadPct=.4;
 });
 
-test('fill rule: mid inside the course allowance, 38% of mid-to-natural beyond it or when immediate',()=>{
- const F=C.fillModel;C.limits.spreadPct=.4;
- const legs=[{conid:1,side:'SELL',ratio:1,underConid:9},{conid:2,side:'BUY',ratio:1,underConid:9}];
+test('fill rule: instant fill at mid minus 40% of the mid-to-natural distance',()=>{
+ const F=C.fillModel,legs=[{conid:1,side:'SELL',ratio:1,underConid:9},{conid:2,side:'BUY',ratio:1,underConid:9}];
  const tight={1:{bid:1.00,ask:1.04},2:{bid:.60,ask:.64},9:{last:100}},wide={1:{bid:.80,ask:1.30},2:{bid:.35,ask:.85},9:{last:100}};
  const t=F.comboQuote(legs,tight),w=F.comboQuote(legs,wide);
- assert.equal(t.within,true);assert.equal(w.within,false);                                   
- assert.ok(Math.abs(F.achievable(t,false)+.40)<1e-9);                                          // patient inside allowance: mid
- assert.ok(Math.abs(F.achievable(w,false)-(-.45+.38*.5))<1e-9);                                 // beyond: 0.38 x H (H = 0.25 + 0.25)
- assert.ok(Math.abs(F.achievable(t,true)-(-.40+.38*.04))<1e-9);                                // immediate always pays the auction concession
- assert.equal(F.tryComboFill({legs,limit:-.45},wide),null);                                    // mid limit in a wide market waits
- const r=F.tryComboFill({legs,limit:-.25},wide);assert.ok(Math.abs(r.net+.25)<1e-9);           // a limit the market will take fills at its own price
- assert.ok(Math.abs(r.prices[0]-r.prices[1]-.25)<1e-9);
- const m=F.tryComboFill({legs,limit:null},wide);assert.ok(Math.abs(m.net-(-.45+.19))<1e-9&&m.immediate);
- const n=F.tryComboFill({legs,limit:-.36},tight);assert.ok(Math.abs(n.net-(-.40+.38*.04))<1e-9); // marketable limit gets auction improvement
- const p=F.tryComboFill({legs,limit:-.40},tight);assert.ok(Math.abs(p.net+.40)<1e-9);          // inside allowance: mid fills
- const nospot={1:tight[1],2:tight[2]};assert.equal(F.comboQuote(legs,nospot).within,false);    // no share price -> no allowance
+ assert.equal(t.within,true);assert.equal(w.within,false);
+ assert.ok(Math.abs(F.achievable(t)-(-.40+.40*.04))<1e-9);                       // H = 0.04
+ assert.ok(Math.abs(F.achievable(w)-(-.45+.40*.50))<1e-9);                       // H = 0.50
+ assert.equal(F.tryComboFill({legs,limit:-.40},tight),null);                      // asks for mid: not given
+ const r=F.tryComboFill({legs,limit:-.384},tight);assert.ok(Math.abs(r.net+.384)<1e-9&&Math.abs(r.prices[0]-r.prices[1]-.384)<1e-9);
+ const m=F.tryComboFill({legs,limit:null},wide);assert.ok(Math.abs(m.net-(-.45+.20))<1e-9&&m.immediate);
+ const n=F.tryComboFill({legs,limit:-.36},tight);assert.ok(Math.abs(n.net-(-.40+.016))<1e-9);   // marketable limit still pays the debuff
+ assert.equal(F.tryComboFill({legs,limit:-.384},{1:tight[1]}),null);
 });
 test('expected trade under the fill rule',()=>{
  const F=C.fillModel,legs=[{conid:1,side:'SELL',ratio:1},{conid:2,side:'BUY',ratio:1}];
  const cq=F.comboQuote(legs,{1:{bid:.98,ask:1.02},2:{bid:.48,ask:.52}},100),e=F.expectedTrade(cq);
- assert.ok(cq.within&&Math.abs(e.credit-.5)<1e-9&&Math.abs(e.stopCost-.38*.04)<1e-9);
- assert.ok(Math.abs(e.ev-(.85*.45-.15*(1.5+.0152)))<1e-9);
+ assert.ok(Math.abs(e.credit-(.5-.4*.04))<1e-9&&Math.abs(e.stopCost-.4*.04)<1e-9);
+ assert.ok(Math.abs(e.ev-(.85*.9*e.credit-.15*(3*e.credit+e.stopCost)))<1e-9);
 });

@@ -1,19 +1,15 @@
 # Paper Desk — IB Gateway paper-trading workstation
 
-## Paper spread fill rule, from market-structure principles — 2026-10-26
+## Paper spread fill rule — 2026-10-26
 
-Replaces the earlier fitted fill-probability model. Code: `bpsx.js` → `fillModel`; chart: `docs/spread_vs_profit.py`.
+Code: `bpsx.js` → `fillModel`; chart: `docs/spread_vs_profit.py`. Applies to BPSX and Trade-tab combos.
 
-1. **Who fills you.** Market makers do not quote complex books; they trade against a resting spread order only when it pays them (SEC DERA, *A Simple Role for Complex Options*, 2025). A fill therefore needs your price to give them their required edge over fair value (the mid).
-2. **Their required edge is a flat share of the half-spread.** Competition for one order is the auction. US option auctions fill at 0.38 of the half-spread from mid (0.39–0.48 by auction type) and that fraction holds from 2.5¢ to 13.4¢ quoted spreads (Hendershott, Khan & Riordan, *Option Auctions*, RFS 2026). Patient algorithmic traders pay about 0.30 (Muravyev & Pearson, RFS 2020); continuous-book marketable orders pay 0.74. The rule uses **0.38**.
-3. **Tight markets fill at mid.** Inside the course allowance (each option's bid/ask ≤ 0.4% of the share price) a patient mid limit fills at mid: mid orders in 2-tick markets fill 45–70% in a second and counterparties keep under a penny after a minute (SEC DERA, *Hope at a Reasonable Price*, 2025), and the course fills at mid there.
-4. **Beyond the allowance** the achievable price is mid minus 0.38 × (mid-to-natural distance). A limit asking for more waits; a limit at or beyond it fills at its own price.
-5. **Immediate orders** (market, marketable limits, stops, expiry closes) are auctioned on Cboe (COA, up to 3 s) and pay the same 0.38 concession even in tight markets. The take-profit rests at its limit.
-6. **No allowance, no mid fill:** without a share price the rule cannot confirm the allowance and treats the market as wide.
-
-Ticket: the BPSX ticket shows mid and natural credit, the achievable credit, whether your limit should fill, and the expected profit. Auto credit uses the achievable credit, rounded down to a cent. The chart is generated from this same code.
-
-Not modelled: queue priority, partial fills, fill-time delay (everything above is instantaneous), and legging of non-guaranteed combos. The 0.38 is measured on retail-style single-leg auctions; complex-order auctions are cheaper per the same DERA authors (Li, Musto & Pearson, *Costs of Executing Complex Options Trades*, 2023), so 0.38 is, if anything, slightly conservative for spreads.
+- **Instant fill, flat debuff.** Every spread order fills at once at the mid price minus **40% of the mid-to-natural distance** (H = sum of each leg's half-spread × ratio). On paper you would always get your price immediately; in real trading you work a limit at mid, sometimes miss, and pay up. The debuff offsets that paper-only gain.
+- **Where 40% comes from.** SEC DERA, *Hope at a Reasonable Price* (2025): a mid limit that falls back to a marketable order after a second costs 0.42 of the half-spread all-in (0.56 in the earlier period). Hendershott, Khan & Riordan, *Option Auctions* (RFS 2026): auctioned option orders fill at 0.38 of the half-spread, stable across quoted spreads from 2.5¢ to 13.4¢. Patient algorithmic traders pay about 0.30 (Muravyev & Pearson, RFS 2020). 0.40 sits between the two measurements for orders that have to get done.
+- **Exits:** the same debuff for stops and the expiry close; a take-profit that rests at its own limit fills at that limit.
+- **Limit orders:** a limit that asks for more than the debuffed price does not fill (a price condition, not a delay); one at or past it fills at its own price when marketable.
+- **Spread cap unchanged:** each option's bid/ask must be ≤ 0.4% of the share price (adjustable, ignorable). Wider markets simply cost more because H is larger.
+- **Not modelled:** time to fill, queue priority, partial fills, legging. The debuff is measured on single-option auctions; complex-order auctions are cheaper (Li, Musto & Pearson 2023), so it is probably slightly conservative.
 
 ## IB symbol search and option chains, per IB API docs — 2026-10-21
 

@@ -1046,24 +1046,19 @@ function bollinger(xs,n=20,k=2){if(!Number.isInteger(n)||n<2||n>200||!positive(k
 function deltaText(x){if(!finite(x))return '—';return x===0?'0':Number(x.toPrecision(5)).toString();}
 // Browser-local paper bracket. No network or broker order API exists here.
 // ---------------------------------------------------------------------------------------------
-// Paper fill rule for spreads (BPSX and Trade-tab combos), built from market-structure principles:
-// 1. Who fills you: market makers do not quote complex books; they trade against a resting spread
-//    order when it pays them (SEC DERA, "A Simple Role for Complex Options", 2025). A fill happens when
-//    your price gives them their required edge over fair value (taken as the mid).
-// 2. Their required edge is their marginal cost (adverse selection, hedging, processing). Competition
-//    pushes the price to that cost, and auctions are where they compete for one order: option auctions
-//    fill at 0.38 of the half-spread from mid (0.39-0.48 by auction type), with the fraction stable across
-//    quoted spreads from 2.5c to 13.4c (Hendershott, Khan & Riordan, "Option Auctions", RFS 2026).
-//    So the cost is a flat share of the half-spread: CONCESSION = 0.38. Patient algorithmic traders pay
-//    about 0.30 (Muravyev & Pearson, RFS 2020); continuous-book marketable orders pay 0.74.
-// 3. Tight markets fill at mid when worked patiently: near the tick floor the quote is wider than the market
-//    maker's cost. Mid orders in 2-tick markets fill 45-70% within one second, and counterparties keep under
-//    a penny a minute later (SEC DERA, "Hope at a Reasonable Price", 2025); the course fills at mid inside its
-//    allowance (each option's spread <= 0.4% of the share price).
-// 4. Immediate orders (stops, expiry closes, market orders) at or through the natural price are auctioned on
-//    Cboe (COA, up to 3 s, Rule 5.33), so they pay the competitive CONCESSION even in tight markets.
-// H = sum of each leg's half-spread x ratio = distance from the combo mid to the natural price.
-const FILL={concession:.38};
+// Paper fill rule for spreads (BPSX and Trade-tab combos): every order fills INSTANTLY at the mid price minus
+// a flat debuff of 40% of the mid-to-natural distance H (H = sum of each leg's half-spread x ratio).
+// Why a debuff: on paper you would always get filled at your price at once; in real trading you work a limit
+// at mid, sometimes fail to get filled, and then pay up. Two measurements bracket what that costs:
+//  * SEC DERA, "Hope at a Reasonable Price" (2025): buying with a mid limit and falling back to a marketable
+//    order after a second costs 0.42 of the half-spread all-in in the latest period (0.56 earlier);
+//  * Hendershott, Khan & Riordan, "Option Auctions" (RFS 2026): auctioned option orders fill at 0.38 of the
+//    half-spread, a fraction stable across quoted spreads from 2.5c to 13.4c (Cboe auctions complex orders
+//    for up to 3 s, Rule 5.33). Patient algorithmic traders pay about 0.30 (Muravyev & Pearson, RFS 2020).
+// Exits use the same debuff, except a take-profit that rests at its own limit. A limit that asks for more than
+// the debuffed price does not fill (a price condition, not a delay). `within` marks each option inside the course
+// allowance (bid/ask <= 0.4% of the share price) and is used only by the spread cap.
+const FILL={concession:.40};
 function comboQuote(legs,quotes,spot){let mid=0,half=0,within=true;
  for(const l of legs){const q=quotes[l.conid];if(!q||!finite(q.bid)||!finite(q.ask)||q.bid<0||q.ask<q.bid)return null;
   const m=(q.bid+q.ask)/2,h=(q.ask-q.bid)/2,r=l.ratio||1;mid+=(l.side==='BUY'?1:-1)*m*r;half+=h*r;
@@ -1072,18 +1067,18 @@ function comboQuote(legs,quotes,spot){let mid=0,half=0,within=true;
 function legSpot(l,quotes){const u=quotes[l.underConid];if(!u)return null;if(finite(u.last)&&u.last>0)return u.last;return finite(u.bid)&&finite(u.ask)&&u.bid>0?(u.bid+u.ask)/2:null;}
 // Price at which the market would fill you now: mid for patient orders inside the allowance, otherwise
 // the competitive concession towards the natural price.
-const achievable=(cq,immediate)=>cq.mid+(immediate||!cq.within?FILL.concession:0)*cq.half;
+const achievable=cq=>cq.mid+FILL.concession*cq.half;
 function legPrices(legs,quotes,net,cq){const phi=cq.half>0?(net-cq.mid)/cq.half:0;return legs.map(l=>{const q=quotes[l.conid],m=(q.bid+q.ask)/2,h=(q.ask-q.bid)/2;return Math.round((m+(l.side==='BUY'?1:-1)*phi*h)*10000)/10000;});}
 // One paper evaluation: {net,prices,immediate} if the order fills now, else null.
 function tryComboFill(order,quotes){const cq=comboQuote(order.legs,quotes);if(!cq)return null;
- const immediate=order.limit==null||order.limit>=cq.natural-1e-9,fair=achievable(cq,immediate);
- if(!immediate&&order.limit<fair-1e-9)return null;              // asks for more than the market will give
- const net=immediate?fair:order.limit;                           // resting orders are taken at their own price
+ const immediate=order.limit==null||order.limit>=cq.natural-1e-9,fair=achievable(cq);
+ if(!immediate&&order.limit<fair-1e-9)return null;              // asks for more than the debuffed price
+ const net=immediate?fair:order.limit;                           // a resting limit is taken at its own price
  const prices=legPrices(order.legs,quotes,net,cq);let sum=0;order.legs.forEach((l,i)=>{sum+=(l.side==='BUY'?1:-1)*prices[i]*(l.ratio||1);});
  return {net:Math.round(sum*10000)/10000,prices,immediate,within:cq.within};}
 // Expected profit per trade for a BPSX credit spread under this rule and the course's exits:
 // entry worked as a limit, TP rests at 10% of credit (fills at its limit), stop is immediate, 85% wins, loss 3x.
-function expectedTrade(cq,{win=.85,lossMult=3}={}){if(!cq)return {ev:null};const credit=-achievable(cq,false);if(!(credit>0))return {credit,ev:null};
+function expectedTrade(cq,{win=.85,lossMult=3}={}){if(!cq)return {ev:null};const credit=-achievable(cq);if(!(credit>0))return {credit,ev:null};
  const stopCost=FILL.concession*cq.half,gain=.9*credit,loss=lossMult*credit+stopCost;
  return {credit,gain,loss,stopCost,within:cq.within,ev:win*gain-(1-win)*loss,breakeven:loss/(gain+loss)};}
 const fillModel={params:FILL,comboQuote,achievable,legPrices,tryComboFill,expectedTrade};
@@ -1170,13 +1165,13 @@ root.BPSXUI={create(a){
   if(errors.length)return {...result,qty:0,maxQty:0,reason:errors.join(' · ')};
   return result;
  }
- function autoCredit(){if(!ticket.autoCredit||!selection?.chain)return;const s=selection,short=s.chain.puts.find(r=>r.conid===s.short),long=s.chain.puts.find(r=>r.conid===s.long);if(!short?.quote||!long?.quote)return;const F=C.fillModel,cq=F.comboQuote([{conid:short.conid,side:'SELL'},{conid:long.conid,side:'BUY'}],{[short.conid]:short.quote,[long.conid]:long.quote},sharePrice(s.chain).value);if(!cq)return;const credit=Math.floor(-F.achievable(cq,false)*100+1e-9)/100;if(ticket.credit!==credit){ticket.credit=credit;revision++;}}
+ function autoCredit(){if(!ticket.autoCredit||!selection?.chain)return;const s=selection,short=s.chain.puts.find(r=>r.conid===s.short),long=s.chain.puts.find(r=>r.conid===s.long);if(!short?.quote||!long?.quote)return;const F=C.fillModel,cq=F.comboQuote([{conid:short.conid,side:'SELL'},{conid:long.conid,side:'BUY'}],{[short.conid]:short.quote,[long.conid]:long.quote},sharePrice(s.chain).value);if(!cq)return;const credit=Math.floor(-F.achievable(cq)*100+1e-9)/100;if(ticket.credit!==credit){ticket.credit=credit;revision++;}}
  function recalculate(){autoCredit();const result=sizing();if(ticket.autoSize&&Number(ticket.qty)!==result.qty){ticket.qty=result.qty;revision++;}return result;}
  function sizingView(){const r=sizing();return '<section id="bpsx-sizing" aria-label="Position sizing"><p><b>'+(ticket.autoSize?'Automatic sizing':'Manual quantity override')+'</b> · Target premium $'+fmt(r.target)+' (allocation ÷10 ÷10 trades). Suggested '+r.qty+' spreads; current capacity estimate '+r.maxQty+'. '+esc(r.reason)+'.</p><p>Per spread: premium $'+fmt(r.perCredit)+' · structural max loss $'+fmt(r.perRisk)+'. Whole-spread quantities are rounded DOWN (conservative app policy); zero means do not force a trade. Account available funds, pending BPSX risk, open premium and total defined risk constrain sizing. Other working strategies must be reconciled first. The existing paper account projection and estimated entry fees also cap quantity. Estimates are before slippage; final paper risk/fee checks still apply.</p></section>';}
  function fillView(){const s=selection,ch=s?.chain,short=ch?.puts.find(r=>r.conid===s.short),long=ch?.puts.find(r=>r.conid===s.long);if(!short?.quote||!long?.quote)return '<section id="bpsx-fill" class="note">Fill estimate: select both legs.</section>';
   const F=C.fillModel,cq=F.comboQuote([{conid:short.conid,side:'SELL'},{conid:long.conid,side:'BUY'}],{[short.conid]:short.quote,[long.conid]:long.quote},sharePrice(ch).value);if(!cq)return '<section id="bpsx-fill" class="note">Fill estimate: waiting for both bids and asks.</section>';
-  const fair=-F.achievable(cq,false),lim=Math.abs(Number(ticket.credit)),e=F.expectedTrade(cq),pct=Math.round(F.params.concession*100);
-  return '<section id="bpsx-fill" class="note"><b>Fill estimate</b> · mid credit $'+fmt(-cq.mid)+', natural $'+fmt(-cq.natural)+'. '+(cq.within?'Both options are inside the course spread allowance, so a patient limit fills at mid.':'At least one option is wider than the course allowance, so expect to give up '+pct+'% of the mid-to-natural distance.')+' Achievable credit about $'+fmt(fair)+(lim?(lim<=fair+1e-9?'; your $'+fmt(lim)+' limit should fill.':'; your $'+fmt(lim)+' limit asks for more and will wait.'):'')+(e.ev==null?'':' Expected profit $'+fmt(e.ev*100)+' per contract (85% wins at 90% of credit; losses 3× credit plus a $'+fmt(e.stopCost*100)+' immediate stop exit).')+' Paper fills use this same rule.</section>';}
+  const fair=-F.achievable(cq),lim=Math.abs(Number(ticket.credit)),e=F.expectedTrade(cq),pct=Math.round(F.params.concession*100);
+  return '<section id="bpsx-fill" class="note"><b>Fill estimate</b> · mid credit $'+fmt(-cq.mid)+', natural $'+fmt(-cq.natural)+'. '+'Paper fills are instant at mid minus a '+pct+'% debuff on the mid-to-natural distance.'+' Achievable credit about $'+fmt(fair)+(lim?(lim<=fair+1e-9?'; your $'+fmt(lim)+' limit should fill.':'; your $'+fmt(lim)+' limit asks for more and will wait.'):'')+(e.ev==null?'':' Expected profit $'+fmt(e.ev*100)+' per contract (85% wins at 90% of credit; losses 3× credit plus a $'+fmt(e.stopCost*100)+' immediate stop exit).')+' Paper fills use this same rule.</section>';}
  function patchTicket(){recalculate();const qty=el?.querySelector('[data-ticket="qty"]');if(qty&&document.activeElement!==qty)qty.value=ticket.qty;const node=el?.querySelector('#bpsx-sizing');if(node)node.outerHTML=sizingView();const fnode=el?.querySelector('#bpsx-fill');if(fnode)fnode.outerHTML=fillView();const automatic=el?.querySelector('[data-ticket="autoSize"]');if(automatic)automatic.checked=ticket.autoSize;patchPayoff();const out=el?.querySelector('#bpsx-blockers');if(out)out.textContent=blockers().join(' · ')||'Ready for paper-order confirmation';}
  const resolved=r=>!!r&&!r.quoteError&&(r.bidAskResolved===true||((Number.isFinite(r.quote?.bid)||r.bidAbsent===true)&&(Number.isFinite(r.quote?.ask)||r.askAbsent===true)));
  const putsComplete=ch=>!!ch?.puts?.length&&ch.coverageDone!==false&&ch.puts.every(resolved);
@@ -2841,8 +2836,7 @@ function comboMid(legs){
 }
 function tryFillCombo(o){
   var rem = o.qty - o.filledQty; if(rem<=0){ o.status='filled'; return true; }
-  /* Shared fill rule (bpsx.js fillModel): patient limits inside the course spread allowance fill at mid,
-     wider markets and immediate orders cost 38% of the mid-to-natural distance. */
+  /* Shared fill rule (bpsx.js fillModel): instant fill at mid minus 40% of the mid-to-natural distance. */
   var model = window.BPSX && window.BPSX.fillModel;
   var hit = model ? model.tryComboFill(o, Q) : null;
   if(!model){
@@ -2857,7 +2851,7 @@ function tryFillCombo(o){
     var leg=o.legs[i];
     applyFill(o, rem*leg.ratio, hit.prices[i], leg);
   }
-  o.filledQty = o.qty; o.avgFill = hit.net; o.fillRule = hit.immediate ? 'immediate' : (hit.within ? 'mid' : 'beyond allowance'); o.status='filled'; o.filledAt=Date.now();
+  o.filledQty = o.qty; o.avgFill = hit.net; o.fillRule = hit.immediate ? 'immediate' : 'limit'; o.status='filled'; o.filledAt=Date.now();
   say((hit.net>=0?'Bought':'Sold')+' '+qty(rem)+'x '+o.symbol+' for '+(hit.net>=0?'a debit of ':'a credit of ')+money(Math.abs(hit.net))+' per spread');
   snapshotEquity(true);
   return true;
