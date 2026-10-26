@@ -13,15 +13,22 @@ def finite(x):
     return isinstance(x, (int, float)) and not isinstance(x, bool) and math.isfinite(x)
 
 
-IV_RANK_CODE = re.compile(r'^(?=.*(ivrank|impvolatrank|impvolat.*(rank|percentile)|ivpercentile))(?=.*above$).*$', re.I)
+# IB scanner filter tags (reqScannerParameters; full list published in the ib_async scanners notebook):
+# avgVolumeAbove, ivRank52wAbove / ivRank26wAbove / ivRank13wAbove, ivPercntl52wAbove, marketCapAbove1e6, priceAbove.
+# Adam's "IV Rank (52-week), 35 to 100" is ivRank52wAbove = 35.
+KNOWN_FILTERS = dict(volume='avgVolumeAbove', ivrank='ivRank52wAbove')
+IV_RANK_CODE = re.compile(r'^ivRank\d+wAbove$')
 
 
 def scanner_filters(xml):
-    """Filter codes IB's scanner offers (from reqScannerParameters): the volume and 52-week IV-rank 'Above' tags."""
+    """The volume and 52-week IV-rank 'Above' tags this IB build offers. When the parameter list cannot be read at
+    all, the documented tags are tried; when it is readable but lacks them, they are not sent."""
     codes = set(re.findall(r'<code>([^<]+)</code>', xml or ''))
-    ivs = sorted((c for c in codes if IV_RANK_CODE.match(c)), key=lambda c: ('52' not in c, len(c)))
-    return dict(volume='avgVolumeAbove' if 'avgVolumeAbove' in codes else None,
-                ivrank=ivs[0] if ivs else None, ivrank_candidates=ivs, count=len(codes))
+    if not codes:
+        return dict(KNOWN_FILTERS, ivrank_candidates=[], count=0, source='documented defaults')
+    ivs = sorted((c for c in codes if IV_RANK_CODE.match(c)), key=lambda c: ('52' not in c, c))
+    return dict(volume=KNOWN_FILTERS['volume'] if KNOWN_FILTERS['volume'] in codes else None,
+                ivrank=ivs[0] if ivs else None, ivrank_candidates=ivs, count=len(codes), source='IB scanner parameters')
 
 
 async def scan(engine):
@@ -107,7 +114,7 @@ async def scan(engine):
     first = label.startswith('price $50')
     return dict(rows=out[:300], source='IBKR HIGH_OPT_IMP_VOLAT · ' + label,
         note=('' if first else 'IB returned nothing with Adam\'s full filter, so a looser one was used. ')
-             + ('IB-side filters offered by this account: volume %s, IV rank %s. ' % (found['volume'] or 'not offered', found['ivrank'] or ('not found among %d codes' % found['count'])))
+             + ('IB-side filters (%s): volume %s, IV rank %s. ' % (found.get('source',''), found['volume'] or 'not offered', found['ivrank'] or ('not found among %d codes' % found['count'])))
              + '%d stocks; average volume and IV percentile are verified per stock%s. Run during regular market hours.' % (
                  len(out), '' if ib_tags else ' (not filtered by IB)'),
         filters=found, retrievedAt=int(time.time()*1000))

@@ -93,7 +93,7 @@ class BpsxTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_scanner_sends_adams_four_filters_and_bands_a_capped_result(self):
         e,u,d=self.fixture()
-        e._ib.reqScannerParametersAsync=AsyncMock(return_value='<x><code>avgVolumeAbove</code><code>impVolat52wkRankAbove</code><code>foo</code></x>')
+        e._ib.reqScannerParametersAsync=AsyncMock(return_value='<x><code>avgVolumeAbove</code><code>ivRank52wAbove</code><code>foo</code></x>')
         calls=[]
         async def scan(sub,opts=None,filters=None):
             calls.append((sub.abovePrice,sub.belowPrice,sub.marketCapAbove,sub.marketCapBelow,sub.stockTypeFilter,{f.tag:f.value for f in (filters or [])}))
@@ -103,10 +103,10 @@ class BpsxTests(unittest.IsolatedAsyncioTestCase):
         with patch('bpsx_data.asyncio.sleep',new=AsyncMock()):
             out=await b.scan(e)
         first=calls[0];self.assertEqual(first[:5],(50,5000,30000,0,'CORP') if first[3]==0 else first[:5])
-        self.assertEqual(first[5],{'avgVolumeAbove':'1000000','impVolat52wkRankAbove':'35'})
+        self.assertEqual(first[5],{'avgVolumeAbove':'1000000','ivRank52wAbove':'35'})
         self.assertGreater(len(calls),1);self.assertTrue(all(c[5]==first[5] for c in calls))
         self.assertEqual(sorted({c[2] for c in calls[1:]}),[30000,60000,150000,400000])   # market-cap bands
-        self.assertIn('impVolat52wkRankAbove',out['source']);self.assertTrue(out['rows'][0]['marketCapScreen'])
+        self.assertIn('ivRank52wAbove',out['source']);self.assertTrue(out['rows'][0]['marketCapScreen'])
 
     async def test_scanner_drops_ib_filters_then_others_when_ib_answers_empty(self):
         e,u,d=self.fixture()
@@ -139,9 +139,11 @@ class BpsxTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('different IP address',str(cm.exception));self.assertIn('Log out of the other session',str(cm.exception))
 
     def test_scanner_filter_discovery(self):
-        f=b.scanner_filters('<a><code>avgVolumeAbove</code><code>impVolat52wkRankAbove</code><code>ivRankBelow</code></a>')
-        self.assertEqual((f['volume'],f['ivrank']),('avgVolumeAbove','impVolat52wkRankAbove'))
+        f=b.scanner_filters('<a><code>avgVolumeAbove</code><code>ivRank52wAbove</code><code>ivRankBelow</code></a>')
+        self.assertEqual((f['volume'],f['ivrank']),('avgVolumeAbove','ivRank52wAbove'))
         g=b.scanner_filters('<a><code>priceAbove</code></a>');self.assertEqual((g['volume'],g['ivrank']),(None,None))
+        h=b.scanner_filters('');self.assertEqual((h['volume'],h['ivrank']),('avgVolumeAbove','ivRank52wAbove'))   # unreadable list -> documented tags
+        k=b.scanner_filters('<a><code>ivRank13wAbove</code><code>ivRank52wAbove</code><code>ivRank26wAbove</code><code>ivPercntl52wAbove</code></a>');self.assertEqual(k['ivrank'],'ivRank52wAbove')
 
     async def test_incomplete_current_bar_removed_and_missing_iv_explicit(self):
         e,u,d=self.fixture();today=dt.datetime.now(dt.timezone.utc).date()
