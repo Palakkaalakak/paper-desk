@@ -355,6 +355,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 import vmi_data
                 ticker = vmi_data.symbol(one('symbol', ''))
                 out = providers._cached((kind, ticker), 21600, lambda: vmi_data.fundamentals(ticker))
+            elif kind == 'bpsx_earnings':
+                import bpsx_earnings
+                out = bpsx_earnings.earnings(one('symbol', ''))
             elif kind == 'bpsx_scan':
                 out = market.ENGINE.call(kind, timeout=150)
             elif kind == 'bpsx_stock':

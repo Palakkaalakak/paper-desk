@@ -22,9 +22,15 @@ def chain(ticker,quoted):
     return dict(symbol=ticker,underConid=100,expirations=[expiry],expiry=expiry if quoted else None,served_by='tws',excluded=0,listedStrikes=[80,85,99],atmStrike=99,coverageDone=True,underlyingQuote=dict(brokerConid=100,last=99.8,status='LIVE',at=int(time.time()*1000)),puts=[dict(conid=i,strike=k,expiry=expiry,secType='OPT',right='P',root=ticker,underConid=100,currency='USD',mult=100,symbol=f'{ticker} {expiry} {k} P',exch='SMART',tradingClass=ticker,deliverableStatus='IB_STANDARD_CLASS_NOT_OCC_VERIFIED',quote=dict(brokerConid=i,bid=bid,ask=ask,status='LIVE',at=int(time.time()*1000),bidSize=100,askSize=100,greeks={'delta':delta if ticker!='NOPAIR' else -.5})) for i,k,bid,ask,delta in [(1,80,.2,.25,-.06),(2,85,.8,.85,-.1),(3,99,4.9,5.,-.5)]] if quoted else [])
 control={'wide':False,'puts_ready':False,'calls_ready':False,'expire':False,'polls':0,'chain_loads':0,'queries':[]}
 errors=[]
+import re as _re
+def _mk(page):
+    def auto_qty(): return int(_re.search(r'(\d+) spreads?',page.locator('#bpsx-autofields').inner_text()).group(1))
+    def auto_credit(): return float(_re.search(r'credit \$([0-9.]+)',page.locator('#bpsx-autofields').inner_text()).group(1))
+    return auto_qty,auto_credit
 with sync_playwright() as p:
     browser=p.chromium.launch(args=['--no-sandbox'])
     page=browser.new_page(viewport={'width':1440,'height':1000})
+    auto_qty,auto_credit=_mk(page)
     page.on('pageerror',lambda e:errors.append(str(e)))
     page.on('dialog',lambda d:d.accept())
     def route(r):
@@ -33,6 +39,7 @@ with sync_playwright() as p:
         if u.path.startswith('/assets/') and (ROOT/kind).exists():return r.fulfill(content_type='text/css' if kind.endswith('.css') else 'text/javascript',body=(ROOT/kind).read_text())
         ticker=q.get('symbol',['TEST'])[0]
         if kind=='guns_schedule':return r.fulfill(json=dict(sessions=[dict(start=int(time.time()*1000)-3600000,end=int(time.time()*1000)+3600000)],source='IB fixture session',at=int(time.time()*1000)))
+        if kind=='bpsx_earnings':return r.fulfill(json=dict(symbol=ticker,status='found',date=earnings,timing='AMC',source='fixture'))
         if kind=='bpsx_scan':return r.fulfill(json=dict(rows=[dict(symbol='TEST',marketCapScreen=True),dict(symbol='NEXT',marketCapScreen=True)],source='Fixture IB screen',note='Offline test'))
         if kind=='bpsx_stock':return r.fulfill(json=dict(symbol=ticker,underConid=100,bars=bars,ivHistory=iv,industry='Software',category='Technology',served_by='tws'))
         if kind=='bpsx_chain':
@@ -132,33 +139,25 @@ with sync_playwright() as p:
     control['calls_ready']=True
     page.wait_for_function("!document.querySelector('#bpsx-chain-live').textContent.includes('Loading')")
     # Sizing reacts to edits without replacing focused inputs or the chain DOM.
-    assert page.locator('[data-ticket="autoSize"]').is_checked()
-    assert page.locator('[data-ticket="qty"]').input_value()=='3'
-    page.locator('[data-ticket="credit"]').fill('1')
-    assert page.locator('[data-ticket="qty"]').input_value()=='2'
-    assert page.locator('[data-ticket="credit"]').evaluate('(e)=>e===document.activeElement')
-    page.locator('#bpsx-allocation').fill('10000')
-    assert page.locator('[data-ticket="qty"]').input_value()=='1'
-    page.locator('[data-ticket="qty"]').fill('2')
-    assert not page.locator('[data-ticket="autoSize"]').is_checked()
-    page.locator('[data-ticket="credit"]').fill('0.6')
-    page.wait_for_timeout(1000)
-    assert page.locator('[data-ticket="qty"]').input_value()=='2'
-    assert 'Manual quantity override' in page.locator('#bpsx-sizing').inner_text()
-    page.locator('[data-ticket="autoSize"]').check()
-    assert page.locator('[data-ticket="qty"]').input_value()=='1'
-    page.locator('#bpsx-allocation').fill('20000')
-    page.locator('[data-ticket="credit"]').fill('0.55')
-    assert page.locator('[data-ticket="qty"]').input_value()=='3'
+    # Everything but the allocation % is automatic: spreads, credit and earnings have no inputs.
+    for sel in ('[data-ticket="qty"]','[data-ticket="credit"]','[data-ticket="earnings"]','[data-ticket="autoSize"]'):
+        assert page.locator(sel).count()==0,sel
+    assert auto_qty()==3
+    assert abs(auto_credit()-.58)<1e-9,auto_credit()                       # mid credit 0.60 minus 40% of H=0.05
+    assert 'AMC' in page.locator('#bpsx-autofields').inner_text() and 'unavailable' not in page.locator('#bpsx-autofields').inner_text()
+    page.locator('#bpsx-allocation').fill('10')                            # 10% of the 100,000 account = 10,000
+    assert auto_qty()==1
+    page.locator('#bpsx-allocation').fill('20')
+    assert auto_qty()==3
     # Account funds and existing pending BPSX exposure affect the real adapter.
-    page.evaluate('window.__paper.S.cash=900')
-    page.wait_for_function("document.querySelector('[data-ticket=qty]').value==='1'")
+    page.evaluate('window.__paper.S.cash=900')   # the allocation is a % of account value, so a tiny account sizes to nothing
+    page.wait_for_function("document.querySelector('#bpsx-autofields b').textContent.startsWith('0 spread')")
     page.evaluate('window.__paper.S.cash=100000')
-    page.wait_for_function("document.querySelector('[data-ticket=qty]').value==='3'")
+    page.wait_for_function("document.querySelector('#bpsx-autofields b').textContent.startsWith('3 spread')")
     page.evaluate("window.__paper.S.orders.push({id:'size-fixture',status:'working',qty:40,bpsx:{credit:.5,width:5},legs:[{conid:777},{conid:778}]})")
-    page.wait_for_function("document.querySelector('[data-ticket=qty]').value==='0'")
+    page.wait_for_function("document.querySelector('#bpsx-autofields b').textContent.startsWith('0 spread')")
     page.evaluate("window.__paper.S.orders=window.__paper.S.orders.filter(o=>o.id!=='size-fixture')")
-    page.wait_for_function("document.querySelector('[data-ticket=qty]').value==='3'")
+    page.wait_for_function("document.querySelector('#bpsx-autofields b').textContent.startsWith('3 spread')")
     # A valid initial selection can worsen: keep its identity, never imply suitability.
     page.evaluate("window.__qualityRow=document.querySelector('[data-chain-row=\"2\"]')")
     control['wide']=True
@@ -168,14 +167,14 @@ with sync_playwright() as p:
     assert 'WIDE' in page.locator('tr[data-chain-row="2"] .bpsx-quote-quality').last.inner_text()
     assert 'width $19.90' in page.locator('tr[data-chain-row="2"] .bpsx-put-price').inner_text()
     assert 'Natural credit/share: -19.9' in page.locator('.bpsx-selected-summary').inner_text()
-    assert page.locator('[data-ticket="qty"]').input_value()=='0'
+    assert auto_qty()==0
     assert page.locator('#bpsx-short').input_value()=='2'
     assert page.locator('#bpsx-long').input_value()=='1'
     assert page.evaluate("window.__qualityRow===document.querySelector('[data-chain-row=\"2\"]')")
     assert 'spread exceeds' in page.locator('#bpsx-blockers').inner_text()
     control['wide']=False
     page.wait_for_function("!document.querySelector('.bpsx-selected-summary').textContent.includes('NOT currently eligible')")
-    assert page.locator('[data-ticket="qty"]').input_value()=='3'
+    assert auto_qty()==3
     page.locator('#bpsx-guide summary').click()
     for text in ('not a hard cutoff','13.3%','Pepsi','BABA','19%','round DOWN','not promised income'):
         assert text in page.locator('#bpsx-guide').inner_text(),text
@@ -231,20 +230,18 @@ with sync_playwright() as p:
     assert page.locator('#bpsx-short').is_enabled()
     # Idle renewal also keeps the table, selected legs, scroll and edited credit.
 
-    page.locator('[data-ticket="credit"]').fill('0.56')
     loads=control['chain_loads'];control['expire']=True;control['puts_ready']=False
     with page.expect_response(lambda r:'/data/bpsx_chain?' in r.url):
         page.wait_for_timeout(1500)
     assert control['chain_loads']>loads
     assert page.locator('#bpsx-chain-live table').count()==1
     assert page.locator('.bpsx-chain-progress').count()==0
-    assert page.locator('[data-ticket="credit"]').input_value()=='0.56'
+    assert abs(auto_credit()-.58)<1e-9
     control['puts_ready']=True
     page.wait_for_function("!document.querySelector('#bpsx-send').disabled")
     assert page.locator('#bpsx-short').input_value()=='2'
     assert page.locator('#bpsx-long').input_value()=='1'
-    assert page.locator('[data-ticket="credit"]').input_value()=='0.56'
-    page.locator('[data-ticket="credit"]').fill('0.55')
+    assert abs(auto_credit()-.58)<1e-9
     assert page.locator('#bpsx-short').input_value()=='2'
     assert page.locator('#bpsx-root .bpsx-layout > div').bounding_box()['x']<page.locator('#bpsx-root .bpsx-layout > section').bounding_box()['x']
     assert 'Unverified' not in page.locator('#bpsx-chain-live').inner_text()
@@ -265,24 +262,21 @@ with sync_playwright() as p:
     page.locator('[data-action="chart-older"]').click()
     page.locator('[data-action="chart-latest"]').click()
     # Unmet requirements are shown in red but never block the order button.
-    assert 'earnings' in page.locator('#bpsx-blockers').inner_text()
+    assert 'Confirm' in page.locator('#bpsx-blockers').inner_text()   # unconfirmed checklist items, shown in red
     assert page.locator('#bpsx-send').is_enabled()
     assert page.evaluate('window.__paper.S.orders.length')==0
     for key in ('cap','support','sector','weekly','deliverable'):
         page.locator('[data-ticket="'+key+'"]').check()
-    page.locator('[data-ticket="earnings"]').fill(earnings)
     page.locator('[data-ticket="bufferReason"]').fill('Fixture: stable support and low historical volatility')
-    page.locator('[data-ticket="qty"]').fill('1')
-    assert page.locator('[data-payoff="max-profit"]').inner_text()=='$55.00', (page.locator('.bpsx-payoff').inner_text(),page.locator('[data-ticket="credit"]').input_value(),page.locator('[data-ticket="qty"]').input_value(),errors)
-    assert page.locator('[data-payoff="max-loss"]').inner_text()=='$445.00'
-    assert page.locator('[data-payoff="tp-profit"]').inner_text()=='$49.50'
-    assert page.locator('[data-payoff="sl-loss"]').inner_text()=='$165.00'
-    page.locator('[data-ticket="qty"]').press('Tab')
+    assert page.locator('[data-payoff="max-profit"]').inner_text()=='$174.00', (page.locator('.bpsx-payoff').inner_text(),auto_credit(),auto_qty(),errors)
+    assert page.locator('[data-payoff="max-loss"]').inner_text()=='$1326.00',page.locator('[data-payoff="max-loss"]').inner_text()
+    assert page.locator('[data-payoff="tp-profit"]').inner_text()=='$156.60'
+    assert page.locator('[data-payoff="sl-loss"]').inner_text()=='$522.00'
     page.locator('#bpsx-send').click()
     page.wait_for_function("/Order (executed|working)/.test(document.querySelector('#bpsx-message').textContent)")
     orders=page.evaluate('window.__paper.S.orders')
     assert len(orders)==1,orders
-    assert orders[0]['strategy']=='BPSX' and orders[0]['limit']==-.55
+    assert orders[0]['strategy']=='BPSX' and abs(orders[0]['limit']+.58)<1e-9
     assert [(l['side'],l['strike']) for l in orders[0]['legs']]==[('SELL',85),('BUY',80)]
     page.locator('#bpsx-send').click()
     page.wait_for_function("document.querySelector('#bpsx-message').textContent.includes('Existing option exposure')")
