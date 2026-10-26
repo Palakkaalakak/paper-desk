@@ -229,7 +229,6 @@ with sync_playwright() as p:
     assert page.evaluate("window.__bpsxButton===document.querySelector('[data-bpsx-leg=\"short\"][data-conid=\"2\"]')")
     assert '0.80 / 0.85' in page.locator('tr[data-chain-row="2"] .bpsx-put-price').inner_text()
     assert page.locator('#bpsx-short').is_enabled()
-    assert page.locator('#bpsx-send').is_disabled()  # retained display is never executable
     # Idle renewal also keeps the table, selected legs, scroll and edited credit.
 
     page.locator('[data-ticket="credit"]').fill('0.56')
@@ -265,8 +264,9 @@ with sync_playwright() as p:
     assert page.locator('#bpsx-chart-panel svg').inner_html()!=before
     page.locator('[data-action="chart-older"]').click()
     page.locator('[data-action="chart-latest"]').click()
-    page.locator('#bpsx-send').click()
-    page.wait_for_function("document.querySelector('#bpsx-message').textContent.includes('earnings')")
+    # Unmet requirements are shown in red but never block the order button.
+    assert 'earnings' in page.locator('#bpsx-blockers').inner_text()
+    assert page.locator('#bpsx-send').is_enabled()
     assert page.evaluate('window.__paper.S.orders.length')==0
     for key in ('cap','support','sector','weekly','deliverable'):
         page.locator('[data-ticket="'+key+'"]').check()
@@ -279,7 +279,7 @@ with sync_playwright() as p:
     assert page.locator('[data-payoff="sl-loss"]').inner_text()=='$165.00'
     page.locator('[data-ticket="qty"]').press('Tab')
     page.locator('#bpsx-send').click()
-    page.wait_for_function("document.querySelector('#bpsx-message').textContent.includes('Paper spread submitted')")
+    page.wait_for_function("/Order (executed|working)/.test(document.querySelector('#bpsx-message').textContent)")
     orders=page.evaluate('window.__paper.S.orders')
     assert len(orders)==1,orders
     assert orders[0]['strategy']=='BPSX' and orders[0]['limit']==-.55
@@ -323,6 +323,10 @@ with sync_playwright() as p:
     assert page.locator('tr.bpsx-short[data-chain-row="2"]').count()==1
     assert 'Observed short put delta' in page.locator('#bpsx-blockers').inner_text()
     assert len(page.evaluate('window.__paper.S.orders'))==2
+    # Execute despite unmet requirements (delta, earnings...): red warning, but the order goes through.
+    page.locator('#bpsx-send').click()
+    page.wait_for_function("window.__paper.S.orders.length===3",timeout=15000)
+    page.wait_for_function("/UNMET REQUIREMENTS|working/.test(document.querySelector('#bpsx-message').textContent)")
     assert not errors,errors
     browser.close()
 print('BPSX browser passed: reactive automatic/manual sizing with funds and pending exposure caps, raw wide LIVE quote warnings, nuanced buffer guide, marked ATM-down ordering, auto/manual active leg buttons and deselection, construction guide, payoff dollars, stable quotes/renewal, real paper TP execution with one closing combo, duplicate safeguards, chart controls, light/dark themes and mobile')
