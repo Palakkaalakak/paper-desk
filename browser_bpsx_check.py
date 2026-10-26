@@ -288,6 +288,16 @@ with sync_playwright() as p:
       2:{brokerConid:2,bid:.8,ask:.85,status:'LIVE',at:now,bidSize:100,askSize:100}}});}""")
     page.wait_for_function("window.__paper.S.orders.find(o=>o.bpsx)?.status==='filled'")
     page.wait_for_function("window.__paper.S.orders.find(o=>o.bpsx)?.bpsx.exits.status==='ARMED'")
+    # Positions: the spread is ONE row; the legs are inside it until expanded.
+    page.locator('[data-tab="pos"]').click()
+    assert page.locator('#positionsTable tr.pos-group').count()==1
+    assert 'put spread' in page.locator('#positionsTable tr.pos-group').inner_text()
+    assert page.locator('#positionsTable tr.pos-child:visible').count()==0 and page.locator('#positionsTable tr.pos-child').count()==2
+    page.locator('[data-toggle-group]').click()
+    assert page.locator('#positionsTable tr.pos-child:visible').count()==2
+    assert page.locator('#positionsTable tr[data-posid]:not(.pos-child)').count()==0   # no loose leg rows
+    page.locator('[data-toggle-group]').click()
+    page.locator('[data-tab="bpsx"]').click()
     cash_before=page.evaluate('window.__paper.S.cash')
     page.evaluate("""() => {const now=Date.now();window.__paper.applyFeed({connected:true,feedHealthy:true,generation:0,quotes:{
       1:{brokerConid:1,bid:.22,ask:.24,status:'LIVE',at:now,bidSize:100,askSize:100},

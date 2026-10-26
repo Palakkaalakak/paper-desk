@@ -3910,6 +3910,34 @@ function positionValues(p){
   var q=Q[p.conid],has=!!q&&(q.mid!=null||q.last!=null||q.mark!=null),m=markOf(p),mv=p.qty*m*(p.mult||1),u=(m-p.avgCost)*p.qty*(p.mult||1),basis=Math.abs(p.avgCost*p.qty*(p.mult||1));
   return {values:[qty(p.qty),px(p.avgCost),has?px(m):'—',has?money(mv):'—',has?money(u):'—',has&&basis?pct(u/basis*100):'—',quoteReady(p.conid)?'FRESH':(q?'STALE':'WAITING')],pl:cls(u)};
 }
+/* Option spreads are shown as ONE position (expand to see each leg). A group is a filled combo order whose
+   legs are all still held at that order's size; everything else stays a single-leg row. */
+var POS_OPEN={};
+function positionGroups(ps){
+  var byConid=new Map(ps.map(function(p){return [p.conid,p];})),used=new Set(),groups=[];
+  S.orders.forEach(function(o){
+    if(o.type!=='COMBO'||o.status!=='filled'||!o.legs||o.legs.length<2||o.bpsxExit||o.closingGroup)return;
+    var legs=o.legs.map(function(l){var p=byConid.get(l.conid);return p&&!used.has(l.conid)&&p.qty===(l.side==='BUY'?1:-1)*o.filledQty*(l.ratio||1)?p:null;});
+    if(legs.some(function(p){return !p;}))return;
+    legs.forEach(function(p){used.add(p.conid);});
+    groups.push({id:o.id,order:o,legs:legs,spreads:o.filledQty});
+  });
+  return {groups:groups,singles:ps.filter(function(p){return !used.has(p.conid);})};
+}
+function groupName(g){
+  var L=g.legs,first=L[0],isPut=L.every(function(p){return p.right==='P';}),isCall=L.every(function(p){return p.right==='C';});
+  var strikes=L.slice().sort(function(a,b){return b.strike-a.strike;}).map(function(p){return px(p.strike);}).join('/');
+  var kind=L.length===2&&(isPut||isCall)?(isPut?'put':'call')+' spread':L.length+'-leg spread';
+  return (first.root||first.symbol)+' '+strikes+' '+kind+' '+fmtExp(first.expiry);
+}
+function groupValues(g){
+  var mv=0,u=0,basis=0,net=0,markNet=0,fresh=true,anyQ=true,mult=g.legs[0].mult||1;
+  g.legs.forEach(function(p){var q=Q[p.conid],has=!!q&&(q.mid!=null||q.last!=null||q.mark!=null),m=markOf(p);if(!has)anyQ=false;if(!quoteReady(p.conid))fresh=false;
+    mv+=p.qty*m*mult;u+=(m-p.avgCost)*p.qty*mult;basis+=p.avgCost*p.qty*mult;net+=p.avgCost*p.qty;markNet+=m*p.qty;});
+  var per=function(v){return v/g.spreads;},cr=function(v){return (v<=0?'cr ':'dr ')+px(Math.abs(per(v)));};
+  var ref=Math.abs(basis);
+  return {values:[qty(g.spreads)+' spreads',cr(net),anyQ?cr(markNet):'—',anyQ?money(mv):'—',anyQ?money(u):'—',anyQ&&ref?pct(u/ref*100):'—',fresh?'FRESH':'STALE'],pl:cls(u)};
+}
 function renderPositionPrices(){
   var positions=new Map(S.positions.map(function(p){return [p.conid,p];}));
   document.querySelectorAll('[data-posid]').forEach(function(row){
@@ -3918,18 +3946,43 @@ function renderPositionPrices(){
     result.values.forEach(function(value,i){if(cells[i]&&cells[i].textContent!==value)cells[i].textContent=value;});
     [4,5].forEach(function(i){if(cells[i])cells[i].className=result.pl;});
   });
+  document.querySelectorAll('[data-groupid]').forEach(function(row){
+    var ids=row.dataset.gconids.split(',').map(Number),legs=ids.map(function(c){return positions.get(c);});
+    if(legs.some(function(p){return !p;}))return;
+    var result=groupValues({legs:legs,spreads:Number(row.dataset.gspreads)}),cells=row.querySelectorAll('[data-position-value]');
+    result.values.forEach(function(value,i){if(cells[i]&&cells[i].textContent!==value)cells[i].textContent=value;});
+    [4,5].forEach(function(i){if(cells[i])cells[i].className=result.pl;});
+  });
+}
+function posRow(p,child){
+  var result=positionValues(p),expired=isOpt(p)&&p.expiry&&p.expiry<ymd();
+  var tag=isOpt(p)?'<span class="pill">'+esc(p.right)+' '+px(p.strike)+' '+fmtExp(p.expiry)+'</span>':'<span class="dim">'+esc(p.secType)+'</span>';
+  return '<tr data-posid="'+p.conid+'"'+(child?' class="pos-child" data-parent="'+child+'"'+(POS_OPEN[child]?'':' hidden'):'')+'><td class="l">'+(child?'<span class="dim" style="padding-left:22px">↳ </span>':'')+'<b>'+esc(isOpt(p)?(p.root||p.symbol):p.symbol)+'</b> '+tag+'</td>'
+    +result.values.map(function(v,i){return '<td data-position-value class="'+(i===4||i===5?result.pl:'')+'">'+v+'</td>';}).join('')
+    +'<td class="l">'+(child?'':(expired?'<button class="mini" data-settle="'+p.conid+'">Settle expiry</button>':'<button class="mini" data-trade="'+p.conid+'">Trade</button> <button class="mini" data-close="'+p.conid+'">Close</button>'))+'</td></tr>';
 }
 function viewPos(){
   var ps=S.positions.filter(function(p){return p.qty!==0;});
   if(!ps.length)return '<div class="panel empty-market"><strong>No open positions</strong><p>Search a symbol in Trade to place your first paper order.</p></div>';
-  var rows=ps.map(function(p){
-    var result=positionValues(p),expired=isOpt(p)&&p.expiry&&p.expiry<ymd();
-    var tag=isOpt(p)?'<span class="pill">'+esc(p.right)+' '+px(p.strike)+' '+fmtExp(p.expiry)+'</span>':'<span class="dim">'+esc(p.secType)+'</span>';
-    return '<tr data-posid="'+p.conid+'"><td class="l"><b>'+esc(isOpt(p)?(p.root||p.symbol):p.symbol)+'</b> '+tag+'</td>'
-      +result.values.map(function(v,i){return '<td data-position-value class="'+(i===4||i===5?result.pl:'')+'">'+v+'</td>';}).join('')
-      +'<td class="l">'+(expired?'<button class="mini" data-settle="'+p.conid+'">Settle expiry</button>':'<button class="mini" data-trade="'+p.conid+'">Trade</button> <button class="mini" data-close="'+p.conid+'">Close</button>')+'</td></tr>';
-  }).join('');
-  return '<div class="panel"><div class="bar"><h2>Positions · '+ps.length+'</h2><span class="note">Streaming marks · stale quotes cannot fill orders</span></div><div class="tblwrap position-scroll"><table id="positionsTable"><thead><tr><th>Instrument</th><th>Quantity</th><th>Avg cost</th><th>Mark</th><th>Market value</th><th>Open P&amp;L</th><th>Return</th><th>Feed</th><th></th></tr></thead><tbody>'+rows+'</tbody></table></div></div>';
+  var G=positionGroups(ps);
+  var rows=G.groups.map(function(g){
+    var r=groupValues(g),open=!!POS_OPEN[g.id],expired=g.legs.some(function(p){return p.expiry&&p.expiry<ymd();});
+    return '<tr class="pos-group" data-groupid="'+g.id+'" data-gconids="'+g.legs.map(function(p){return p.conid;}).join(',')+'" data-gspreads="'+g.spreads+'"><td class="l"><button class="mini" data-toggle-group="'+g.id+'" aria-expanded="'+open+'" title="Show / hide the legs">'+(open?'▾':'▸')+'</button> <b>'+esc(groupName(g))+'</b></td>'
+      +r.values.map(function(v,i){return '<td data-position-value class="'+(i===4||i===5?r.pl:'')+'">'+v+'</td>';}).join('')
+      +'<td class="l">'+(expired?'<span class="dim">expired: settle each leg</span>':'<button class="mini" data-close-group="'+g.id+'">Close</button>')+'</td></tr>'
+      +g.legs.map(function(p){return posRow(p,g.id);}).join('');
+  }).join('')+G.singles.map(function(p){return posRow(p,null);}).join('');
+  var count=G.groups.length+G.singles.length;
+  return '<div class="panel"><div class="bar"><h2>Positions · '+count+'</h2><span class="note">Spreads are one position; ▸ shows each leg · Streaming marks · stale quotes cannot fill orders</span></div><div class="tblwrap position-scroll"><table id="positionsTable"><thead><tr><th>Instrument</th><th>Quantity</th><th>Avg cost</th><th>Mark</th><th>Market value</th><th>Open P&amp;L</th><th>Return</th><th>Feed</th><th></th></tr></thead><tbody>'+rows+'</tbody></table></div></div>';
+}
+function closeGroup(id){
+  var ps=S.positions.filter(function(p){return p.qty!==0;}),g=positionGroups(ps).groups.filter(function(x){return x.id===id;})[0];
+  if(!g){warn('That spread is no longer open as a single position; close its legs individually.');return;}
+  if(g.legs.some(function(p){return !quoteReady(p.conid);})){warn('Cannot close '+groupName(g)+' without fresh quotes on every leg. Data reconnects automatically.');return;}
+  if(S.orders.some(function(o){return o.status==='working'&&(o.legs||[o]).some(function(l){return g.legs.some(function(p){return p.conid===l.conid;});});})){warn('An order is already working on one of these legs.');return;}
+  var legs=g.order.legs.map(function(l){return Object.assign({},l,{side:l.side==='BUY'?'SELL':'BUY',ratio:l.ratio||1});});
+  var o={id:uid(),ts:Date.now(),day:today(),symbol:groupName(g)+' close',strategy:'SPREAD CLOSE',conid:legs[0].conid,secType:'OPT',mult:g.legs[0].mult||100,exch:'SMART',side:'BUY',qty:g.spreads,type:'COMBO',limit:null,stop:null,tif:'DAY',status:'working',filledQty:0,avgFill:0,commission:0,triggered:false,legs:legs,closingGroup:g.id};
+  S.orders.unshift(o);tryFill(o);orderNotice((o.status==='filled'?'CLOSED':'CLOSING')+' · '+groupName(g)+' · paper order');save();
 }
 function viewOrd(){
   if(!S.orders.length) return '<div class="panel dim">No orders yet.</div>';
@@ -4224,7 +4277,7 @@ function render(){
 
 /* ---------- events ---------- */
 document.addEventListener('click', function(e){
-  var t=e.target.closest?e.target.closest('[data-tab],[data-wl],[data-close],[data-trade],[data-cancel],button,.res div'):null;
+  var t=e.target.closest?e.target.closest('[data-tab],[data-wl],[data-close],[data-trade],[data-cancel],[data-toggle-group],[data-close-group],button,.res div'):null;
   if(!t) return;
   var id=t.id;
   if(e.detail>1 && (id==='buyBtn'||id==='sellBtn'||id==='sendCombo'||t.hasAttribute('data-close')))return;
@@ -4260,6 +4313,8 @@ document.addEventListener('click', function(e){
     render();
     if(dataUp()&&sel) fetchQuote(sel).then(function(){ if(S.chainOpen && sel.secType!=='OPT') return loadChainFor(sel); render(); }).catch(function(){});
     return; }
+  if(t.hasAttribute&&t.hasAttribute('data-toggle-group')){var gid=t.getAttribute('data-toggle-group');POS_OPEN[gid]=!POS_OPEN[gid];render();return;}
+  if(t.hasAttribute&&t.hasAttribute('data-close-group')){ closeGroup(t.getAttribute('data-close-group')); return; }
   if(t.hasAttribute&&t.hasAttribute('data-close')){ closePos(Number(t.getAttribute('data-close'))); return; }
   if(t.hasAttribute&&t.hasAttribute('data-trade')){ var cc=Number(t.getAttribute('data-trade')); var p=posOf(cc);
     if(p){ sel=Object.assign({},p);S.lastSelected=sel;tab='trade'; render(); } return; }
