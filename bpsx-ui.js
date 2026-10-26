@@ -134,7 +134,7 @@ root.BPSXUI={create(a){
   if(!current(s,id)||s.short!==ids[0]||s.long!==ids[1])throw Error('Selection/account changed; refresh discarded');if(d.underConid!==s.data.underConid)throw Error('Refreshed chain identity mismatch');
   for(const r of d.puts)if(ids.includes(r.conid)){const target=s.chain.puts.find(x=>x.conid===r.conid);delete target.quote;delete target.quoteError;Object.assign(target,r);}return s;
  }
- async function next(){const candidates=queue(),index=candidates.findIndex(r=>r.symbol===selection?.symbol),r=index>=0?(candidates[index+1]||candidates[0]):(candidates[Math.max(0,selection?.queueAt??0)]||candidates[0]);if(r)await choose(r.symbol);else{epoch++;selection=null;message='Review queue complete.';draw();}}
+ async function next(){const candidates=queue(),index=candidates.findIndex(r=>r.symbol===selection?.symbol),r=index>=0?(candidates[index+1]||candidates[0]):(candidates[Math.max(0,selection?.queueAt??0)]||candidates[0]);if(r)await choose(r.symbol);else{epoch++;const was=selection?.symbol;selection=null;message=mode==='scanner'?'Review queue complete. Run the scanner again or search a ticker.':(was?was+' set aside. Enter another ticker, or switch to Quick scanner.':'Enter a ticker.');draw();}}
  async function scan(){const id=++scanEpoch;epoch++;selection=null;busy=false;ticket=empty();rows=[];scanning=true;message='Requesting IB optionable large-cap candidates…';draw();try{
   const d=await request('bpsx_scan');if(id!==scanEpoch||!active())return;rows=d.rows;message=d.source+' · '+d.note;draw();let index=0;
   async function worker(){while(index<rows.length&&id===scanEpoch&&active()){const row=rows[index++];try{row.data=await request('bpsx_stock?symbol='+encodeURIComponent(row.symbol));}catch(e){row.error=e.message;}if(id!==scanEpoch)return;if(!selection&&row.data&&C.screen(row.data,cfg).status==='PASS')await choose(row.symbol);draw();}}
@@ -171,7 +171,7 @@ root.BPSXUI={create(a){
    if(t.id==='bpsx-chain-count'){chainCount=Number(t.value);if(![13,25,49].includes(chainCount))throw Error('Choose an initial batch of 13/25/49');await loadChain(selection.chain.expiry);return;}
    if(t.id==='bpsx-candidate'&&t.value)await choose(t.value);if(t.id==='bpsx-expiry')await loadChain(t.value);
    if(t.id==='bpsx-short'||t.id==='bpsx-long'){if(busy)throw Error('Wait for refresh to finish');selectLeg(t.id==='bpsx-short'?'short':'long',Number(t.value));}
-   if(t.id==='bpsx-disqualify'&&t.checked){decisions.set(book()+':'+selection.symbol,{at:Date.now(),reason:selection.note||''});epoch++;await next();}
+   if(t.id==='bpsx-disqualify'&&t.checked){selection.queueAt=Math.max(0,queue().findIndex(r=>r.symbol===selection.symbol));decisions.set(book()+':'+selection.symbol,{at:Date.now(),reason:selection.note||''});epoch++;await next();}
    if(t.dataset.ticket||t.id==='bpsx-allocation')patchTicket();
   })();});draw();
  }
