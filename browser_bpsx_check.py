@@ -82,6 +82,7 @@ with sync_playwright() as p:
     page.locator('[data-tab="bpsx"]').click()
     page.locator('#bpsx-root [data-action="scan"]').click()
     page.wait_for_selector('#bpsx-disqualify')
+    assert page.locator('#bpsx-next-bar button[data-action="next"]').count()==1  # Next stock is reachable at the top
     page.locator('#bpsx-disqualify').click()
     page.wait_for_function("document.querySelector('#bpsx-root').textContent.includes('NEXT · daily chart')")
     page.locator('#bpsx-root [data-action="qualify"]').click()
