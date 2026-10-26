@@ -88,18 +88,36 @@ class BpsxTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(sub.aboveVolume,ScannerSubscription().aboveVolume)
         self.assertTrue(out['rows'][0]['marketCapScreen'])
 
-    async def test_empty_scanner_retries_once_then_explains(self):
+    async def test_scanner_relaxes_filters_when_ib_answers_empty_and_explains_if_still_empty(self):
         e,u,d=self.fixture()
-        calls=[]
-        async def empty(sub):
-            calls.append(1)
+        seen=[]
+        row=SimpleNamespace(contractDetails=SimpleNamespace(contract=u,longName='Meta',industry='Software',category='Technology'))
+        async def only_loose(sub):
+            seen.append((sub.abovePrice,sub.marketCapAbove,sub.stockTypeFilter))
+            return [row] if sub.marketCapAbove>1e100 or sub.stockTypeFilter=='' and False else ([row] if len(seen)==2 else [])
+        e._ib.reqScannerDataAsync=only_loose
+        with patch('bpsx_data.asyncio.sleep',new=AsyncMock()):
+            out=await b.scan(e)
+        self.assertEqual(len(seen),2);self.assertIn('filter dropped',out['source']);self.assertTrue(out['rows'][0]['marketCapScreen'])
+        self.assertIn('looser one',out['note'])
+        seen.clear()
+        async def all_empty(sub):
+            seen.append(1)
             for f in list(e._ib.errorEvent):f(7,10337,'Scanner not available')
             return []
-        e._ib.reqScannerDataAsync=empty
+        e._ib.reqScannerDataAsync=all_empty
         with patch('bpsx_data.asyncio.sleep',new=AsyncMock()):
             with self.assertRaises(ValueError) as cm:await b.scan(e)
-        self.assertEqual(len(calls),2);self.assertIn('10337: Scanner not available',str(cm.exception));self.assertIn('regular US hours',str(cm.exception))
+        self.assertEqual(len(seen),3);self.assertIn('10337: Scanner not available',str(cm.exception))
         self.assertEqual(len(e._ib.errorEvent),0)
+        # the last rung drops the market-cap filter and must say the cap is unverified
+        async def last_only(sub):
+            return [row] if sub.marketCapAbove==ScannerSubscription().marketCapAbove else []
+        from ib_async import ScannerSubscription
+        e._ib.reqScannerDataAsync=last_only
+        with patch('bpsx_data.asyncio.sleep',new=AsyncMock()):
+            out=await b.scan(e)
+        self.assertFalse(out['rows'][0]['marketCapScreen'])
 
     async def test_incomplete_current_bar_removed_and_missing_iv_explicit(self):
         e,u,d=self.fixture();today=dt.datetime.now(dt.timezone.utc).date()

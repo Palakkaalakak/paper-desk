@@ -13,38 +13,47 @@ def finite(x):
 
 
 async def scan(engine):
+    """IB scan ladder: the full filter first, then fewer server-side filters when IB answers with nothing.
+    Dropped filters are named in the note; a dropped market-cap filter means the cap must be confirmed by hand."""
     from ib_async import ScannerSubscription
     ib, generation = engine._ib, engine.info.get('generation', 0)
-    sub = ScannerSubscription(numberOfRows=50, instrument='STK', locationCode='STK.US.MAJOR',
-        scanCode='HIGH_OPT_IMP_VOLAT', abovePrice=50, marketCapAbove=30000, stockTypeFilter='CORP')
+    ladder = [
+        ('price ≥$50 · market cap ≥$30bn · corporate stocks', dict(abovePrice=50, marketCapAbove=30000, stockTypeFilter='CORP'), True),
+        ('price ≥$50 · market cap ≥$30bn (corporate-stock filter dropped)', dict(abovePrice=50, marketCapAbove=30000), True),
+        ('price ≥$50 (market-cap filter dropped: confirm ≥$30bn yourself)', dict(abovePrice=50), False)]
     notes = []
     def collect(req_id, code, text, *args):
-        # Farm/connectivity notices (2100-2199) are not scanner failures.
-        if not 2100 <= code < 2200 and code not in (1100, 1101, 1102):
+        if not 2100 <= code < 2200 and code not in (1100, 1101, 1102):   # farm/connectivity notices are not scan failures
             notes.append('%s: %s' % (code, text))
     ib.errorEvent += collect
     try:
-        rows = None
-        for attempt in range(2):
-            rows = await asyncio.wait_for(ib.reqScannerDataAsync(sub), 20)
+        rows, used = None, None
+        for label, extra, cap_ok in ladder:
+            sub = ScannerSubscription(numberOfRows=50, instrument='STK', locationCode='STK.US.MAJOR',
+                scanCode='HIGH_OPT_IMP_VOLAT', **extra)
+            rows = await asyncio.wait_for(ib.reqScannerDataAsync(sub), 12)
             unchanged(engine, ib, generation)
             if rows:
+                used = (label, cap_ok)
                 break
-            await asyncio.sleep(1.5)   # IB often answers a cold scanner request with nothing; one retry
+            await asyncio.sleep(.5)
     finally:
         ib.errorEvent -= collect
     if rows is None:
         raise ValueError('IB scanner response pending')
     if not rows:
-        raise ValueError('IB returned no scanner results for HIGH_OPT_IMP_VOLAT (US corporate stocks over $50 and $30bn).'
-            + (' IB said: ' + ' | '.join(dict.fromkeys(notes)) + '.' if notes else '')
-            + ' This usually means outside regular US hours (scanners return nothing then), a scanner subscription or market-data permission missing on the account, or a cold request. Try again in a minute during market hours, or use Pre-selected stock to enter a ticker.')
+        raise ValueError('IB returned no HIGH_OPT_IMP_VOLAT scanner results, even with the filters relaxed.'
+            + (' IB said: ' + ' | '.join(dict.fromkeys(notes)) + '.' if notes else ' IB sent no error message.')
+            + ' Use Pre-selected stock to enter a ticker meanwhile.')
+    label, cap_ok = used
+    dropped = label != ladder[0][0]
     return dict(rows=[dict(symbol=r.contractDetails.contract.symbol,
         conid=r.contractDetails.contract.conId, name=r.contractDetails.longName,
-        industry=r.contractDetails.industry, category=r.contractDetails.category, marketCapScreen=True)
+        industry=r.contractDetails.industry, category=r.contractDetails.category, marketCapScreen=cap_ok)
         for r in rows[:50] if r.contractDetails.contract.secType=='STK' and r.contractDetails.contract.currency=='USD'],
-        source='IBKR HIGH_OPT_IMP_VOLAT · price ≥$50 · market cap ≥$30bn',
-        note='Up to 50 ranked US optionable corporate stocks, not an exhaustive market scan. Historical IV percentile and average volume are verified separately. Run during regular market hours.',
+        source='IBKR HIGH_OPT_IMP_VOLAT · ' + label,
+        note=('IB returned nothing with the full filter, so a looser one was used. ' if dropped else '') +
+             'Up to 50 ranked US optionable stocks, not an exhaustive market scan. Historical IV percentile and average volume are verified separately. Run during regular market hours.',
         retrievedAt=int(time.time()*1000))
 
 
