@@ -74,6 +74,13 @@ class ChainTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.saved, {})
 
 
+class ParamTests(unittest.TestCase):
+    def test_non_numeric_query_value_gives_clear_error(self):
+        import serve
+        self.assertEqual(serve.num('12.5', 'spot'), 12.5)
+        with self.assertRaisesRegex(ValueError, 'Invalid spot value'): serve.num('undefined', 'spot')
+
+
 class ErrorTests(unittest.TestCase):
     def setUp(self):
         self.e = market.MarketEngine()

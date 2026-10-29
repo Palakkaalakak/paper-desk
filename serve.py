@@ -135,6 +135,11 @@ def gateway_allowed(method, path):
     return False
 
 
+def num(v, name):
+    try: return float(v)
+    except (TypeError, ValueError): raise ValueError('Invalid %s value: %r' % (name, v))
+
+
 def remember_cookies(headers):
     raw = headers.get_all('Set-Cookie') if hasattr(headers, 'get_all') else None
     if not raw:
@@ -372,15 +377,15 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 if len(ids)>4 or any(x<=0 or x>=2**53 for x in ids):
                     raise ValueError('Invalid selected option IDs')
                 out = market.ENGINE.call(kind,ticker,one('expiry') or None,
-                    float(one('spot','0')),ids or None,one('mode','live'),
-                    int(one('count','25')),float(one('center','90')),timeout=80)
+                    num(one('spot','0'),'spot'),ids or None,one('mode','live'),
+                    int(one('count','25')),num(one('center','90'),'center'),timeout=80)
             elif kind == 'bcs_chain':
                 import vmi_data
                 ticker = vmi_data.symbol(one('symbol', ''))
                 ids = tuple(int(x) for x in one('ids','').split(',') if x)
                 if len(ids)>4 or any(x<=0 or x>=2**53 for x in ids):
                     raise ValueError('Invalid selected option IDs')
-                out = market.ENGINE.call(kind,ticker,one('expiry') or None,float(one('spot','0')),ids or None,one('mode','live'),
+                out = market.ENGINE.call(kind,ticker,one('expiry') or None,num(one('spot','0'),'spot'),ids or None,one('mode','live'),
                     int(one('count','25')),timeout=80)
             elif kind in ('bpsx_quotes','bpsx_close'):
                 sid=one('stream','')
