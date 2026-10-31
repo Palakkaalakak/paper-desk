@@ -1,11 +1,45 @@
 """Read-only option definitions and owned snapshots on the existing IB owner loop."""
 import asyncio
+import json
+import os
 import datetime as dt
 import re
 import time
 from vmi_data import symbol
 
 DETAILS_TTL = 6 * 3600
+ROWS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), '.option_rows.json')
+ROWS_TTL = 24 * 3600
+
+
+def _rows_load(key):
+    """Fully verified rows remembered on disk: conIds never change and IB paces the lookup that fetches them."""
+    try:
+        with open(ROWS_FILE) as fh:
+            hit = json.load(fh).get(key)
+        if hit and time.time()-float(hit.get('ts', 0)) < ROWS_TTL and hit.get('rows'):
+            return hit['rows']
+    except Exception:
+        pass
+    return None
+
+
+def _rows_save(key, rows):
+    try:
+        try:
+            with open(ROWS_FILE) as fh:
+                d = json.load(fh)
+        except Exception:
+            d = {}
+        today = time.time()
+        d = {k: v for k, v in d.items() if today-float(v.get('ts', 0)) < ROWS_TTL}
+        d[key] = dict(ts=today, rows=rows)
+        tmp = ROWS_FILE+'.tmp'
+        with open(tmp, 'w') as fh:
+            json.dump(d, fh)
+        os.replace(tmp, ROWS_FILE)
+    except Exception:
+        pass
 
 
 def contract(detail, under, right='C'):
@@ -72,27 +106,37 @@ async def chain(engine, ticker, expiry=None, right='C'):
         if not hasattr(engine, '_vmi_option_details'):
             engine._vmi_option_details = {}
         dkey = (under.conId, expiry, right)
+        disk_key = '%d|%s%s' % (under.conId, expiry, right)
+        stored = _rows_load(disk_key)
         hit = engine._vmi_option_details.get(dkey)
-        if hit and time.monotonic()-hit[0] < DETAILS_TTL:
-            details = hit[1]
+        if stored:
+            # Verified rows from an earlier load: conIds never change, so skip IB's paced lookup.
+            out[field] = [dict(r) for r in stored]
         else:
-            template = Option(under.symbol, expiry, 0, right, 'SMART', tradingClass=under.symbol, multiplier='100', currency='USD')
-            details = await asyncio.wait_for(ib.reqContractDetailsAsync(template), 60) or []
-            unchanged(engine, ib, generation)
-            if not details:
-                raise ValueError('IB returned no %s %s contracts for %s; try again in a minute.'
-                                 % (expiry, 'put' if right == 'P' else 'call', ticker))
-            engine._vmi_option_details[dkey] = (time.monotonic(), details)
-            if len(engine._vmi_option_details) > 200:
-                engine._vmi_option_details.pop(next(iter(engine._vmi_option_details)))
-        for detail in details:
-            try:
-                row = contract(detail, under, right)
-                if row['expiry'] != expiry:
-                    raise ValueError('Wrong expiry')
-                out[field].append(row)
-            except ValueError:
-                out['excluded'] += 1
+            if hit and time.monotonic()-hit[0] < DETAILS_TTL:
+                details = hit[1]
+            else:
+                template = Option(under.symbol, expiry, 0, right, 'SMART', tradingClass=under.symbol, multiplier='100', currency='USD')
+                details = await asyncio.wait_for(ib.reqContractDetailsAsync(template), 60) or []
+                unchanged(engine, ib, generation)
+                if not details:
+                    raise ValueError('IB returned no %s %s contracts for %s; try again in a minute.'
+                                     % (expiry, 'put' if right == 'P' else 'call', ticker))
+                engine._vmi_option_details[dkey] = (time.monotonic(), details)
+                if len(engine._vmi_option_details) > 200:
+                    engine._vmi_option_details.pop(next(iter(engine._vmi_option_details)))
+            bad = 0
+            for detail in details:
+                try:
+                    row = contract(detail, under, right)
+                    if row['expiry'] != expiry:
+                        raise ValueError('Wrong expiry')
+                    out[field].append(row)
+                except ValueError:
+                    bad += 1
+            out['excluded'] += bad
+            if out[field]:
+                _rows_save(disk_key, out[field])
         out[field].sort(key=lambda c: c['strike'])
         out['expiry'] = expiry
     unchanged(engine, ib, generation)

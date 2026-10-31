@@ -5,6 +5,10 @@ from market import MarketEngine
 import vmi_options as v
 
 class OptionTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        import tempfile,os
+        d=tempfile.mkdtemp();p=patch.object(v,'ROWS_FILE',os.path.join(d,'rows.json'));p.start();self.addCleanup(p.stop)
+
     def fixture(self):
         from ib_async import Stock, Option, ContractDetails
         e=MarketEngine()
@@ -43,7 +47,9 @@ class OptionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(out['calls'][0]['conid'],456)
         with self.assertRaises(ValueError): await e._vmi_chain('META','20990117')
         d.contract.multiplier='10'
-        out=await e._vmi_chain('META','20990116')
+        import tempfile,os
+        with patch.object(v,'ROWS_FILE',os.path.join(tempfile.mkdtemp(),'r.json')):
+            e._vmi_option_details.clear();out=await e._vmi_chain('META','20990116')
         self.assertEqual(out['calls'],[])
         self.assertEqual(out['excluded'],1)
 

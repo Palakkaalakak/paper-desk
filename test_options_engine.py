@@ -127,3 +127,20 @@ class SearchTests(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class OptionRowDiskCacheTests(unittest.IsolatedAsyncioTestCase):
+    async def test_second_load_skips_ib_contract_details(self):
+        import json, os, tempfile, vmi_options
+        path = os.path.join(tempfile.mkdtemp(), 'rows.json')
+        row = dict(conid=9, strike=70.0, right='P', expiry='20991217')
+        json.dump({'5|20991217P': dict(ts=time.time(), rows=[row])}, open(path, 'w'))
+        under = NS(conId=5, symbol='JCI', secType='STK', currency='USD')
+        e = market.MarketEngine()
+        e._stock = AsyncMock(return_value=under)
+        params = [NS(exchange='SMART', tradingClass='JCI', multiplier='100', expirations=['20991217'], strikes=[70.0])]
+        ib = NS(reqSecDefOptParamsAsync=AsyncMock(return_value=params), reqContractDetailsAsync=AsyncMock(side_effect=AssertionError))
+        e._ib = ib
+        with patch.object(vmi_options, 'ROWS_FILE', path):
+            out = await vmi_options.chain(e, 'JCI', '20991217', right='P')
+        self.assertEqual(out['puts'], [row]); ib.reqContractDetailsAsync.assert_not_called()

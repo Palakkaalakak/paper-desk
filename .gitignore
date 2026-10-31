@@ -26,3 +26,4 @@ htmlcov/
 *.zip
 *.bundle
 .analysis/
+.option_rows.json
